@@ -440,17 +440,31 @@ You don't write any of step 3 yourself — it's already wired up. You only need 
 
 ### 3. One-off purchase of extra 5 GB (not part of the subscription cycle)
 
-Not a subscription line item — the package has no "wallet"/addon-balance concept on purpose (see below), so this is just a regular one-off `Payment` your own listener turns into a quota bump:
+Not a subscription line item — the package has no "wallet"/addon-balance concept on purpose (see below), so this is just a regular one-off `Payment`. The part that's easy to get wrong: **`payable` should point at what was actually bought, not at the customer** — that's how the listener on `PaymentSucceeded` knows *which* purchase just succeeded (a `Payment` alone only tells you who paid and how much, not what for; two different add-ons could even cost the same). A tiny domain model, same idea as `Order` in recipe #1:
 
 ```php
+class StorageAddonPurchase extends Model implements Payable
+{
+    protected $fillable = ['organization_id', 'gb'];
+
+    public function organization(): BelongsTo
+    {
+        return $this->belongsTo(Organization::class);
+    }
+}
+```
+
+```php
+$addon = StorageAddonPurchase::create(['organization_id' => $organization->id, 'gb' => 5]);
+
 $payment = Payment::create([
     'status' => 'pending',
     'type' => 'charge',
     'gateway' => 'stripe',
-    'amount' => 200, // $2.00
+    'amount' => 200, // $2.00 for 5 GB
     'currency_code' => 'USD',
-    'payable_type' => $organization::class,
-    'payable_id' => $organization->id,
+    'payable_type' => StorageAddonPurchase::class,
+    'payable_id' => $addon->id,
     'billable_type' => $organization::class,
     'billable_id' => $organization->id,
 ]);
@@ -460,11 +474,13 @@ Billing::chargeWithMethod($payment, $organization->defaultPaymentMethod); // or 
 
 ```php
 Event::listen(PaymentSucceeded::class, function (PaymentSucceeded $event) {
-    if ($event->payment->payable instanceof Organization) {
-        $event->payment->payable->increment('extra_storage_gb', 5);
+    if ($event->payment->payable instanceof StorageAddonPurchase) {
+        $event->payment->payable->organization->increment('extra_storage_gb', $event->payment->payable->gb);
     }
 });
 ```
+
+Sell a 10 GB or 20 GB add-on later at a different price — same listener, no new branch: the quantity lives on `StorageAddonPurchase`, not guessed from the payment amount.
 
 ### 4. Free trial period
 

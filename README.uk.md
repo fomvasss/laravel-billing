@@ -76,12 +76,25 @@ return redirect($result->url); // локальна сторінка з кноп�
 ],
 ```
 
-Точний перелік полів для кожного гейтвея — самодокументований через `credentialFields()`:
+Які ключі писати під `config('billing.gateways.{gateway}')` — у кожного драйвера є статичний `credentialFields()`, що це точно описує, викликається прямо на класі, без інстанції/кредів:
+
+```php
+use Fomvasss\Billing\Gateways\Monobank\MonobankGateway;
+
+MonobankGateway::credentialFields();
+// [
+//     ['name' => 'token', 'type' => 'text', 'secret' => true, 'help' => 'X-Token з кабінету мерчанта...'],
+//     ['name' => 'link_ttl_minutes', 'type' => 'number', 'secret' => false, 'help' => 'TTL посилання на оплату, хв...'],
+// ]
+```
+
+`name` — ключ у конфізі (`config('billing.gateways.monobank.token')`), `secret` — позначає чутливе поле (ховати в UI налаштувань як пароль), `help` — звідки взяти значення. Ті самі дані для всіх зареєстрованих гейтвеїв одразу, без імпорту кожного класу драйвера окремо:
 
 ```php
 use Fomvasss\Billing\Facades\Billing;
 
 Billing::gateways(); // ['monobank' => ['label' => 'Monobank Acquiring', 'currencies' => [...], 'credential_fields' => [...], 'webhook_url' => '...', 'capabilities' => [...]], ...]
+Billing::gateway('monobank'); // лише запис цього гейтвея, або null, якщо не зареєстрований
 ```
 
 `webhook_url` у цьому масиві — точний callback URL для кабінету відповідного гейтвея.

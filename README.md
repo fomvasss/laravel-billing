@@ -80,12 +80,25 @@ Clicking a button POSTs straight to the real, registered webhook endpoint — th
 ],
 ```
 
-The exact fields per gateway are self-documenting via `credentialFields()`:
+Which keys go under `config('billing.gateways.{gateway}')` — every driver has a static `credentialFields()` describing exactly that, callable straight on the class, no instance/credentials needed:
+
+```php
+use Fomvasss\Billing\Gateways\Monobank\MonobankGateway;
+
+MonobankGateway::credentialFields();
+// [
+//     ['name' => 'token', 'type' => 'text', 'secret' => true, 'help' => 'X-Token з кабінету мерчанта...'],
+//     ['name' => 'link_ttl_minutes', 'type' => 'number', 'secret' => false, 'help' => 'TTL посилання на оплату, хв...'],
+// ]
+```
+
+`name` is the config key (`config('billing.gateways.monobank.token')`), `secret` marks it as sensitive (mask it in a settings UI), `help` explains where to get the value. Same data for every registered gateway at once, without importing each driver class:
 
 ```php
 use Fomvasss\Billing\Facades\Billing;
 
 Billing::gateways(); // ['monobank' => ['label' => 'Monobank Acquiring', 'currencies' => [...], 'credential_fields' => [...], 'webhook_url' => '...', 'capabilities' => [...]], ...]
+Billing::gateway('monobank'); // just that one gateway's entry, or null if not registered
 ```
 
 `webhook_url` in that array is the exact callback URL to paste into each gateway's own dashboard.

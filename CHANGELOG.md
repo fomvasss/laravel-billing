@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Fixed
 - `PaymentResult` was missing its `$raw` property on three built-in drivers' `refund()` — calling `refund()` on Stripe, Monobank, or LiqPay would have thrown an error.
 - The `fake` gateway's local test page posted to a webhook URL that no longer existed.
+- The `Billing` facade's docblock was missing `charge()`/`chargeWithMethod()`/`resolveChargeAmount()` — IDE autocomplete now covers all of it.
 
 ## [0.1.0] - 2026-08-15
 

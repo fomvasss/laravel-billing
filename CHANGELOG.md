@@ -7,27 +7,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
-- `TokenizesPaymentMethod` is now implemented by all 5 built-in gateways (Stripe, Monobank, LiqPay, WayForPay, Hutko) — `billing:process-recurring-charges` can charge a saved card off-session on any of them, not just gateways you wire up yourself. Stripe's `attachPaymentMethod()` is a direct, synchronous call; the other four attach automatically once the bank confirms tokenization, after a charge with `saveCard: true` (Monobank, LiqPay) or with no opt-in needed at all (WayForPay, Hutko). See README "Tokenization / saved cards".
-- `chargePaymentMethod($payment, $method, ['ip' => ..., 'description' => ...])` — pass the payer's IP for gateways that expect it on an off-session charge (LiqPay, Hutko); falls back to a placeholder if omitted.
-- `Billing::charge()` now always writes a plain, redirectable link to `Payment::$payment_url` — including LiqPay, the one built-in gateway whose checkout page only accepts a client-submitted form. No more branching on `PaymentResult::$url` vs `$form` in your own code to figure out where to send the customer.
-- `Payment::$meta` — a plain `json` column, opaque to the package (same idea as `Plan::$meta`). A place to say what a one-off charge was actually for (a token-package quantity, a product code, ...) without a dedicated `Payable` model when one isn't otherwise warranted. See "Recipes" in README.
-- `Money::fromDecimal()`/`toDecimal()` — converting between your own `decimal(10,2)` price columns and the minor-unit integers this package uses, without hitting the float trap (`(int) (19.99 * 100)` is 1998, not 1999). See "Money" in README.
-- Hutko fiscalization — `receiptItems` now become `reservation_data`, its programmable-RRO fiscal basket, so a Hutko payment produces an itemised fiscal receipt instead of a single generic line. Nothing to call: it rides along with the receipt items `charge()` already picks up.
-- `ChargeOptions::$raw` is now actually passed through to the gateway request by all five built-in drivers — it was documented as the escape hatch for gateway-specific fields (LiqPay's `rro_info` fiscalization, Monobank's `agentFeePercent`, Stripe's `automatic_tax`, ...) but no driver read it. It merges *under* the driver's own fields, so it can add what the driver doesn't set but never override the amount or the merchant reference the webhook matches on.
-- `docs/writing-a-gateway.md` — full guide to adding your own gateway: the contract method by method, signature validation, the three tokenization shapes, custom webhook acknowledgments, testing without merchant credentials.
-- `config/billing.php` now ships a `gateways` stub for all five built-in gateways with their `env()` keys, instead of an empty array you had to fill in blind — same convention as Laravel's own `config/services.php`. Publish the config and the `.env` keys are right there.
-- Model helpers you'd otherwise write in every consumer — `Subscription::isActive()`/`onTrial()`/`onGracePeriod()`/`isCanceled()`/`isCancelling()`, `Payment::isPaid()`/`isPending()`/`isFailed()`/`isRefund()`/`refundedAmount()`/`hasActivePaymentUrl()`, plus `Subscription::active()`/`Payment::paid()`/`pending()` and `forBillable($model)` scopes on both. `isActive()` keeps access on during the dunning grace window, so a customer isn't locked out mid-retry.
+- Saved cards and off-session charges work on all five built-in gateways — `billing:process-recurring-charges` can now renew a subscription whichever gateway it's on. Stripe needs an explicit `attachPaymentMethod()`; the rest attach the card themselves after a charge (`saveCard: true` for Monobank and LiqPay, nothing to pass for WayForPay and Hutko). See README "Tokenization / saved cards".
+- `Payment::$payment_url` is always a plain redirectable link, on every gateway — no more branching on `PaymentResult::$url` vs `$form` to work out where to send the customer.
+- `Payment::$meta` — a `json` column for your own data, so a one-off charge can say what it was for without a dedicated `Payable` model. See README "Recipes".
+- `Money::fromDecimal()`/`toDecimal()` — bridge between `decimal(10,2)` price columns and the minor-unit integers this package uses. See README "Money".
+- `ChargeOptions::$raw` reaches the gateway request on every built-in driver — the escape hatch for gateway-specific fields (LiqPay `rro_info`, Monobank `agentFeePercent`, Stripe `automatic_tax`, ...). It can add fields the driver doesn't set, never override the amount or the merchant reference.
+- `chargePaymentMethod()` accepts `['ip' => ..., 'description' => ...]` — the payer's IP for gateways that expect it off-session (LiqPay, Hutko).
+- Fiscal receipts on Hutko — `receiptItems` now produce an itemised fiscal receipt instead of a single generic line.
+- Model helpers: `Subscription::isActive()`/`onTrial()`/`onGracePeriod()`/`isCanceled()`/`isCancelling()`, `Payment::isPaid()`/`isPending()`/`isFailed()`/`isRefund()`/`refundedAmount()`/`hasActivePaymentUrl()`, plus `active()`/`paid()`/`pending()`/`forBillable()` scopes. `isActive()` keeps access on through the dunning grace window.
+- `config/billing.php` ships a credentials stub for every built-in gateway with its `env()` keys.
+- `docs/writing-a-gateway.md` — guide to adding your own gateway.
 
 ### Changed
-- WayForPay's `charge()` now returns `PaymentResult::$url` directly instead of `$form` — a plain redirect, not a form you have to render and submit yourself. LiqPay is now the only built-in gateway that returns `$form`.
-- `TokenizesPaymentMethod`'s methods now require an actual Eloquent model (`Model&Billable`), not just the bare `Billable` interface.
-- `billing:reconcile-pending-payments` now runs every 15 minutes instead of hourly (when `billing.schedule.enabled`) — it's the fallback for a payment stuck `pending` because a webhook was lost, and `reconcile_after_minutes` (default 60 min) already delays how soon a stuck payment even qualifies, so hourly on top of that meant up to ~2h before a real "paid but webhook lost" payment got noticed.
+- WayForPay's `charge()` returns `PaymentResult::$url` instead of `$form` — a plain redirect, nothing to render and submit yourself. LiqPay is now the only built-in gateway returning `$form`.
+- `TokenizesPaymentMethod` requires an Eloquent model (`Model&Billable`), not the bare `Billable` interface.
+- `billing:reconcile-pending-payments` runs every 15 minutes instead of hourly, so a payment left `pending` by a lost webhook is picked up sooner.
 
 ### Fixed
-- `PaymentResult` was missing its `$raw` property on three built-in drivers' `refund()` — calling `refund()` on Stripe, Monobank, or LiqPay would have thrown an error.
-- The `fake` gateway's local test page posted to a webhook URL that no longer existed.
-- The `Billing` facade's docblock was missing `charge()`/`chargeWithMethod()`/`resolveChargeAmount()` — IDE autocomplete now covers all of it.
-- `Billing::charge()` now actually fills `ChargeOptions::$receiptItems` from `$payment->payable->receiptItems()` when it implements `HasReceiptItems` and you didn't pass one yourself — documented since 0.1.0 but never wired up, so the fiscal basket silently stayed empty unless you built it by hand.
+- `refund()` threw on Stripe, Monobank and LiqPay.
+- `Billing::charge()` fills `ChargeOptions::$receiptItems` from a `HasReceiptItems` payable as documented — the fiscal basket previously stayed empty unless built by hand.
+- `Billing` facade covers `charge()`/`chargeWithMethod()`/`resolveChargeAmount()` for IDE autocomplete.
 
 ## [0.1.0] - 2026-08-15
 

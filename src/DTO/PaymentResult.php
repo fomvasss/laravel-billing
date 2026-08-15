@@ -14,5 +14,7 @@ final readonly class PaymentResult
         /** TTL of this specific link/form — computed by the driver itself, not the core. */
         public ?\DateTimeInterface $expiresAt = null,
         public ?string $externalId = null,
+        /** Raw gateway response — refund()/chargePaymentMethod() callers that need more than externalId. */
+        public array $raw = [],
     ) {}
 }

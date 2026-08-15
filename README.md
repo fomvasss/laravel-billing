@@ -316,6 +316,25 @@ php artisan billing:expire-trials               # daily  — trialing + trial_en
 
 `process-recurring-charges` only *initiates* a charge — the outcome (success/failure) arrives through the normal webhook pipeline and is handled automatically (period advances, or the grace/dunning cycle via `grace_ends_at`/`recurring_attempts`/`max_recurring_attempts` kicks in, up to `SubscriptionCancelled`).
 
+### Tokenization / saved cards
+
+`process-recurring-charges` (and any off-session charge you trigger yourself) only works for a gateway whose driver implements `TokenizesPaymentMethod` — right now that's **Stripe only**. LiqPay/Monobank/WayForPay hand back a card token *asynchronously*, as a side effect of a completed checkout with "save card" set, delivered later via webhook — not synchronously from a frontend SDK call the way `attachPaymentMethod(Billable, array $token)` expects. That shape mismatch is why those three drivers don't claim the capability (yet — an async, webhook-driven attach path is a real but differently-shaped feature).
+
+```php
+// 1. Create (or reuse) a Stripe customer, hand its id to your frontend to collect a card via
+//    Stripe.js/Elements + a SetupIntent — standard Stripe flow, outside this package.
+$customerId = Billing::driver('stripe')->createCustomer($user);
+
+// 2. Frontend confirms the SetupIntent, gets back a PaymentMethod id (pm_...) — POST it to your
+//    own endpoint, then attach it:
+$method = Billing::driver('stripe')->attachPaymentMethod($user, ['payment_method_id' => $pmId]);
+
+// 3. From then on, `billing:process-recurring-charges` (or your own code) can charge it directly:
+Billing::chargeWithMethod($payment, $method);
+```
+
+`attachPaymentMethod()`/`detachPaymentMethod()` dispatch `PaymentMethodAttached`/`PaymentMethodDetached` themselves, synchronously — no webhook round-trip for those two. `chargePaymentMethod()` only *initiates* the charge, same as `charge()`: the outcome still arrives through the usual webhook pipeline (`payment_intent.succeeded`/`payment_intent.payment_failed`).
+
 ## Currency conversion
 
 If a `Price`'s currency isn't accepted by the chosen gateway, `BillingManager::resolveChargeAmount()` tries, in order: (1) the price's own currency, if accepted; (2) a sibling `Price` of the same `Plan`+gateway in an accepted currency; (3) a bound `CurrencyConverterContract`; (4) throws `BillingException`. Bind a converter (e.g. an adapter over [`fomvasss/laravel-currency`](https://github.com/fomvasss/laravel-currency), not a hard dependency of this package):

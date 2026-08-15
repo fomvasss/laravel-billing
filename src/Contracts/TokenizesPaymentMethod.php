@@ -7,15 +7,22 @@ namespace Fomvasss\Billing\Contracts;
 use Fomvasss\Billing\DTO\PaymentResult;
 use Fomvasss\Billing\Models\Payment;
 use Fomvasss\Billing\Models\PaymentMethod;
+use Illuminate\Database\Eloquent\Model;
 
 /** Optional — saved card / recurring charges. */
 interface TokenizesPaymentMethod
 {
-    /** Returns external_customer_id. */
-    public function createCustomer(Billable $billable): string;
+    /**
+     * $billable is always an Eloquent model in practice (the morphTo target of PaymentMethod's
+     * billable_type/billable_id) — Model&Billable, not the bare marker interface, so drivers can
+     * read $billable->getKey()/$billable::class without an instanceof check.
+     *
+     * Returns external_customer_id.
+     */
+    public function createCustomer(Model&Billable $billable): string;
 
     /** $token — whatever came from the gateway's JS SDK on the frontend (e.g. Stripe PaymentMethod id, LiqPay card token). */
-    public function attachPaymentMethod(Billable $billable, array $token): PaymentMethod;
+    public function attachPaymentMethod(Model&Billable $billable, array $token): PaymentMethod;
 
     /**
      * One-off/recurring charge with a saved method, without a redirect. $payment — same reasoning

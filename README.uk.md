@@ -312,6 +312,25 @@ php artisan billing:expire-trials               # щодня — trialing + ми
 
 `process-recurring-charges` лише ІНІЦІЮЄ списання — результат (успіх/невдача) приходить через звичайний webhook pipeline і обробляється автоматично (посування періоду, або dunning-цикл через `grace_ends_at`/`recurring_attempts`/`max_recurring_attempts`, аж до `SubscriptionCancelled`).
 
+### Токенізація / збережені картки
+
+`process-recurring-charges` (і будь-яке власне off-session списання) працює лише з гейтвеєм, чий драйвер реалізує `TokenizesPaymentMethod` — зараз це **лише Stripe**. LiqPay/Monobank/WayForPay віддають токен картки **асинхронно**, як побічний ефект успішного чекауту з прапорцем "зберегти карту", і він прилітає пізніше через вебхук — не синхронно з фронтенд-виклику, як очікує `attachPaymentMethod(Billable, array $token)`. Через цю невідповідність форми ці три драйвери поки не заявляють можливість (окрема, інакше влаштована задача — асинхронний attach через вебхук — не зроблена в цьому проході).
+
+```php
+// 1. Створюємо (або перевикористовуємо) Stripe-клієнта, віддаємо його id фронтенду для збору
+//    картки через Stripe.js/Elements + SetupIntent — стандартний Stripe-флоу, поза пакетом.
+$customerId = Billing::driver('stripe')->createCustomer($user);
+
+// 2. Фронтенд підтверджує SetupIntent, отримує PaymentMethod id (pm_...) — POST на свій ендпоінт,
+//    далі прив'язуємо:
+$method = Billing::driver('stripe')->attachPaymentMethod($user, ['payment_method_id' => $pmId]);
+
+// 3. Відтепер `billing:process-recurring-charges` (або власний код) може списувати напряму:
+Billing::chargeWithMethod($payment, $method);
+```
+
+`attachPaymentMethod()`/`detachPaymentMethod()` самі диспатчать `PaymentMethodAttached`/`PaymentMethodDetached`, синхронно — без вебхука для цих двох. `chargePaymentMethod()` лише ІНІЦІЮЄ списання, так само як `charge()`: результат так само приходить через звичайний webhook pipeline (`payment_intent.succeeded`/`payment_intent.payment_failed`).
+
 ## Конвертація валют
 
 Якщо валюта `Price` не приймається обраним гейтвеєм, `BillingManager::resolveChargeAmount()` пробує по черзі: (1) власну валюту ціни, якщо приймається; (2) сіблінг-`Price` того ж `Plan`+гейтвея в прийнятній валюті; (3) забінджений `CurrencyConverterContract`; (4) кидає `BillingException`. Забіндити конвертер (напр. адаптер над [`fomvasss/laravel-currency`](https://github.com/fomvasss/laravel-currency), не жорстка залежність цього пакета):

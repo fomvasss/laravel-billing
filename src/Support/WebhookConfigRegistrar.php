@@ -9,6 +9,7 @@ use Fomvasss\Billing\Webhooks\BillingWebhookCall;
 use Illuminate\Support\Facades\Route;
 use Spatie\WebhookClient\WebhookProfile\ProcessEverythingWebhookProfile;
 use Spatie\WebhookClient\WebhookResponse\DefaultRespondsTo;
+use Spatie\WebhookClient\WebhookResponse\RespondsToWebhook;
 
 /**
  * One call per gateway package's ServiceProvider::boot(), alongside Billing::extend() —
@@ -24,8 +25,11 @@ final class WebhookConfigRegistrar
      *   Each gateway ships its own — spatie's config-level `signing_secret` is a single static
      *   value and doesn't fit dynamic per-tenant credentials, so the validator resolves its own
      *   secret internally (via CredentialResolverContract) instead of reading $config->signingSecret.
+     * @param  class-string<RespondsToWebhook>|null  $responder  Most gateways are fine with the
+     *   default `{"message":"ok"}` — pass this when the bank requires a specific acknowledgment
+     *   body (e.g. WayForPay's signed `{orderReference, status: "accept", time, signature}`).
      */
-    public static function register(string $name, string $signatureValidator, ?string $url = null): void
+    public static function register(string $name, string $signatureValidator, ?string $url = null, ?string $responder = null): void
     {
         // WebhookConfigRepository builds a WebhookConfig for EVERY entry in webhook-client.configs
         // eagerly, on first resolve — including spatie's own unfilled "default" stub (published
@@ -48,7 +52,7 @@ final class WebhookConfigRegistrar
                 'signature_header_name' => '',
                 'signature_validator' => $signatureValidator,
                 'webhook_profile' => ProcessEverythingWebhookProfile::class,
-                'webhook_response' => DefaultRespondsTo::class,
+                'webhook_response' => $responder ?? DefaultRespondsTo::class,
                 'webhook_model' => BillingWebhookCall::class,
                 'store_headers' => '*',
                 'store_attachments' => false,

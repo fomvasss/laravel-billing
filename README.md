@@ -4,11 +4,11 @@
 [![Latest Stable Version](https://img.shields.io/packagist/v/fomvasss/laravel-billing.svg?style=for-the-badge)](https://packagist.org/packages/fomvasss/laravel-billing)
 [![Total Downloads](https://img.shields.io/packagist/dt/fomvasss/laravel-billing.svg?style=for-the-badge)](https://packagist.org/packages/fomvasss/laravel-billing)
 
-Universal billing/payments package for Laravel: pluggable payment gateways (LiqPay, WayForPay, Monobank Acquiring, Stripe, Hutko built-in), one-time payments and subscriptions with trials, usage-based pricing, webhook processing.
+Universal billing/payments package for Laravel: pluggable payment gateways, one-time payments and subscriptions with trials, usage-based pricing, webhook processing.
 
 [Українська документація](README.uk.md)
 
-> Не реалізовано. Архітектура й покроковий план — `/home/hp/Work/laravel/sandbox/todos/laravel-billing-idea.md`.
+Built-in gateways: **LiqPay**, **WayForPay**, **Monobank Acquiring**, **Stripe**, **Hutko**. Add your own with a single `Billing::extend()` call — no core changes required.
 
 ## Requirements
 
@@ -20,3 +20,264 @@ Universal billing/payments package for Laravel: pluggable payment gateways (LiqP
 ```bash
 composer require fomvasss/laravel-billing
 ```
+
+Migrations run automatically (`loadMigrationsFrom`, no `vendor:publish` needed for the schema). `spatie/laravel-webhook-client`'s own `webhook_calls` table is the one exception — publish and run it once, before this package's migrations:
+
+```bash
+php artisan vendor:publish --tag="webhook-client-migrations"
+php artisan migrate
+```
+
+Publish the config file if you need to change defaults (return URLs, debug logging, grace period, etc.):
+
+```bash
+php artisan vendor:publish --tag=billing-config
+```
+
+## Quickstart — the `fake` gateway
+
+No bank account needed to try the full flow locally. `fake` is registered automatically in `local`/`testing` environments:
+
+```php
+use Fomvasss\Billing\BillingManager;
+use Fomvasss\Billing\Models\Payment;
+
+$payment = Payment::create([
+    'status' => 'pending',
+    'type' => 'charge',
+    'gateway' => 'fake',
+    'amount' => 10000, // minor units — 100.00
+    'currency_code' => 'UAH',
+    'payable_type' => Order::class,
+    'payable_id' => $order->id,
+    'billable_type' => $order->user::class,
+    'billable_id' => $order->user->id,
+]);
+
+$result = app(BillingManager::class)->charge($payment);
+
+return redirect($result->url); // a local page with "Paid"/"Rejected" buttons
+```
+
+Clicking a button POSTs straight to the real, registered webhook endpoint — the same `spatie/laravel-webhook-client` → `ProcessWebhookJob` → event pipeline a real gateway would go through, not a shortcut.
+
+## Configuring a real gateway
+
+```php
+// config/billing.php
+'gateways' => [
+    'monobank' => [
+        'token' => env('MONOBANK_TOKEN'),
+    ],
+    'liqpay' => [
+        'public_key' => env('LIQPAY_PUBLIC_KEY'),
+        'private_key' => env('LIQPAY_PRIVATE_KEY'),
+    ],
+],
+```
+
+The exact fields per gateway are self-documenting via `credentialFields()`:
+
+```php
+use Fomvasss\Billing\Facades\Billing;
+
+Billing::gateways(); // ['monobank' => ['label' => 'Monobank Acquiring', 'currencies' => [...], 'credential_fields' => [...], 'webhook_url' => '...', 'capabilities' => [...]], ...]
+```
+
+`webhook_url` in that array is the exact callback URL to paste into each gateway's own dashboard.
+
+Dynamic per-tenant credentials (instead of one static config array) — bind your own resolver:
+
+```php
+$this->app->bind(\Fomvasss\Billing\Contracts\CredentialResolverContract::class, MyCredentialResolver::class);
+```
+
+## `Payable` and `Billable`
+
+`payable` is what's being paid for (an `Order`, a `Subscription` renewal cycle); `billable` is who's paying. Both are polymorphic — any Eloquent model works with `payable`, but a `billable` model needs a `tenantId()` method (used for dynamic per-tenant credential resolution):
+
+```php
+use Fomvasss\Billing\Concerns\Billable as BillableConcern;
+use Fomvasss\Billing\Contracts\Billable;
+
+class Organization extends Model implements Billable
+{
+    use BillableConcern; // default tenantId(): null — override below if you need multi-tenancy
+
+    public function tenantId(): ?string
+    {
+        return (string) $this->id;
+    }
+}
+```
+
+## Charging
+
+```php
+$result = app(BillingManager::class)->charge($payment, new ChargeOptions(
+    description: 'Order #1042',
+    customerEmail: $order->user->email,
+    successUrl: route('order.thanks', $order),
+));
+
+// $result->url    — redirect-style gateways (Monobank, Stripe, Hutko)
+// $result->form   — auto-submit form gateways (LiqPay, WayForPay): ['action' => ..., 'fields' => [...]]
+```
+
+`charge()` writes `external_id`/`payment_url`/`payment_url_expires_at` back onto `$payment` — safe to call again on the same `Payment` once the link expires (each driver decides its own TTL).
+
+### Manual/offline payments
+
+No driver is required for cash or bank-transfer payments — just create the row directly:
+
+```php
+Payment::create([
+    'status' => 'paid',
+    'type' => 'charge',
+    'gateway' => null, // or a free-text label like 'cash' — not registered via extend()
+    'amount' => 10000,
+    'currency_code' => 'UAH',
+    'payable_type' => Order::class,
+    'payable_id' => $order->id,
+    'billable_type' => $order->user::class,
+    'billable_id' => $order->user->id,
+]);
+```
+
+`paid_at` is stamped automatically the moment `status` becomes `paid`.
+
+## Webhooks
+
+Each built-in gateway registers its own `spatie/laravel-webhook-client` config entry and route in `BillingServiceProvider::boot()` — nothing to configure by hand. Incoming webhooks are stored, signature-verified, queued (`ProcessWebhookJob`), and turned into one of these events:
+
+| Event | Fires when |
+|---|---|
+| `PaymentSucceeded` / `PaymentFailed` / `PaymentRefunded` | A `Payment`'s status resolves to a terminal state |
+| `SubscriptionCreated` / `SubscriptionRenewed` / `SubscriptionPaymentFailed` / `SubscriptionCancelled` / `TrialWillEnd` | Gateway-driven subscription state changes (native-subscription gateways only) |
+| `SubscriptionPaused` / `SubscriptionResumed` | Local-only, via `$subscription->pause()`/`resume()` — never gateway-driven |
+| `PaymentMethodAttached` / `PaymentMethodDetached` | A saved card/token is attached or removed |
+| `UsageLimitReached` | `Subscription::reportUsage()` crosses `price.included_units` |
+
+Listen for them the usual way:
+
+```php
+Event::listen(PaymentSucceeded::class, function (PaymentSucceeded $event) {
+    $event->payment->payable; // your Order, Subscription, etc.
+});
+```
+
+### Writing your own gateway
+
+Four required methods (`PaymentGatewayContract`), everything else opt-in:
+
+```php
+use Fomvasss\Billing\Gateways\AbstractGateway; // optional — shared debug log + webhookUrl()/successUrl()/failUrl() helpers
+use Fomvasss\Billing\Contracts\RefundsPayments;
+
+class MyGateway extends AbstractGateway implements RefundsPayments
+{
+    public function charge(Payment $payment, ChargeOptions $options = new ChargeOptions()): PaymentResult { /* ... */ }
+    public function handleWebhook(\Spatie\WebhookClient\Models\WebhookCall $webhookCall): WebhookResult { /* ... */ }
+    public static function label(): string { return 'My Gateway'; }
+    public static function credentialFields(): array { return [/* ['name' => ..., 'type' => ..., 'secret' => bool, 'help' => ...] */]; }
+    public static function supportedCurrencies(): array { return ['UAH']; }
+
+    public function refund(Payment $payment, ?Money $amount = null): PaymentResult { /* ... */ }
+}
+```
+
+```php
+// in your ServiceProvider::boot() — your own project or a satellite package (fomvasss/laravel-billing-mygateway)
+use Fomvasss\Billing\Facades\Billing;
+use Fomvasss\Billing\Support\WebhookConfigRegistrar;
+
+Billing::extend('mygateway', MyGateway::class);
+WebhookConfigRegistrar::register('mygateway', MyGatewaySignatureValidator::class);
+```
+
+`WebhookConfigRegistrar` wires the `spatie/laravel-webhook-client` config entry and the route in one call — no need to touch `config/webhook-client.php` by hand. Pass `responder:` if your gateway needs a specific acknowledgment body instead of a bare `200` (WayForPay does — see `WayForPayWebhookResponder` for a worked example).
+
+## Subscriptions
+
+```php
+$plan = Plan::create(['code' => 'pro', 'name' => 'Pro']);
+
+$price = $plan->prices()->create([
+    'gateway' => 'stripe',
+    'currency_code' => 'USD',
+    'amount' => 2900, // $29.00
+    'pricing_type' => 'flat',
+    'interval' => 'month',
+    'interval_count' => 1,
+    'trial_days' => 14,
+]);
+
+$subscription = Subscription::create([
+    'status' => 'trialing',
+    'gateway' => 'stripe',
+    'price_id' => $price->id,
+    'billable_type' => $organization::class,
+    'billable_id' => $organization->id,
+    'trial_ends_at' => now()->addDays(14),
+]);
+```
+
+### Pricing types
+
+- `flat` — fixed amount, `qty`/`current_usage` ignored.
+- `licensed` — `amount × subscription.qty` (seats/licenses).
+- `metered` — `amount × subscription.current_usage` (pay-as-you-go).
+
+### Usage & quotas
+
+`included_units`/`current_usage` are orthogonal to `pricing_type` — a `flat` price can still carry a quota (e.g. "4,000 AI tokens included per month, fixed price either way"):
+
+```php
+$subscription->reportUsage(quantity: 1500, idempotencyKey: "ai-run:{$run->id}");
+$subscription->remainingUsage(); // null if the price has no quota at all
+```
+
+`UsageLimitReached` fires once when cumulative usage crosses `included_units` — react to it however fits (block further use, notify, or charge an overage via `TokenizesPaymentMethod::chargePaymentMethod()`).
+
+### Pause / resume / cancel
+
+```php
+$subscription->pause();   // local only — no gateway call, no event to the bank
+$subscription->resume();
+$subscription->cancel();               // at period end (default)
+$subscription->cancel(atPeriodEnd: false); // immediately
+$subscription->swapPlan($newPrice);
+```
+
+### Recurring charges, reconciliation, trial expiry
+
+Three artisan commands, off by default (`billing.schedule.enabled`, since they touch money and subscription state):
+
+```php
+// config/billing.php
+'schedule' => ['enabled' => true],
+```
+
+```bash
+php artisan billing:process-recurring-charges   # hourly — charges due subscriptions via a saved PaymentMethod
+php artisan billing:reconcile-pending-payments  # hourly — fallback for a missed webhook or gateway `expired` status
+php artisan billing:expire-trials               # daily  — trialing + trial_ends_at passed → ended
+```
+
+`process-recurring-charges` only *initiates* a charge — the outcome (success/failure) arrives through the normal webhook pipeline and is handled automatically (period advances, or the grace/dunning cycle via `grace_ends_at`/`recurring_attempts`/`max_recurring_attempts` kicks in, up to `SubscriptionCancelled`).
+
+## Currency conversion
+
+If a `Price`'s currency isn't accepted by the chosen gateway, `BillingManager::resolveChargeAmount()` tries, in order: (1) the price's own currency, if accepted; (2) a sibling `Price` of the same `Plan`+gateway in an accepted currency; (3) a bound `CurrencyConverterContract`; (4) throws `BillingException`. Bind a converter (e.g. an adapter over [`fomvasss/laravel-currency`](https://github.com/fomvasss/laravel-currency), not a hard dependency of this package):
+
+```php
+$this->app->bind(\Fomvasss\Billing\Contracts\CurrencyConverterContract::class, MyCurrencyConverter::class);
+```
+
+## Testing
+
+Use the `fake` gateway (see Quickstart) in your own app's feature tests — it runs the exact same pipeline a real gateway would, so there's nothing package-specific to mock.
+
+## License
+
+MIT

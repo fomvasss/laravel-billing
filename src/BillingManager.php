@@ -5,14 +5,20 @@ declare(strict_types=1);
 namespace Fomvasss\Billing;
 
 use Fomvasss\Billing\Contracts\CredentialResolverContract;
+use Fomvasss\Billing\Contracts\CurrencyConverterContract;
 use Fomvasss\Billing\Contracts\PaymentGatewayContract;
 use Fomvasss\Billing\Contracts\RefundsPayments;
 use Fomvasss\Billing\Contracts\SubscriptionGatewayContract;
 use Fomvasss\Billing\Contracts\TokenizesPaymentMethod;
 use Fomvasss\Billing\DTO\ChargeOptions;
 use Fomvasss\Billing\DTO\PaymentResult;
+use Fomvasss\Billing\DTO\ResolvedAmount;
 use Fomvasss\Billing\Exceptions\BillingException;
+use Fomvasss\Billing\Exceptions\NotSupportedException;
 use Fomvasss\Billing\Models\Payment;
+use Fomvasss\Billing\Models\PaymentMethod;
+use Fomvasss\Billing\Models\Price;
+use Fomvasss\Billing\Support\Money;
 
 class BillingManager
 {
@@ -88,5 +94,69 @@ class BillingManager
         ])->save();
 
         return $result;
+    }
+
+    /** Same orchestration as charge(), for a saved payment method instead of a redirect/form. */
+    public function chargeWithMethod(Payment $payment, PaymentMethod $method, array $options = []): PaymentResult
+    {
+        $driver = $this->driver($payment->gateway, $payment->billable?->tenantId());
+
+        if (! $driver instanceof TokenizesPaymentMethod) {
+            throw NotSupportedException::forCapability($payment->gateway, TokenizesPaymentMethod::class);
+        }
+
+        $result = $driver->chargePaymentMethod($payment, $method, $options);
+
+        $payment->fill([
+            'external_id' => $result->externalId ?? $payment->external_id,
+            'payment_url' => $result->url,
+            'payment_url_expires_at' => $result->expiresAt,
+        ])->save();
+
+        return $result;
+    }
+
+    /**
+     * The 4-step order from "Валюти" in the plan: (1) $price's own currency already accepted by
+     * $gateway → as-is; (2) a sibling Price of the same Plan+gateway in an accepted currency →
+     * that one instead; (3) CurrencyConverterContract bound → convert; (4) none of the above →
+     * BillingException::unsupportedCurrency(). Only resolves the CURRENCY/per-unit rate — scaling
+     * by qty (licensed) or current_usage (metered) is the caller's job (Price::amountForSubscription()),
+     * done on top of whatever Money this returns.
+     */
+    public function resolveChargeAmount(Price $price, string $gateway): ResolvedAmount
+    {
+        $class = $this->drivers[$gateway] ?? throw BillingException::unknownGateway($gateway);
+        $supported = $class::supportedCurrencies();
+
+        if (in_array($price->currency_code, $supported, true)) {
+            return new ResolvedAmount(new Money($price->amount, $price->currency_code));
+        }
+
+        $sibling = $price->plan
+            ->prices()
+            ->where('gateway', $gateway)
+            ->whereIn('currency_code', $supported)
+            ->first();
+
+        if ($sibling !== null) {
+            return new ResolvedAmount(new Money($sibling->amount, $sibling->currency_code));
+        }
+
+        if (app()->bound(CurrencyConverterContract::class)) {
+            $toCurrency = $supported[0] ?? throw BillingException::unsupportedCurrency($price->currency_code, $gateway);
+
+            $original = new Money($price->amount, $price->currency_code);
+            $converted = app(CurrencyConverterContract::class)->convert($original, $toCurrency);
+
+            return new ResolvedAmount(
+                money: $converted,
+                convertedFromCurrency: $price->currency_code,
+                exchangeRate: $original->amount > 0 ? $converted->amount / $original->amount : null,
+                exchangeRateAt: now(),
+            );
+        }
+
+        throw BillingException::unsupportedCurrency($price->currency_code, $gateway);
     }
 }

@@ -48,6 +48,48 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Grace period
+    |--------------------------------------------------------------------------
+    |
+    | Days a subscription stays `past_due` (still counted as paying, still
+    | retried) after a failed recurring charge before recurring_attempts hits
+    | max_recurring_attempts and it's marked canceled.
+    |
+    */
+
+    'grace_period_days' => env('BILLING_GRACE_PERIOD_DAYS', 3),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Reconciliation
+    |--------------------------------------------------------------------------
+    |
+    | How long a Payment can sit `pending` before billing:reconcile-pending-payments
+    | polls the gateway for it (or marks it canceled, for gateways with no
+    | status-polling endpoint) — a fallback for a webhook that never arrived.
+    |
+    */
+
+    'reconcile_after_minutes' => env('BILLING_RECONCILE_AFTER_MINUTES', 60),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Scheduled commands
+    |--------------------------------------------------------------------------
+    |
+    | Off by default — unlike laravel-visits' equivalent flag, billing's
+    | scheduled commands touch money (recurring charges) and reconciliation,
+    | so registering them silently on install is worse than a host having to
+    | opt in explicitly.
+    |
+    */
+
+    'schedule' => [
+        'enabled' => env('BILLING_SCHEDULE_ENABLED', false),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Gateway credentials
     |--------------------------------------------------------------------------
     |

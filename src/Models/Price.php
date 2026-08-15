@@ -38,4 +38,20 @@ class Price extends Model
     {
         return $this->hasMany(Subscription::class);
     }
+
+    /**
+     * How much of BillingManager::resolveChargeAmount()'s per-unit result a renewal charge
+     * actually owes — flat ignores qty/usage entirely (1×), licensed multiplies by seats, metered
+     * by what's been consumed this period. Kept as a ratio, not an absolute amount, so it composes
+     * with currency resolution instead of duplicating it (resolveChargeAmount() already decides
+     * the per-unit rate/currency off $this->amount — this only scales that result).
+     */
+    public function chargeMultiplier(Subscription $subscription): int|float
+    {
+        return match ($this->pricing_type) {
+            PricingType::Flat => 1,
+            PricingType::Licensed => $subscription->qty,
+            PricingType::Metered => $subscription->current_usage,
+        };
+    }
 }

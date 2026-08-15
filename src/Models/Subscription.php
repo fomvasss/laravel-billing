@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Fomvasss\Billing\Models;
 
 use Fomvasss\Billing\Enums\SubscriptionStatus;
+use Fomvasss\Billing\Events\SubscriptionCancelled;
 use Fomvasss\Billing\Events\SubscriptionPaused;
 use Fomvasss\Billing\Events\SubscriptionResumed;
 use Fomvasss\Billing\Events\UsageLimitReached;
@@ -97,5 +98,29 @@ class Subscription extends Model
         $this->update(['status' => SubscriptionStatus::Active]);
 
         SubscriptionResumed::dispatch($this);
+    }
+
+    /**
+     * Local status change only — none of the 5 built-in drivers implement SubscriptionGatewayContract
+     * (see "Кроки реалізації" п.5), so there's no native-subscription gateway to delegate to yet.
+     * When one is added, this is the natural place to check `$this->price->plan` etc. and call it.
+     */
+    public function cancel(bool $atPeriodEnd = true): void
+    {
+        if ($atPeriodEnd && $this->current_period_ends_at !== null) {
+            $this->update(['cancels_at' => $this->current_period_ends_at]);
+
+            return;
+        }
+
+        $this->update(['status' => SubscriptionStatus::Canceled, 'cancels_at' => now()]);
+
+        SubscriptionCancelled::dispatch($this);
+    }
+
+    /** Local price swap — no proration, no gateway delegation (see cancel() docblock). */
+    public function swapPlan(Price $newPrice): void
+    {
+        $this->update(['price_id' => $newPrice->id]);
     }
 }

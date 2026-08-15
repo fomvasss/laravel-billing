@@ -7,13 +7,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
-- All 5 built-in gateways (Stripe, Monobank, LiqPay, WayForPay, Hutko) now implement `TokenizesPaymentMethod` — `createCustomer()`, `attachPaymentMethod()`, `chargePaymentMethod()`, `detachPaymentMethod()` — so `billing:process-recurring-charges` can actually charge a subscription off-session with a saved card, regardless of gateway. See README "Tokenization / saved cards" for all three flows: Stripe's is a synchronous frontend-SDK token; Monobank's and LiqPay's arrive asynchronously via webhook after `saveCard: true` on the first charge; WayForPay's and Hutko's need no opt-in at all — their token comes back automatically on any approved card payment. `handleWebhook()` auto-attaches the resulting `PaymentMethod` for the four async gateways — no extra call needed.
+- `TokenizesPaymentMethod` is now implemented by all 5 built-in gateways (Stripe, Monobank, LiqPay, WayForPay, Hutko) — `billing:process-recurring-charges` can charge a saved card off-session on any of them, not just gateways you wire up yourself. Stripe's `attachPaymentMethod()` is a direct, synchronous call; the other four attach automatically once the bank confirms tokenization, after a charge with `saveCard: true` (Monobank, LiqPay) or with no opt-in needed at all (WayForPay, Hutko). See README "Tokenization / saved cards".
+- `chargePaymentMethod($payment, $method, ['ip' => ..., 'description' => ...])` — pass the payer's IP for gateways that expect it on an off-session charge (LiqPay, Hutko); falls back to a placeholder if omitted.
+- `Billing::charge()` now always writes a plain, redirectable link to `Payment::$payment_url` — including LiqPay, the one built-in gateway whose checkout page only accepts a client-submitted form. No more branching on `PaymentResult::$url` vs `$form` in your own code to figure out where to send the customer.
 
 ### Changed
-- `TokenizesPaymentMethod`'s methods now type-hint `Model&Billable` instead of the bare `Billable` marker interface (a real Eloquent model is required to persist `PaymentMethod.billable_type`/`billable_id`).
+- WayForPay's `charge()` now returns `PaymentResult::$url` directly instead of `$form` — a plain redirect, not a form you have to render and submit yourself. LiqPay is now the only built-in gateway that returns `$form`.
+- `TokenizesPaymentMethod`'s methods now require an actual Eloquent model (`Model&Billable`), not just the bare `Billable` interface.
 
 ### Fixed
-- `DTO\PaymentResult` was missing the `$raw` property that `refund()` already passed to it in three built-in drivers (Stripe/Monobank/LiqPay) — would have thrown `Unknown named parameter $raw` on the first real `refund()` call.
+- `PaymentResult` was missing its `$raw` property on three built-in drivers' `refund()` — calling `refund()` on Stripe, Monobank, or LiqPay would have thrown an error.
+- The `fake` gateway's local test page posted to a webhook URL that no longer existed.
 
 ## [0.1.0] - 2026-08-15
 
@@ -23,7 +27,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `PaymentGatewayContract` (required) and optional capability contracts — `RefundsPayments`, `ChecksPaymentStatus`, `TokenizesPaymentMethod`, `SubscriptionGatewayContract`, `HasReceiptItems` — for writing your own gateway driver.
 - `AbstractGateway` base class to cut driver boilerplate to a minimum.
 - Domain models: `Payment`, `Plan`, `Price`, `Subscription`, `PaymentMethod` — one-time payments and subscriptions (trials, flat/licensed/metered pricing, usage quotas) in the same package. Primary keys are UUID v7 (`HasUuids`) — sortable, no separate incrementing-ID/exposure story to manage.
-- Own webhook pipeline — one route (`POST /billing/webhooks/{gateway}` by default, path and middleware both overridable via `config('billing.webhook.*')`) for every gateway, resolved through `BillingManager`'s registry; signature verification, durable storage (`billing_webhook_calls`), dedup, and a consistent set of events (`PaymentSucceeded`, `PaymentFailed`, `PaymentRefunded`, `SubscriptionCreated`, `SubscriptionRenewed`, `SubscriptionPaymentFailed`, `SubscriptionCancelled`, `SubscriptionPaused`, `SubscriptionResumed`, `TrialWillEnd`, `PaymentMethodAttached`, `PaymentMethodDetached`, `UsageLimitReached`). No `spatie/laravel-webhook-client` dependency — dropped after review, see the package plan for why.
+- Own webhook pipeline — one route (`POST /billing/webhooks/{gateway}` by default, path and middleware both overridable via `config('billing.webhook.*')`) for every gateway, resolved through `BillingManager`'s registry; signature verification, durable storage (`billing_webhook_calls`), dedup, and a consistent set of events (`PaymentSucceeded`, `PaymentFailed`, `PaymentRefunded`, `SubscriptionCreated`, `SubscriptionRenewed`, `SubscriptionPaymentFailed`, `SubscriptionCancelled`, `SubscriptionPaused`, `SubscriptionResumed`, `TrialWillEnd`, `PaymentMethodAttached`, `PaymentMethodDetached`, `UsageLimitReached`). No `spatie/laravel-webhook-client` dependency — a fully self-contained implementation instead.
 - `CredentialResolverContract` and `CurrencyConverterContract` — bind your own implementation for dynamic per-tenant credentials or multi-currency pricing.
 - Artisan commands (off by default, `billing.schedule.enabled`): `billing:process-recurring-charges`, `billing:reconcile-pending-payments`, `billing:expire-trials`.
 - Manual/offline payments (cash, bank transfer) supported without a gateway driver — create a `Payment` row directly with `status: paid`.

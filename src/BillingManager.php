@@ -20,6 +20,7 @@ use Fomvasss\Billing\Models\PaymentMethod;
 use Fomvasss\Billing\Models\Price;
 use Fomvasss\Billing\Support\DefaultWebhookResponder;
 use Fomvasss\Billing\Support\Money;
+use Illuminate\Support\Facades\Cache;
 
 class BillingManager
 {
@@ -113,6 +114,10 @@ class BillingManager
      * for $payment->gateway (with $payment->billable's tenant, for dynamic per-tenant credentials),
      * calls it, then writes the result's external_id/payment_url/payment_url_expires_at back onto
      * $payment — the same three columns PaymentRedirectController reads on a repeat visit.
+     *
+     * payment_url is ALWAYS a plain redirectable link here, regardless of whether the driver
+     * returned $result->url or $result->form — a form-only gateway (LiqPay, currently the only
+     * one) goes through storeCheckoutForm() so callers never have to branch on which one they got.
      */
     public function charge(Payment $payment, ChargeOptions $options = new ChargeOptions()): PaymentResult
     {
@@ -122,11 +127,29 @@ class BillingManager
 
         $payment->fill([
             'external_id' => $result->externalId ?? $payment->external_id,
-            'payment_url' => $result->url,
+            'payment_url' => $result->url ?? $this->storeCheckoutForm($payment, $result),
             'payment_url_expires_at' => $result->expiresAt,
         ])->save();
 
         return $result;
+    }
+
+    /**
+     * Bridges PaymentResult::$form into a plain URL — CheckoutFormController renders whatever's
+     * cached here as a self-submitting HTML form. Cached, not recomputed on each visit: recomputing
+     * would assume charge() is side-effect-free for every current AND future form-returning driver,
+     * which isn't safe to bake in here (a hypothetical driver could create a real gateway-side
+     * session inside charge() the same way Stripe's checkout() does).
+     */
+    protected function storeCheckoutForm(Payment $payment, PaymentResult $result): ?string
+    {
+        if ($result->form === null) {
+            return null;
+        }
+
+        Cache::put("billing.checkout_form.{$payment->id}", $result->form, $result->expiresAt ?? now()->addHour());
+
+        return route('billing.checkout-form', $payment);
     }
 
     /** Same orchestration as charge(), for a saved payment method instead of a redirect/form. */

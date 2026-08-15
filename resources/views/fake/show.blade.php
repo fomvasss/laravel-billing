@@ -18,13 +18,13 @@
 
     {{-- No @csrf — this posts straight to the webhook endpoint, which deliberately has no CSRF
          protection (real bank webhooks can't carry a Laravel session token either). --}}
-    <form method="post" action="{{ route('webhook-client-fake') }}">
+    <form method="post" action="{{ route('billing.webhook', ['gateway' => 'fake']) }}">
         <input type="hidden" name="payment_id" value="{{ $payment->id }}">
         <input type="hidden" name="result" value="success">
         <button type="submit" class="paid">Paid</button>
     </form>
 
-    <form method="post" action="{{ route('webhook-client-fake') }}">
+    <form method="post" action="{{ route('billing.webhook', ['gateway' => 'fake']) }}">
         <input type="hidden" name="payment_id" value="{{ $payment->id }}">
         <input type="hidden" name="result" value="failure">
         <button type="submit" class="rejected">Rejected</button>

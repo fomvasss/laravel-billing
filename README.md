@@ -124,11 +124,12 @@ $result = app(BillingManager::class)->charge($payment, new ChargeOptions(
     successUrl: route('order.thanks', $order),
 ));
 
-// $result->url    — redirect-style gateways (Monobank, Stripe, Hutko)
-// $result->form   — auto-submit form gateways (LiqPay, WayForPay): ['action' => ..., 'fields' => [...]]
+return redirect($payment->payment_url);
 ```
 
-`charge()` writes `external_id`/`payment_url`/`payment_url_expires_at` back onto `$payment` — safe to call again on the same `Payment` once the link expires (each driver decides its own TTL).
+`charge()` writes `external_id`/`payment_url`/`payment_url_expires_at` back onto `$payment` — safe to call again on the same `Payment` once the link expires (each driver decides its own TTL). `payment_url` is always a plain, redirectable link, no matter which gateway: even LiqPay, whose checkout page only accepts a client-submitted form, gets one — the form is cached and served through a package-owned page that submits it for you.
+
+If you need the raw driver result instead (building your own API response for a SPA, say): `$result->url` is set for every gateway except LiqPay, which sets `$result->form` (`['action' => ..., 'fields' => [...]]`) instead — POST those fields to that action yourself.
 
 ### Manual/offline payments
 

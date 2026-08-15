@@ -24,6 +24,7 @@ use Fomvasss\Billing\Gateways\Stripe\StripeSignatureValidator;
 use Fomvasss\Billing\Gateways\WayForPay\WayForPayGateway;
 use Fomvasss\Billing\Gateways\WayForPay\WayForPaySignatureValidator;
 use Fomvasss\Billing\Gateways\WayForPay\WayForPayWebhookResponder;
+use Fomvasss\Billing\Http\Controllers\CheckoutFormController;
 use Fomvasss\Billing\Http\Controllers\WebhookController;
 use Fomvasss\Billing\Listeners\HandleSubscriptionPaymentOutcome;
 use Fomvasss\Billing\Support\DefaultCredentialResolver;
@@ -52,7 +53,10 @@ class BillingServiceProvider extends ServiceProvider
             $this->publishMigrations();
         }
 
+        $this->loadViewsFrom(__DIR__ . '/../resources/views', 'billing');
+
         $this->registerWebhookRoute();
+        $this->registerCheckoutFormRoute();
         $this->registerFakeGateway();
         $this->registerBuiltInGateways();
         $this->registerListeners();
@@ -119,6 +123,21 @@ class BillingServiceProvider extends ServiceProvider
             ->name('billing.webhook');
     }
 
+    /**
+     * The redirect target `BillingManager::charge()` points `payment_url` at for a form-only
+     * gateway (currently just LiqPay) — see CheckoutFormController and "PaymentResult — url чи
+     * form" in the package plan. Registered unconditionally (unlike the fake-gateway route) since
+     * LiqPay is a real, always-available built-in gateway, not local/testing-only.
+     */
+    protected function registerCheckoutFormRoute(): void
+    {
+        // 'web' — needed for SubstituteBindings to resolve {payment} into a real Payment model;
+        // without it the controller gets a fresh, empty Payment (id=null) instead of a 404 on a
+        // genuinely missing route param, which is the wrong kind of 404 for the wrong reason.
+        Route::middleware('web')->get('billing/checkout/{payment}', [CheckoutFormController::class, 'show'])
+            ->name('billing.checkout-form');
+    }
+
     protected function registerListeners(): void
     {
         Event::listen(PaymentSucceeded::class, [HandleSubscriptionPaymentOutcome::class, 'handlePaymentSucceeded']);
@@ -153,7 +172,6 @@ class BillingServiceProvider extends ServiceProvider
             ->extend('fake', FakeGateway::class)
             ->registerWebhook('fake', FakeSignatureValidator::class);
 
-        $this->loadViewsFrom(__DIR__ . '/../resources/views', 'billing');
         $this->loadRoutesFrom(__DIR__ . '/../routes/fake.php');
     }
 

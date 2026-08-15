@@ -23,12 +23,18 @@ use Illuminate\Support\Facades\Http;
 use Fomvasss\Billing\Webhooks\BillingWebhookCall;
 
 /**
- * https://secure.wayforpay.com/pay (checkout form) + https://api.wayforpay.com/api (server-server,
- * CHECK_STATUS/CHARGE). Verified against wiki.wayforpay.com "Accept payment (Purchase)"/"Checking
- * of payment status"/"To accept payment host2host (Charge)" and the official PHP SDK
- * (github.com/wayforpay/php-sdk, `src/Request/ChargeRequest.php` — signature and acknowledgment-
- * response formats were NOT in dropshop's reference at the level of detail needed (see
- * WayForPayWebhookResponder).
+ * https://secure.wayforpay.com/pay?behavior=offline (host2host Purchase, returns a redirectable
+ * `url` — no client-submitted form) + https://api.wayforpay.com/api (server-server, CHECK_STATUS/
+ * CHARGE). Verified against wiki.wayforpay.com "Accept payment (Purchase)"/"Checking of payment
+ * status"/"To accept payment host2host (Charge)" and the official PHP SDK (github.com/wayforpay/
+ * php-sdk, `src/Request/ChargeRequest.php` — signature and acknowledgment-response formats were
+ * NOT in dropshop's reference at the level of detail needed (see WayForPayWebhookResponder)).
+ *
+ * `?behavior=offline` (documented for mobile apps, but works the same for any server-to-server
+ * caller) is what `dropshop`'s WayForPay integration actually uses in production instead of the
+ * client-submitted checkout form the plain (non-offline) `/pay` endpoint requires — same signed
+ * request either way, this driver just adds the query flag and reads `url` back synchronously
+ * instead of handing the browser a form to POST.
  *
  * `amount` — decimal major units (e.g. "100.00" UAH), same as LiqPay, not minor units.
  *
@@ -79,7 +85,16 @@ class WayForPayGateway extends AbstractGateway implements ChecksPaymentStatus, T
             ...$fields['productName'], ...$fields['productCount'], ...$fields['productPrice'],
         ]);
 
-        return new PaymentResult(form: ['action' => self::CHECKOUT_URL, 'fields' => $fields]);
+        $data = Http::timeout(15)->retry(2, 200)
+            ->post(self::CHECKOUT_URL . '?behavior=offline', $fields)
+            ->throw()
+            ->json();
+
+        if (! isset($data['url'])) {
+            throw new BillingException('WayForPay: purchase request did not return a url: ' . json_encode($data));
+        }
+
+        return new PaymentResult(url: $data['url']);
     }
 
     public function handleWebhook(BillingWebhookCall $webhookCall): WebhookResult

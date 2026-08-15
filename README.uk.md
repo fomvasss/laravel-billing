@@ -120,11 +120,12 @@ $result = app(BillingManager::class)->charge($payment, new ChargeOptions(
     successUrl: route('order.thanks', $order),
 ));
 
-// $result->url    — редірект-стиль (Monobank, Stripe, Hutko)
-// $result->form   — auto-submit форма (LiqPay, WayForPay): ['action' => ..., 'fields' => [...]]
+return redirect($payment->payment_url);
 ```
 
-`charge()` записує `external_id`/`payment_url`/`payment_url_expires_at` назад у `$payment` — безпечно викликати повторно на тому самому `Payment`, коли посилання спливло (TTL визначає кожен драйвер сам).
+`charge()` записує `external_id`/`payment_url`/`payment_url_expires_at` назад у `$payment` — безпечно викликати повторно на тому самому `Payment`, коли посилання спливло (TTL визначає кожен драйвер сам). `payment_url` — завжди плоске, редіректабельне посилання, незалежно від гейтвея: навіть LiqPay, чия платіжна сторінка приймає лише клієнтський POST-форми, отримує таке — форма кешується й віддається через власну сторінку пакета, яка сама її сабмітить.
+
+Якщо потрібен сирий результат драйвера напряму (власна API-відповідь для SPA, наприклад): `$result->url` заповнений для будь-якого гейтвея, крім LiqPay, де замість нього `$result->form` (`['action' => ..., 'fields' => [...]]`) — ці поля треба самим відправити POST-ом на вказаний `action`.
 
 ### Ручні/офлайн платежі
 

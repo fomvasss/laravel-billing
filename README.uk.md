@@ -63,20 +63,28 @@ return redirect($result->url); // локальна сторінка з кноп�
 
 ## Налаштування реального гейтвея
 
-```php
-// config/billing.php
-'gateways' => [
-    'monobank' => [
-        'token' => env('MONOBANK_TOKEN'),
-    ],
-    'liqpay' => [
-        'public_key' => env('LIQPAY_PUBLIC_KEY'),
-        'private_key' => env('LIQPAY_PRIVATE_KEY'),
-    ],
-],
+Опублікований конфіг уже містить заготовки всіх п'яти вбудованих гейтвеїв — лишається заповнити `.env` для тих, якими користуєтесь:
+
+```dotenv
+MONOBANK_TOKEN=
+
+LIQPAY_PUBLIC_KEY=
+LIQPAY_PRIVATE_KEY=
+
+WAYFORPAY_MERCHANT_ACCOUNT=
+WAYFORPAY_MERCHANT_DOMAIN=
+WAYFORPAY_SECRET_KEY=
+
+STRIPE_SECRET_KEY=
+STRIPE_WEBHOOK_SECRET=
+
+HUTKO_MERCHANT_ID=
+HUTKO_SECRET_KEY=
 ```
 
-Які ключі писати під `config('billing.gateways.{gateway}')` — у кожного драйвера є статичний `credentialFields()`, що це точно описує, викликається прямо на класі, без інстанції/кредів:
+Решту не чіпайте — незаповнений гейтвей просто лишається неналаштованим і впаде лише тоді, коли ним реально спробують провести оплату.
+
+Той самий перелік у рантаймі, якщо будуєте UI налаштувань, а не читаєте файл — у кожного драйвера є статичний `credentialFields()`, викликається прямо на класі, без інстанції/кредів:
 
 ```php
 use Fomvasss\Billing\Gateways\Monobank\MonobankGateway;

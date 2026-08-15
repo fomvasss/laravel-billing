@@ -67,20 +67,28 @@ Clicking a button POSTs straight to the real, registered webhook endpoint — th
 
 ## Configuring a real gateway
 
-```php
-// config/billing.php
-'gateways' => [
-    'monobank' => [
-        'token' => env('MONOBANK_TOKEN'),
-    ],
-    'liqpay' => [
-        'public_key' => env('LIQPAY_PUBLIC_KEY'),
-        'private_key' => env('LIQPAY_PRIVATE_KEY'),
-    ],
-],
+The published config already stubs all five built-in gateways — just fill in the `.env` values for the ones you use:
+
+```dotenv
+MONOBANK_TOKEN=
+
+LIQPAY_PUBLIC_KEY=
+LIQPAY_PRIVATE_KEY=
+
+WAYFORPAY_MERCHANT_ACCOUNT=
+WAYFORPAY_MERCHANT_DOMAIN=
+WAYFORPAY_SECRET_KEY=
+
+STRIPE_SECRET_KEY=
+STRIPE_WEBHOOK_SECRET=
+
+HUTKO_MERCHANT_ID=
+HUTKO_SECRET_KEY=
 ```
 
-Which keys go under `config('billing.gateways.{gateway}')` — every driver has a static `credentialFields()` describing exactly that, callable straight on the class, no instance/credentials needed:
+Leave the rest alone — an unset gateway stays unconfigured and only ever errors if something actually tries to charge through it.
+
+Same list at runtime, if you're building a settings UI rather than reading a file — every driver has a static `credentialFields()`, callable straight on the class, no instance/credentials needed:
 
 ```php
 use Fomvasss\Billing\Gateways\Monobank\MonobankGateway;

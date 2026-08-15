@@ -117,9 +117,41 @@ return [
     | — config('billing.gateways.{$gateway}'), tenant-agnostic. Bind your own
     | CredentialResolverContract implementation for dynamic per-tenant credentials.
     |
+    | Every built-in gateway is stubbed below; leave the ones you don't use
+    | alone — an unset env just means that gateway stays unconfigured, and it
+    | only ever fails when something actually tries to charge through it. Each
+    | driver also declares this same field list at runtime via its static
+    | credentialFields(), which is what an admin settings UI should read.
+    |
     */
 
     'gateways' => [
+
+        'monobank' => [
+            'token' => env('MONOBANK_TOKEN'),
+            'link_ttl_minutes' => env('MONOBANK_LINK_TTL_MINUTES', 60),
+        ],
+
+        'liqpay' => [
+            'public_key' => env('LIQPAY_PUBLIC_KEY'),
+            'private_key' => env('LIQPAY_PRIVATE_KEY'),
+        ],
+
+        'wayforpay' => [
+            'merchant_account' => env('WAYFORPAY_MERCHANT_ACCOUNT'),
+            'merchant_domain' => env('WAYFORPAY_MERCHANT_DOMAIN'),
+            'secret_key' => env('WAYFORPAY_SECRET_KEY'),
+        ],
+
+        'stripe' => [
+            'secret_key' => env('STRIPE_SECRET_KEY'),
+            'webhook_secret' => env('STRIPE_WEBHOOK_SECRET'),
+        ],
+
+        'hutko' => [
+            'merchant_id' => env('HUTKO_MERCHANT_ID'),
+            'secret_key' => env('HUTKO_SECRET_KEY'),
+        ],
 
     ],
 

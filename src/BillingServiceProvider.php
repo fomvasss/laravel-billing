@@ -7,6 +7,8 @@ namespace Fomvasss\Billing;
 use Fomvasss\Billing\Contracts\CredentialResolverContract;
 use Fomvasss\Billing\Gateways\Fake\FakeGateway;
 use Fomvasss\Billing\Gateways\Fake\FakeSignatureValidator;
+use Fomvasss\Billing\Gateways\Monobank\MonobankGateway;
+use Fomvasss\Billing\Gateways\Monobank\MonobankSignatureValidator;
 use Fomvasss\Billing\Support\DefaultCredentialResolver;
 use Fomvasss\Billing\Support\WebhookConfigRegistrar;
 use Illuminate\Support\ServiceProvider;
@@ -32,6 +34,7 @@ class BillingServiceProvider extends ServiceProvider
         }
 
         $this->registerFakeGateway();
+        $this->registerBuiltInGateways();
     }
 
     /** local/testing only — BillingManager::extend() itself refuses "fake" everywhere else. */
@@ -47,5 +50,18 @@ class BillingServiceProvider extends ServiceProvider
 
         $this->loadViewsFrom(__DIR__ . '/../resources/views', 'billing');
         $this->loadRoutesFrom(__DIR__ . '/../routes/fake.php');
+    }
+
+    /**
+     * The 5 gateways priorit­ized for v1 ship inside core (see "Погоджені рішення" in the package
+     * plan) — unlike third-party drivers, which register themselves via extend() from their own
+     * satellite package's ServiceProvider::boot().
+     */
+    protected function registerBuiltInGateways(): void
+    {
+        $manager = $this->app->make(BillingManager::class);
+
+        $manager->extend('monobank', MonobankGateway::class);
+        WebhookConfigRegistrar::register('monobank', MonobankSignatureValidator::class);
     }
 }

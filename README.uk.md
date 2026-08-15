@@ -430,11 +430,7 @@ $subscription = Subscription::create([
 ]);
 ```
 
-Перша оплата токенізує картку (`saveCard: true`, див. "Токенізація" вище) — усе далі автоматично, **але лише якщо це увімкнено**:
-
-1. `config('billing.schedule.enabled', true)` (або власний запис у cron, що викликає ту саму команду) — вимкнено за замовчуванням, бо стосується грошей.
-2. Після увімкнення `billing:process-recurring-charges` виконується щогодини, знаходить підписки з `current_period_ends_at <= now()` і списує зі збереженого `PaymentMethod` через `chargePaymentMethod()`. Це лише ІНІЦІЮЄ списання.
-3. Результат приходить пізніше через звичайний webhook pipeline → `PaymentSucceeded`/`PaymentFailed` → власний лістенер пакету посуває `current_period_ends_at` на місяць при успіху, або запускає grace/dunning-цикл при невдачі (`grace_ends_at`, `recurring_attempts`, аж до `max_recurring_attempts` → `SubscriptionCancelled`).
+Перша оплата токенізує картку (`saveCard: true`, див. "Токенізація" вище). Саме автопродовження — це `billing:process-recurring-charges`, вимкнена за замовчуванням, тож треба увімкнути розклад (`config('billing.schedule.enabled', true)`, що саме вона робить і коли запускається — таблиця вище); усе решта (посування періоду, dunning при невдачі) уже підключено, більше нічого писати не треба.
 
 Крок 3 самим писати не треба — уже підключено. Потрібні лише крок 1 і збережений `PaymentMethod`.
 

@@ -434,11 +434,7 @@ $subscription = Subscription::create([
 ]);
 ```
 
-The first charge tokenizes the card (`saveCard: true`, see "Tokenization" above) — everything after that is automatic, **but only if you turn it on**:
-
-1. `config('billing.schedule.enabled', true)` (or your own cron entry calling the same command) — off by default, since it touches money.
-2. Once enabled, `billing:process-recurring-charges` runs hourly, finds subscriptions where `current_period_ends_at <= now()`, and charges the saved `PaymentMethod` via `chargePaymentMethod()`. This only *initiates* the charge.
-3. The outcome resolves later through the normal webhook pipeline → `PaymentSucceeded`/`PaymentFailed` → the package's own listener advances `current_period_ends_at` by another month on success, or starts the grace/dunning cycle on failure (`grace_ends_at`, `recurring_attempts`, up to `max_recurring_attempts` → `SubscriptionCancelled`).
+The first charge tokenizes the card (`saveCard: true`, see "Tokenization" above). Auto-renewal itself is `billing:process-recurring-charges` — off by default, so turn on the schedule (`config('billing.schedule.enabled', true)`, see the table above for what it does and when it runs); everything past that (advancing the period, dunning on failure) is already wired up, nothing else to write.
 
 You don't write any of step 3 yourself — it's already wired up. You only need step 1 and a saved `PaymentMethod`.
 

@@ -14,6 +14,10 @@ use Spatie\WebhookClient\Models\WebhookCall;
  */
 class BillingWebhookCall extends WebhookCall
 {
+    // Eloquent guesses the table from THIS class's basename ("billing_webhook_calls"), not the
+    // parent's — without this override it would miss the real "webhook_calls" table entirely.
+    protected $table = 'webhook_calls';
+
     protected $casts = [
         'headers' => 'array',
         'payload' => 'array',

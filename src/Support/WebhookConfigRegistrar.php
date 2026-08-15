@@ -27,8 +27,21 @@ final class WebhookConfigRegistrar
      */
     public static function register(string $name, string $signatureValidator, ?string $url = null): void
     {
+        // WebhookConfigRepository builds a WebhookConfig for EVERY entry in webhook-client.configs
+        // eagerly, on first resolve — including spatie's own unfilled "default" stub (published
+        // as-is, process_webhook_job: ''), which crashes construction for ANY webhook request, not
+        // just its own. Drop entries that don't point at a real ProcessWebhookJob subclass instead
+        // of blindly appending to whatever's already there.
+        $existing = collect(config('webhook-client.configs', []))
+            ->filter(fn (array $config) => is_subclass_of(
+                $config['process_webhook_job'] ?? '',
+                \Spatie\WebhookClient\Jobs\ProcessWebhookJob::class
+            ))
+            ->values()
+            ->all();
+
         config(['webhook-client.configs' => [
-            ...config('webhook-client.configs', []),
+            ...$existing,
             [
                 'name' => $name,
                 'signing_secret' => '',

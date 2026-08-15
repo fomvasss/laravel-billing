@@ -10,6 +10,38 @@ Universal billing/payments package for Laravel: pluggable payment gateways, one-
 
 Built-in gateways: **LiqPay**, **WayForPay**, **Monobank Acquiring**, **Stripe**, **Hutko**. Add your own with a single `Billing::extend()` call — no core changes required.
 
+## Flow
+
+```mermaid
+sequenceDiagram
+    actor Customer
+    participant App as Your app
+    participant Billing as BillingManager
+    participant Driver as Gateway driver
+    participant Bank as Payment gateway
+
+    App->>Billing: charge($payment, $options)
+    Billing->>Driver: charge($payment, $options)
+    Driver->>Bank: create checkout
+    Bank-->>Driver: checkout URL / form
+    Driver-->>Billing: PaymentResult
+    Billing-->>App: external_id/payment_url written onto $payment
+    App-->>Customer: redirect to checkout
+
+    Customer->>Bank: pays
+    Bank-->>Customer: redirect to successUrl (UX only — never trusted as confirmation)
+
+    Bank->>App: webhook POST (server-to-server)
+    Note over App: SignatureValidator verifies,<br/>WebhookCall stored, ProcessWebhookJob queued
+    App->>Driver: handleWebhook($webhookCall)
+    Driver-->>App: WebhookResult
+    Note over App: Payment.status updated,<br/>dedup claimed on webhook_calls
+    App->>App: PaymentSucceeded event
+    App-->>App: your listener reacts (fulfil order, etc.)
+```
+
+Two independent paths, on purpose: the browser redirect (top half) is UX only, the webhook (bottom half) is the only thing that ever changes `Payment.status` — see "Webhooks" below.
+
 ## Requirements
 
 - PHP ^8.3

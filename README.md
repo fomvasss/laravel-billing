@@ -556,6 +556,29 @@ foreach (['base' => 'stripe', 'ai-addon' => 'stripe', 'channel-viber' => 'wayfor
 
 Cancelling or lapsing one doesn't touch the others — each row is its own independent lifecycle.
 
+## Money
+
+Every amount in this package — `payments.amount`, `prices.amount`, `Money`, receipt items — is an **integer in the currency's minor units** (kopiykas/cents): `10000` is 100.00. Same convention Stripe, Monobank and most PSPs use, and it keeps rounding errors out of money by construction.
+
+Your own app storing prices as `decimal(10,2)` is perfectly compatible — you convert at the boundary, and `Money` has the conversion so you don't have to remember the trap:
+
+```php
+use Fomvasss\Billing\Support\Money;
+
+$amount = Money::fromDecimal($product->price, 'UAH'); // '19.99' or 19.99 → 1999
+$amount->toDecimal();                                  // back to '19.99' for your invoice/UI
+
+Payment::create([
+    'amount' => $amount->amount,
+    'currency_code' => $amount->currency,
+    // ...
+]);
+```
+
+The trap it exists for: `(int) (19.99 * 100)` is **1998**, not 1999 — `19.99` has no exact binary representation, so the product is `1998.9999999999998` and the cast truncates. `Money::fromDecimal()` rounds. Eloquent's `decimal:2` cast returns a *string*, which sidesteps the issue on the way in — but only until something casts it to float, so route it through `fromDecimal()` anyway.
+
+Gateways that want decimal major units on the wire (LiqPay, WayForPay) convert inside their own driver — never something you deal with.
+
 ## Model helpers
 
 Things you'd otherwise write yourself in every consumer:

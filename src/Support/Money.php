@@ -15,6 +15,23 @@ final readonly class Money
         public string $currency,
     ) {}
 
+    /**
+     * Bridge from however your own app stores prices — a `decimal:2` cast (a string, in Eloquent),
+     * a float, or a plain number. round() before the int cast is the whole point: `(int) (19.99 *
+     * 100)` is 1998, not 1999, because 19.99 has no exact binary representation. Losing a kopiyka
+     * per line item is the classic version of this bug.
+     */
+    public static function fromDecimal(string|float|int $amount, string $currency): self
+    {
+        return new self((int) round((float) $amount * 100), $currency);
+    }
+
+    /** Back to the decimal string your own columns/invoices use — "19.99", never a float. */
+    public function toDecimal(): string
+    {
+        return number_format($this->amount / 100, 2, '.', '');
+    }
+
     public function isSameCurrency(self $other): bool
     {
         return $this->currency === $other->currency;

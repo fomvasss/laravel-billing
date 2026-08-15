@@ -6,38 +6,6 @@
 
 Вбудовані гейтвеї: **LiqPay**, **WayForPay**, **Monobank Acquiring**, **Stripe**, **Hutko**. Додати власний — один виклик `Billing::extend()`, без правок ядра.
 
-## Схема послідовності
-
-```mermaid
-sequenceDiagram
-    actor Customer as Клієнт
-    participant App as Ваш застосунок
-    participant Billing as BillingManager
-    participant Driver as Драйвер гейтвея
-    participant Bank as Платіжний гейтвей
-
-    App->>Billing: charge($payment, $options)
-    Billing->>Driver: charge($payment, $options)
-    Driver->>Bank: створення чекауту
-    Bank-->>Driver: URL чекауту / форма
-    Driver-->>Billing: PaymentResult
-    Billing-->>App: external_id/payment_url записано в $payment
-    App-->>Customer: редірект на чекаут
-
-    Customer->>Bank: оплачує
-    Bank-->>Customer: редірект на successUrl (лише UX — ніколи не джерело підтвердження)
-
-    Bank->>App: webhook POST (сервер-сервер)
-    Note over App: SignatureValidator перевіряє підпис,<br/>WebhookCall збережено, ProcessWebhookJob у черзі
-    App->>Driver: handleWebhook($webhookCall)
-    Driver-->>App: WebhookResult
-    Note over App: Payment.status оновлено,<br/>дедуп-клейм на webhook_calls
-    App->>App: подія PaymentSucceeded
-    App-->>App: ваш лістенер реагує (фулфілмент замовлення тощо)
-```
-
-Два незалежні шляхи, навмисно: редірект браузера (верхня половина) — лише UX, вебхук (нижня половина) — єдине, що коли-небудь змінює `Payment.status`, див. "Вебхуки" нижче.
-
 ## Вимоги
 
 - PHP ^8.3
@@ -173,6 +141,38 @@ Payment::create([
 ```
 
 `paid_at` виставляється автоматично в момент, коли `status` стає `paid`.
+
+## Схема послідовності
+
+```mermaid
+sequenceDiagram
+    actor Customer as Клієнт
+    participant App as Ваш застосунок
+    participant Billing as BillingManager
+    participant Driver as Драйвер гейтвея
+    participant Bank as Платіжний гейтвей
+
+    App->>Billing: charge($payment, $options)
+    Billing->>Driver: charge($payment, $options)
+    Driver->>Bank: створення чекауту
+    Bank-->>Driver: URL чекауту / форма
+    Driver-->>Billing: PaymentResult
+    Billing-->>App: external_id/payment_url записано в $payment
+    App-->>Customer: редірект на чекаут
+
+    Customer->>Bank: оплачує
+    Bank-->>Customer: редірект на successUrl (лише UX — ніколи не джерело підтвердження)
+
+    Bank->>App: webhook POST (сервер-сервер)
+    Note over App: SignatureValidator перевіряє підпис,<br/>WebhookCall збережено, ProcessWebhookJob у черзі
+    App->>Driver: handleWebhook($webhookCall)
+    Driver-->>App: WebhookResult
+    Note over App: Payment.status оновлено,<br/>дедуп-клейм на webhook_calls
+    App->>App: подія PaymentSucceeded
+    App-->>App: ваш лістенер реагує (фулфілмент замовлення тощо)
+```
+
+Два незалежні шляхи, навмисно: редірект браузера (верхня половина) — лише UX, вебхук (нижня половина) — єдине, що коли-небудь змінює `Payment.status` — деталі нижче.
 
 ## Вебхуки
 

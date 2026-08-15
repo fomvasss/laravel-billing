@@ -240,24 +240,7 @@ The route name (`billing.webhook`) never changes, so `AbstractGateway::webhookUr
 
 ### Writing your own gateway
 
-Four required methods (`PaymentGatewayContract`), everything else opt-in:
-
-```php
-use Fomvasss\Billing\Gateways\AbstractGateway; // optional — shared debug log + webhookUrl()/successUrl()/failUrl() helpers
-use Fomvasss\Billing\Contracts\RefundsPayments;
-use Fomvasss\Billing\Webhooks\BillingWebhookCall;
-
-class MyGateway extends AbstractGateway implements RefundsPayments
-{
-    public function charge(Payment $payment, ChargeOptions $options = new ChargeOptions()): PaymentResult { /* ... */ }
-    public function handleWebhook(BillingWebhookCall $webhookCall): WebhookResult { /* ... */ }
-    public static function label(): string { return 'My Gateway'; }
-    public static function credentialFields(): array { return [/* ['name' => ..., 'type' => ..., 'secret' => bool, 'help' => ...] */]; }
-    public static function supportedCurrencies(): array { return ['UAH']; }
-
-    public function refund(Payment $payment, ?Money $amount = null): PaymentResult { /* ... */ }
-}
-```
+Four required methods (`PaymentGatewayContract`), everything else opt-in, and one call to register it:
 
 ```php
 // in your ServiceProvider::boot() — your own project or a satellite package (fomvasss/laravel-billing-mygateway)
@@ -267,7 +250,9 @@ Billing::extend('mygateway', MyGateway::class)
     ->registerWebhook('mygateway', MyGatewaySignatureValidator::class);
 ```
 
-`registerWebhook()` is the one call that wires the incoming webhook route for this gateway — every gateway shares a single `POST /billing/webhooks/{gateway}` route, resolved through this registry, so there's no per-gateway config file to touch. Pass a third argument if your gateway needs a specific acknowledgment body instead of a bare `200` (WayForPay does — see `WayForPayWebhookResponder` for a worked example).
+No route to declare and no config file to touch — every gateway shares the single `POST /billing/webhooks/{gateway}` route, resolved through this registry at request time.
+
+**→ [Full guide: writing a gateway](docs/writing-a-gateway.md)** — the contract method by method, signature validation, the three tokenization shapes, custom webhook acknowledgments, testing without merchant credentials, and the verification pitfalls that cost us real bugs.
 
 ## Subscriptions
 

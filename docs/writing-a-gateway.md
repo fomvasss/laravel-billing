@@ -1,0 +1,277 @@
+# Writing your own gateway
+
+Everything needed to add a payment gateway this package doesn't ship with — in your own app, or as a satellite package (`fomvasss/laravel-billing-yourgateway`). No core changes required either way.
+
+The five built-in drivers (`src/Gateways/`) are the reference implementations; each one is a real, verified integration, so reading the closest match to your gateway is usually faster than starting from scratch.
+
+## Before you write code: verify against the official source
+
+The single most expensive class of bug here is a wrong signature formula or a misread field name, and it's almost always caused by trusting the wrong source. Two real examples from building this package's own drivers:
+
+- **LiqPay's own docs contradict themselves.** The prose on the token-payment page says the signature is `sha3-256`; every code sample on that *same page* (bash, php, java, python, ruby, go, ...) uses `sha1`. The SDK confirms `sha1`. We hit this twice, from two different pages, months apart.
+- **Hutko looked like it had no tokenization at all.** The official WooCommerce plugin — which is what we used as the reference, since the docs site doesn't render for a plain fetch — has no card-attach call anywhere. Conclusion drawn: "no tokenization". Wrong: it's in the docs, as `rectoken` in the shared response schema. "The reference implementation doesn't show X" only proves X isn't in *that* reference.
+
+So, in order of trustworthiness: **official SDK source > official docs code samples > official docs prose > someone else's integration**. When two disagree, the SDK wins.
+
+Practical note: several Ukrainian gateway doc sites are JS-rendered and return an empty shell to `curl`/fetch. `https://r.jina.ai/<url>` renders them; `curl` against the SDK's GitHub raw files works for the rest.
+
+## The required contract
+
+Four methods, `Fomvasss\Billing\Contracts\PaymentGatewayContract`. That's the whole entry ticket:
+
+```php
+use Fomvasss\Billing\Contracts\PaymentGatewayContract;
+use Fomvasss\Billing\DTO\ChargeOptions;
+use Fomvasss\Billing\DTO\PaymentResult;
+use Fomvasss\Billing\DTO\WebhookResult;
+use Fomvasss\Billing\Models\Payment;
+use Fomvasss\Billing\Webhooks\BillingWebhookCall;
+
+class AcmePayGateway implements PaymentGatewayContract
+{
+    public function charge(Payment $payment, ChargeOptions $options = new ChargeOptions()): PaymentResult;
+    public function handleWebhook(BillingWebhookCall $webhookCall): WebhookResult;
+
+    public static function label(): string;              // human name for a settings UI
+    public static function credentialFields(): array;    // field schema, see below
+    public static function supportedCurrencies(): array; // ISO codes this gateway accepts
+}
+```
+
+Extend `AbstractGateway` instead of implementing the interface directly and you get a constructor (`$credentials`, `$gatewayName`), a debug logger, and the `webhookUrl()`/`successUrl()`/`failUrl()`/`persistPaymentMethod()` helpers. Both paths are equally supported — the base class just saves boilerplate.
+
+### `charge()`
+
+Create the checkout on the gateway's side and return where to send the customer:
+
+```php
+public function charge(Payment $payment, ChargeOptions $options = new ChargeOptions()): PaymentResult
+{
+    $data = $this->http()->post('/checkout', [
+        'amount' => $payment->amount,              // ALWAYS minor units — see "Money" below
+        'currency' => $payment->currency_code,
+        'reference' => (string) $payment->id,      // so the webhook can find this row again
+        'callback_url' => $this->webhookUrl($options),
+        'return_url' => $this->successUrl($options),
+        'description' => $options->description,
+    ])->throw()->json();
+
+    return new PaymentResult(
+        url: $data['checkout_url'],
+        expiresAt: now()->addMinutes(60),   // whatever TTL this gateway gives the link
+        externalId: $data['id'],            // written back onto $payment->external_id
+    );
+}
+```
+
+`$payment` is passed rather than a bare amount because the driver needs `$payment->id` (or `link_token`) as the merchant reference it hands the gateway — that's what makes the later webhook resolvable back to this row.
+
+**`url` vs `form`.** Most gateways have a server-side "create checkout, get a link" call — return `url`. A few only accept a browser-submitted POST with signed fields and have no such call (LiqPay is the one built-in example) — return `form: ['action' => ..., 'fields' => [...]]` instead. `BillingManager::charge()` handles both, and either way `$payment->payment_url` ends up a plain redirectable link, so consumers never branch on which kind you returned.
+
+**Money is always minor units** in `$payment->amount` (kopiykas/cents), package-wide. If your gateway wants decimal major units, convert inside the driver (`number_format($minorUnits / 100, 2, '.', '')`), never push that onto the caller.
+
+### `handleWebhook()`
+
+Runs queued, long after the HTTP request is gone — you get the stored payload, not a live `Request`. Signature verification already happened synchronously (see below), so by this point the payload is trusted.
+
+```php
+public function handleWebhook(BillingWebhookCall $webhookCall): WebhookResult
+{
+    $payload = $webhookCall->payload;
+
+    $payment = Payment::findOrFail($payload['reference']); // whatever you set in charge()
+
+    $status = match ($payload['status'] ?? null) {
+        'approved' => PaymentStatus::Paid,
+        'declined' => PaymentStatus::Failed,
+        'expired' => PaymentStatus::Canceled,
+        default => null, // intermediate/unknown — not a terminal state
+    };
+
+    if ($status === null) {
+        return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
+    }
+
+    $payment->update(['status' => $status, 'external_id' => $payload['id']]);
+
+    return new WebhookResult(
+        type: WebhookEventType::Payment,
+        status: $status === PaymentStatus::Paid ? 'succeeded' : 'failed',
+        payment: $payment,
+        externalId: $payload['id'],   // dedup key, see below
+        raw: $payload,
+    );
+}
+```
+
+Three things worth getting right:
+
+- **Update the `Payment` yourself.** The dispatcher fires events from your `WebhookResult`, but it doesn't write the status — the driver does.
+- **`externalId` is the dedup key.** A `unique(name, external_id)` index on `billing_webhook_calls` is what stops a re-delivered webhook from firing `PaymentSucceeded` twice. Return the gateway's own transaction id, not something you generated.
+- **Unknown/intermediate statuses are `Ignored`, not errors.** Gateways send more states than the package's four (`pending`/`paid`/`failed`/`canceled`); anything non-terminal just means "nothing to do yet".
+
+### `credentialFields()`
+
+The field schema an admin settings UI renders, and the same keys the default resolver reads from `config('billing.gateways.acmepay.*')`:
+
+```php
+public static function credentialFields(): array
+{
+    return [
+        ['name' => 'api_key', 'type' => 'text', 'secret' => true, 'help' => 'API key from the AcmePay dashboard'],
+        ['name' => 'merchant_id', 'type' => 'text', 'secret' => false, 'help' => 'Merchant ID'],
+    ];
+}
+```
+
+Read credentials via `$this->credentials['api_key']` — never `config()` directly inside the driver, or you break per-tenant credential resolution.
+
+## Signature validation
+
+A separate class, run synchronously in `WebhookController` **before** the call is stored or queued:
+
+```php
+use Fomvasss\Billing\Contracts\SignatureValidator;
+
+class AcmePaySignatureValidator implements SignatureValidator
+{
+    public function isValid(Request $request): bool
+    {
+        $expected = hash_hmac('sha256', $request->getContent(), config('billing.gateways.acmepay.api_key'));
+
+        return hash_equals($expected, $request->header('X-Signature', ''));
+    }
+}
+```
+
+Two things the built-in drivers learned the hard way:
+
+- **Use `hash_equals()`**, not `===`, for signature comparison.
+- **If the gateway publishes a rotating key, cache it and retry once on failure** rather than refetching per webhook. `MonobankSignatureValidator` is the worked example: cached for a week, refetched only when verification against the cached key fails, then verified once more before rejecting.
+
+Note the asymmetry: this class runs before the payload is trusted, so it can't look up per-tenant credentials keyed by anything *in* the payload. A genuinely multi-merchant setup needs a per-tenant webhook URL — see the note in `MonobankSignatureValidator`.
+
+## Registration
+
+One call, in your `ServiceProvider::boot()`:
+
+```php
+use Fomvasss\Billing\Facades\Billing;
+
+Billing::extend('acmepay', AcmePayGateway::class)
+    ->registerWebhook('acmepay', AcmePaySignatureValidator::class);
+```
+
+That's it — no route to declare, no config file to touch. Every gateway shares one wildcard route (`POST /billing/webhooks/{gateway}`), resolved through this registry at request time.
+
+A class name, not a closure, so the package can call `label()`/`credentialFields()`/`supportedCurrencies()` statically — a settings UI can list your gateway before any credentials exist.
+
+### Custom webhook acknowledgment
+
+Most gateways accept a bare `200`. If yours needs a specific body, pass a third argument:
+
+```php
+Billing::extend('acmepay', AcmePayGateway::class)
+    ->registerWebhook('acmepay', AcmePaySignatureValidator::class, AcmePayWebhookResponder::class);
+```
+
+```php
+use Fomvasss\Billing\Contracts\WebhookResponder;
+
+class AcmePayWebhookResponder implements WebhookResponder
+{
+    public function respond(Request $request): Response
+    {
+        return response()->json(['received' => true]);
+    }
+}
+```
+
+Worth checking your gateway's docs for this specifically — WayForPay retries a callback for **four days** if it doesn't get back its expected signed acknowledgment, and a bare 200 looks like success from your side while the gateway thinks delivery failed. See `WayForPayWebhookResponder`.
+
+## Optional capabilities
+
+Implement only what your gateway actually does. `BillingManager` checks with `instanceof` and throws a clear `NotSupportedException` otherwise — never a "call to undefined method".
+
+| Contract | Add when the gateway supports |
+|---|---|
+| `RefundsPayments` | Refunds via API (many require doing it by hand in the dashboard — then don't implement this) |
+| `ChecksPaymentStatus` | Polling a payment's current status — used by `billing:reconcile-pending-payments` as the fallback for a lost webhook |
+| `TokenizesPaymentMethod` | Saved cards / off-session recurring charges |
+| `SubscriptionGatewayContract` | Native subscriptions on the gateway's own side (Stripe-style) |
+| `HasReceiptItems` | (on your `Payable`, not the driver) fiscal basket line items |
+
+### `ChecksPaymentStatus`
+
+Cheap to add and genuinely valuable — without it, a payment whose webhook got lost stays `pending` forever. **Update the `Payment` inside `checkStatus()`**, same as `handleWebhook()` does; returning a `WebhookResult` without persisting is a bug we shipped once and had to fix across four drivers at the same time.
+
+### `TokenizesPaymentMethod`
+
+Three shapes exist in the wild, and which one you get decides how you write it:
+
+1. **Synchronous frontend token** (Stripe): the frontend SDK hands your backend a token, `attachPaymentMethod()` persists it directly and dispatches `PaymentMethodAttached` itself.
+2. **Async, separate webhook delivery** (Monobank): the token arrives in its own webhook, distinct from the payment-status one. Return `WebhookResult(type: PaymentMethod, status: 'attached')` from `handleWebhook()` and let `WebhookResultDispatcher` fire the event.
+3. **Async, same delivery as the payment status** (LiqPay, WayForPay, Hutko): the token rides along in the payment-status callback. That `WebhookResult` is already reporting the `Payment` outcome, so persist the method as a side effect and dispatch `PaymentMethodAttached` **directly** — there's no second return value for the dispatcher to work with.
+
+Use `AbstractGateway::persistPaymentMethod()` for the actual row-writing in all three cases; it demotes the previous default and upserts on `(gateway, external_customer_id, external_id)`, deliberately without dispatching, precisely because the three cases dispatch at different times.
+
+## HTTP calls
+
+Always bounded, never a bare `Http::post()` — a hung gateway shouldn't hang a queue worker:
+
+```php
+protected function http(): PendingRequest
+{
+    return Http::baseUrl(self::BASE_URL)
+        ->withToken($this->credentials['api_key'])
+        ->timeout(15)
+        ->retry(2, 200);
+}
+```
+
+One exception worth knowing: **don't retry a charge attempt** unless the gateway supports idempotency keys, or a network blip can double-charge a customer. `StripeGateway::chargePaymentMethod()` overrides the shared retry with `retry(1)` for exactly this reason.
+
+Relatedly, a declined card is a *business outcome*, not a transport failure — return it as a `PaymentResult` rather than throwing, so the caller can record the failure. Only genuine wiring errors (bad credentials, malformed request) should throw.
+
+## Testing without real credentials
+
+You don't need a merchant account to have real confidence. What the built-in drivers do:
+
+```php
+Http::fake(['https://api.acmepay.test/checkout' => Http::response(['checkout_url' => 'https://pay.acmepay.test/abc', 'id' => 'tx_1'])]);
+
+$result = Billing::driver('acmepay')->charge($payment);
+
+$this->assertSame('https://pay.acmepay.test/abc', $result->url);
+Http::assertSent(fn ($request) => $request['reference'] === (string) $payment->id
+    && $request['amount'] === 10000);
+```
+
+And for the signature validator, recompute the expected signature independently in the test — don't call the driver's own `sign()` on both sides, or you're only asserting that a function equals itself:
+
+```php
+$body = json_encode(['status' => 'approved', 'reference' => $payment->id]);
+$signature = hash_hmac('sha256', $body, 'test-key'); // computed here, in the test
+
+$response = $this->call('POST', route('billing.webhook', ['gateway' => 'acmepay']), [], [], [], [
+    'HTTP_X-Signature' => $signature,
+], $body);
+
+$response->assertOk();
+```
+
+Add a tamper case (flip a byte in the body, expect rejection) and, if the gateway has a replay window, a stale-timestamp case.
+
+## Checklist
+
+- [ ] Signature formula verified against the official SDK, not just docs prose
+- [ ] `amount` converted if the gateway wants major units
+- [ ] `charge()` puts `$payment->id` where the webhook will echo it back
+- [ ] `handleWebhook()` updates the `Payment` and returns a real `externalId`
+- [ ] Non-terminal gateway statuses return `Ignored`, not an error
+- [ ] Credentials read from `$this->credentials`, not `config()`
+- [ ] `hash_equals()` in the signature validator; rotating keys cached with one retry
+- [ ] Checked whether the gateway needs a specific acknowledgment body
+- [ ] HTTP calls have `timeout()`; charge attempts aren't blindly retried
+- [ ] Only the capability contracts the gateway actually supports
+- [ ] `Http::fake()` tests for `charge()`, independent signature recomputation for the validator

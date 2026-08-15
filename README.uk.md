@@ -236,24 +236,7 @@ Event::listen(PaymentSucceeded::class, function (PaymentSucceeded $event) {
 
 ### Власний гейтвей
 
-Чотири обов'язкові методи (`PaymentGatewayContract`), решта — опційно:
-
-```php
-use Fomvasss\Billing\Gateways\AbstractGateway; // опційно — спільний debug-лог + хелпери webhookUrl()/successUrl()/failUrl()
-use Fomvasss\Billing\Contracts\RefundsPayments;
-use Fomvasss\Billing\Webhooks\BillingWebhookCall;
-
-class MyGateway extends AbstractGateway implements RefundsPayments
-{
-    public function charge(Payment $payment, ChargeOptions $options = new ChargeOptions()): PaymentResult { /* ... */ }
-    public function handleWebhook(BillingWebhookCall $webhookCall): WebhookResult { /* ... */ }
-    public static function label(): string { return 'My Gateway'; }
-    public static function credentialFields(): array { return [/* ['name' => ..., 'type' => ..., 'secret' => bool, 'help' => ...] */]; }
-    public static function supportedCurrencies(): array { return ['UAH']; }
-
-    public function refund(Payment $payment, ?Money $amount = null): PaymentResult { /* ... */ }
-}
-```
+Чотири обов'язкові методи (`PaymentGatewayContract`), решта — опційно, і один виклик для реєстрації:
 
 ```php
 // у власному ServiceProvider::boot() — проєкт-споживач або сателіт-пакет (fomvasss/laravel-billing-mygateway)
@@ -263,7 +246,9 @@ Billing::extend('mygateway', MyGateway::class)
     ->registerWebhook('mygateway', MyGatewaySignatureValidator::class);
 ```
 
-`registerWebhook()` — той самий виклик, що зводить маршрут вхідного вебхука для цього гейтвея: усі гейтвеї діляться одним маршрутом `POST /billing/webhooks/{gateway}`, резолвиться через цей реєстр — окремого конфіг-файлу на гейтвей не потрібно. Третій аргумент — якщо гейтвей вимагає специфічну відповідь-підтвердження замість голого `200` (так робить WayForPay — приклад у `WayForPayWebhookResponder`).
+Ні маршруту оголошувати, ні конфіг-файлу чіпати — усі гейтвеї діляться одним маршрутом `POST /billing/webhooks/{gateway}`, який резолвиться через цей реєстр у момент запиту.
+
+**→ [Повний гайд: як написати гейтвей](docs/writing-a-gateway.md)** (англійською) — контракт метод за методом, перевірка підпису, три форми токенізації, кастомні відповіді-підтвердження, тестування без реальних кредів і пастки звірки, що коштували нам реальних багів.
 
 ## Підписки
 

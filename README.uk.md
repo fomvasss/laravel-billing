@@ -370,7 +370,7 @@ class Order extends Model implements Payable, HasReceiptItems
 }
 ```
 
-Що саме гейтвей із цим робить — різне: **Monobank** (`basketOrder`), **WayForPay** (`productName[]`/`productPrice[]`/`productCount[]`) і **Stripe** (`line_items`) надсилають кошик як є. **LiqPay** фіскалізує через `rro_info`, чиї позиції посилаються на товари, зареєстровані у вашому кабінеті LiqPay, за їхнім каталожним id — значення, під яке в цій нейтральній структурі поля немає, тож передавайте його явно через `ChargeOptions::$raw` (нижче). У **Hutko** фіскалізації в API немає взагалі, тож там ці позиції просто не використовуються.
+Що саме гейтвей із цим робить — різне: **Monobank** (`basketOrder`), **WayForPay** (`productName[]`/`productPrice[]`/`productCount[]`), **Stripe** (`line_items`) і **Hutko** (`reservation_data` — фіскальний кошик програмного РРО) беруть це як є. Виняток — **LiqPay**: позиції його `rro_info` посилаються на товари, зареєстровані у вашому кабінеті LiqPay, за їхнім каталожним id — значення, під яке в цій нейтральній структурі поля немає, тож саме його передавайте явно через `ChargeOptions::$raw` (нижче).
 
 ```php
 $payment = Payment::create([

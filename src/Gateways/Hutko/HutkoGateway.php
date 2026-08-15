@@ -59,6 +59,7 @@ class HutkoGateway extends AbstractGateway implements TokenizesPaymentMethod
             'sender_email' => $options->customerEmail,
             'response_url' => $this->successUrl($options),
             'server_callback_url' => $this->webhookUrl($options),
+            'reservation_data' => $this->reservationData($options->receiptItems),
         ]));
 
         return new PaymentResult(url: $data['checkout_url']);
@@ -219,6 +220,42 @@ class HutkoGateway extends AbstractGateway implements TokenizesPaymentMethod
         }
 
         return $response;
+    }
+
+    /**
+     * Fiscal basket for Hutko's programmable RRO (docs.hutko.org/uk/docs/page/50) — base64'd JSON,
+     * not a plain array like every other field here. Omitted entirely when there are no receipt
+     * items: Hutko then fiscalizes a single line for `amount` described by `order_desc`, which is
+     * the correct fallback, not an error.
+     *
+     * `price`/`total_amount` are DECIMAL major units here, even though this same request's `amount`
+     * is minor units — Hutko's own inconsistency, converted in one place so it can't leak out.
+     * Whole values serialize without decimals (700.0 → `700`), which their docs explicitly allow
+     * (`15` is listed as a valid price alongside `400.00`) — don't string-format them "to be safe".
+     * `id` is just the line's position in the basket, not a catalog id (unlike LiqPay's rro_info),
+     * so the package's neutral receiptItems shape maps over without anything extra from the merchant.
+     */
+    protected function reservationData(array $receiptItems): ?string
+    {
+        if ($receiptItems === []) {
+            return null;
+        }
+
+        $products = [];
+
+        foreach (array_values($receiptItems) as $index => $item) {
+            $quantity = (float) $item['qty'];
+
+            $products[] = [
+                'id' => $index + 1,
+                'name' => $item['name'],
+                'price' => round($item['unitAmount'] / 100, 2),
+                'total_amount' => round($item['unitAmount'] * $quantity / 100, 2),
+                'quantity' => $quantity,
+            ];
+        }
+
+        return base64_encode(json_encode(['products' => $products], JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR));
     }
 
     /** ksort the fields, prepend the secret key, pipe-join, SHA1 — confirmed verbatim from WC_Oplata_API::getSignature(). */

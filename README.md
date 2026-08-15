@@ -374,7 +374,7 @@ class Order extends Model implements Payable, HasReceiptItems
 }
 ```
 
-What each gateway does with it differs — **Monobank** (`basketOrder`), **WayForPay** (`productName[]`/`productPrice[]`/`productCount[]`) and **Stripe** (`line_items`) send the basket as-is. **LiqPay** fiscalizes through `rro_info`, whose line items reference goods registered in your LiqPay account by their catalog id — a value this neutral shape has no field for, so pass it explicitly via `ChargeOptions::$raw` (see below). **Hutko** has no fiscalization API at all, so the items are simply unused there.
+What each gateway does with it differs — **Monobank** (`basketOrder`), **WayForPay** (`productName[]`/`productPrice[]`/`productCount[]`), **Stripe** (`line_items`) and **Hutko** (`reservation_data`, its programmable-RRO fiscal basket) all take it as-is. The exception is **LiqPay**: its `rro_info` line items reference goods registered in your LiqPay account by their catalog id — a value this neutral shape has no field for — so pass that one explicitly via `ChargeOptions::$raw` (see below).
 
 ```php
 $payment = Payment::create([

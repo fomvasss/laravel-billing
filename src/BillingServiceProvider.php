@@ -11,6 +11,8 @@ use Fomvasss\Billing\Gateways\LiqPay\LiqPayGateway;
 use Fomvasss\Billing\Gateways\LiqPay\LiqPaySignatureValidator;
 use Fomvasss\Billing\Gateways\Monobank\MonobankGateway;
 use Fomvasss\Billing\Gateways\Monobank\MonobankSignatureValidator;
+use Fomvasss\Billing\Gateways\Stripe\StripeGateway;
+use Fomvasss\Billing\Gateways\Stripe\StripeSignatureValidator;
 use Fomvasss\Billing\Gateways\WayForPay\WayForPayGateway;
 use Fomvasss\Billing\Gateways\WayForPay\WayForPaySignatureValidator;
 use Fomvasss\Billing\Gateways\WayForPay\WayForPayWebhookResponder;
@@ -74,5 +76,8 @@ class BillingServiceProvider extends ServiceProvider
 
         $manager->extend('wayforpay', WayForPayGateway::class);
         WebhookConfigRegistrar::register('wayforpay', WayForPaySignatureValidator::class, responder: WayForPayWebhookResponder::class);
+
+        $manager->extend('stripe', StripeGateway::class);
+        WebhookConfigRegistrar::register('stripe', StripeSignatureValidator::class);
     }
 }

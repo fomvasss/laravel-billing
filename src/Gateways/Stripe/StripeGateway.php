@@ -160,30 +160,17 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             ->post("/customers/{$customerId}", ['invoice_settings' => ['default_payment_method' => $paymentMethodId]])
             ->throw();
 
-        PaymentMethod::query()
-            ->where('billable_type', $billable::class)
-            ->where('billable_id', $billable->getKey())
-            ->where('gateway', $this->gatewayName)
-            ->update(['is_default' => false]);
-
-        $method = PaymentMethod::updateOrCreate(
-            [
-                'gateway' => $this->gatewayName,
-                'external_customer_id' => $customerId,
-                'external_id' => $paymentMethodId,
-            ],
-            [
-                'type' => 'card',
-                'brand' => $data['card']['brand'] ?? null,
-                'last4' => $data['card']['last4'] ?? null,
-                'expires_at' => isset($data['card']['exp_year'], $data['card']['exp_month'])
-                    ? Carbon::createFromDate((int) $data['card']['exp_year'], (int) $data['card']['exp_month'], 1)->endOfMonth()
-                    : null,
-                'is_default' => true,
-                'tenant_id' => $billable->tenantId(),
-                'billable_type' => $billable::class,
-                'billable_id' => $billable->getKey(),
-            ],
+        $method = $this->persistPaymentMethod(
+            $billable::class,
+            (string) $billable->getKey(),
+            $billable->tenantId(),
+            $customerId,
+            $paymentMethodId,
+            $data['card']['last4'] ?? null,
+            $data['card']['brand'] ?? null,
+            isset($data['card']['exp_year'], $data['card']['exp_month'])
+                ? Carbon::createFromDate((int) $data['card']['exp_year'], (int) $data['card']['exp_month'], 1)->endOfMonth()
+                : null,
         );
 
         PaymentMethodAttached::dispatch($method);

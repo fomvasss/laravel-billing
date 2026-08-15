@@ -7,6 +7,7 @@ namespace Fomvasss\Billing\Gateways;
 use Fomvasss\Billing\Contracts\PaymentGatewayContract;
 use Fomvasss\Billing\DTO\ChargeOptions;
 use Fomvasss\Billing\Exceptions\BillingException;
+use Fomvasss\Billing\Models\PaymentMethod;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
@@ -54,5 +55,44 @@ abstract class AbstractGateway implements PaymentGatewayContract
         return $options->failUrl
             ?? config('billing.return_urls.failed')
             ?? throw BillingException::missingReturnUrl('failed');
+    }
+
+    /**
+     * Shared by every TokenizesPaymentMethod driver — demotes the previous default PaymentMethod
+     * for this billable+gateway, then upserts by (gateway, external_customer_id, external_id).
+     * Does NOT dispatch PaymentMethodAttached — callers need different dispatch timing (a direct
+     * attachPaymentMethod() call dispatches itself; a webhook-driven attach either returns a
+     * WebhookResult for WebhookResultDispatcher to dispatch, or — when the same webhook call also
+     * carries the payment-status WebhookResult, as LiqPay/WayForPay's does — dispatches directly).
+     */
+    protected function persistPaymentMethod(
+        string $billableType,
+        string $billableId,
+        ?string $tenantId,
+        string $externalCustomerId,
+        string $externalId,
+        ?string $last4 = null,
+        ?string $brand = null,
+        ?\DateTimeInterface $expiresAt = null,
+    ): PaymentMethod {
+        PaymentMethod::query()
+            ->where('billable_type', $billableType)
+            ->where('billable_id', $billableId)
+            ->where('gateway', $this->gatewayName)
+            ->update(['is_default' => false]);
+
+        return PaymentMethod::updateOrCreate(
+            ['gateway' => $this->gatewayName, 'external_customer_id' => $externalCustomerId, 'external_id' => $externalId],
+            [
+                'type' => 'card',
+                'brand' => $brand,
+                'last4' => $last4,
+                'expires_at' => $expiresAt,
+                'is_default' => true,
+                'tenant_id' => $tenantId,
+                'billable_type' => $billableType,
+                'billable_id' => $billableId,
+            ],
+        );
     }
 }

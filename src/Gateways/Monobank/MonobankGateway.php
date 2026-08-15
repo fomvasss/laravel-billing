@@ -144,13 +144,15 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
         $card = collect($wallet)->firstWhere('cardToken', $cardToken)
             ?? throw new BillingException("Monobank: card token not found in wallet \"{$walletId}\".");
 
+        $maskedPan = $card['maskedPan'] ?? null;
+
         $method = $this->persistPaymentMethod(
             $billable::class,
             (string) $billable->getKey(),
             $billable->tenantId(),
             $walletId,
             $cardToken,
-            $card['maskedPan'] ?? null,
+            $maskedPan !== null ? substr($maskedPan, -4) : null,
         );
 
         PaymentMethodAttached::dispatch($method);
@@ -269,6 +271,7 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
     {
         $payment = Payment::findOrFail($payload['reference']);
         $billable = $payment->billable;
+        $maskedPan = $payload['paymentInfo']['maskedPan'] ?? null;
 
         $method = $this->persistPaymentMethod(
             $payment->billable_type,
@@ -276,7 +279,7 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
             $billable instanceof Billable ? $billable->tenantId() : null,
             $payload['walletData']['walletId'],
             $payload['walletData']['cardToken'],
-            $payload['paymentInfo']['maskedPan'] ?? null,
+            $maskedPan !== null ? substr($maskedPan, -4) : null,
             $payload['paymentInfo']['paymentSystem'] ?? null,
         );
 
@@ -288,35 +291,6 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
             paymentMethod: $method,
             externalId: $payload['walletData']['cardToken'],
             raw: $payload,
-        );
-    }
-
-    protected function persistPaymentMethod(
-        string $billableType,
-        string $billableId,
-        ?string $tenantId,
-        string $walletId,
-        string $cardToken,
-        ?string $maskedPan,
-        ?string $brand = null,
-    ): PaymentMethod {
-        PaymentMethod::query()
-            ->where('billable_type', $billableType)
-            ->where('billable_id', $billableId)
-            ->where('gateway', $this->gatewayName)
-            ->update(['is_default' => false]);
-
-        return PaymentMethod::updateOrCreate(
-            ['gateway' => $this->gatewayName, 'external_customer_id' => $walletId, 'external_id' => $cardToken],
-            [
-                'type' => 'card',
-                'brand' => $brand,
-                'last4' => $maskedPan !== null ? substr($maskedPan, -4) : null,
-                'is_default' => true,
-                'tenant_id' => $tenantId,
-                'billable_type' => $billableType,
-                'billable_id' => $billableId,
-            ],
         );
     }
 

@@ -318,9 +318,9 @@ php artisan billing:expire-trials               # daily  — trialing + trial_en
 
 ### Tokenization / saved cards
 
-`process-recurring-charges` (and any off-session charge you trigger yourself) only works for a gateway whose driver implements `TokenizesPaymentMethod` — currently **Stripe and Monobank**. LiqPay/WayForPay don't (yet).
+`process-recurring-charges` (and any off-session charge you trigger yourself) only works for a gateway whose driver implements `TokenizesPaymentMethod` — all 4 gateways that support cards do (**Stripe, Monobank, LiqPay, WayForPay**); Hutko doesn't have a token API to wrap.
 
-Two different mechanisms, same end result — a `PaymentMethod` row you can hand to `chargeWithMethod()`:
+Three mechanisms, same end result — a `PaymentMethod` row you can hand to `chargeWithMethod()`:
 
 **Stripe** — a synchronous frontend-SDK token:
 
@@ -349,7 +349,20 @@ Billing::charge($payment, new ChargeOptions(saveCard: true));
 
 `Billing::driver('monobank')->attachPaymentMethod($user, ['card_token' => $token])` exists too, for the uncommon case of a token already known some other way (verifies it against `GET /wallet` before persisting).
 
-Either way, `chargePaymentMethod()` only *initiates* the charge, same as `charge()`: the outcome still arrives through the usual webhook pipeline (`payment_intent.succeeded`/`payment_intent.payment_failed` for Stripe, the regular invoice-status webhook for Monobank).
+**LiqPay and WayForPay** — the same webhook-driven idea as Monobank, but *one* delivery instead of two: the card token rides along in the very same callback as the payment status, not a separate one.
+
+```php
+// LiqPay: recurringbytoken opts in, card_token arrives in the same server_url callback.
+Billing::charge($payment, new ChargeOptions(saveCard: true));
+
+// WayForPay: no opt-in flag at all — recToken comes back automatically on any approved card
+// payment. handleWebhook() persists it whenever present, no charge()-side change needed.
+Billing::charge($payment, new ChargeOptions());
+```
+
+`attachPaymentMethod($billable, ['card_token' => $token])` / `['rec_token' => $token]` exist for both, for a token already known some other way — neither gateway exposes a lookup endpoint to verify it against first (unlike Monobank's `GET /wallet`), so these trust the caller. Neither exposes a token-revocation endpoint either — `detachPaymentMethod()` for both is local-only (deletes the `PaymentMethod` row, nothing to call on the gateway's side).
+
+Either way, `chargePaymentMethod()` only *initiates* the charge, same as `charge()`: the outcome still arrives through the usual webhook pipeline for all four gateways.
 
 ## Currency conversion
 

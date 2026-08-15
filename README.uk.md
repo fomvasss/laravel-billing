@@ -314,9 +314,9 @@ php artisan billing:expire-trials               # щодня — trialing + ми
 
 ### Токенізація / збережені картки
 
-`process-recurring-charges` (і будь-яке власне off-session списання) працює лише з гейтвеєм, чий драйвер реалізує `TokenizesPaymentMethod` — зараз це **Stripe і Monobank**. LiqPay/WayForPay — поки ні.
+`process-recurring-charges` (і будь-яке власне off-session списання) працює лише з гейтвеєм, чий драйвер реалізує `TokenizesPaymentMethod` — усі 4 гейтвеї з картками це вміють (**Stripe, Monobank, LiqPay, WayForPay**); у Hutko просто немає токен-API, щоб його обгортати.
 
-Два різні механізми, той самий результат — рядок `PaymentMethod`, який можна передати в `chargeWithMethod()`:
+Три механізми, той самий результат — рядок `PaymentMethod`, який можна передати в `chargeWithMethod()`:
 
 **Stripe** — синхронний токен із фронтенд SDK:
 
@@ -345,7 +345,20 @@ Billing::charge($payment, new ChargeOptions(saveCard: true));
 
 `Billing::driver('monobank')->attachPaymentMethod($user, ['card_token' => $token])` теж існує — для рідкісного випадку, коли токен уже відомий якимось іншим шляхом (перевіряє його через `GET /wallet` перед збереженням).
 
-У будь-якому разі `chargePaymentMethod()` лише ІНІЦІЮЄ списання, так само як `charge()`: результат приходить через звичайний webhook pipeline (`payment_intent.succeeded`/`payment_intent.payment_failed` для Stripe, звичайний invoice-status вебхук для Monobank).
+**LiqPay і WayForPay** — та сама webhook-driven ідея, що в Monobank, але *одна* доставка замість двох: токен картки прилітає в тому самому колбеку, що й статус платежу, не окремим викликом.
+
+```php
+// LiqPay: recurringbytoken — явна опція, card_token приходить у тому ж server_url callback.
+Billing::charge($payment, new ChargeOptions(saveCard: true));
+
+// WayForPay: жодного прапорця не потрібно — recToken прилітає автоматично на будь-яку
+// успішну карткову оплату. handleWebhook() зберігає його щоразу, коли він присутній.
+Billing::charge($payment, new ChargeOptions());
+```
+
+`attachPaymentMethod($billable, ['card_token' => $token])` / `['rec_token' => $token]` існують для обох — для токена, вже відомого іншим шляхом; жоден із гейтвеїв не має ендпоінта для перевірки токена (на відміну від Monobank-івського `GET /wallet`), тож обидва довіряють виклику. Жоден не має й ендпоінта відкликання токена — `detachPaymentMethod()` для обох лише локальний (видаляє рядок `PaymentMethod`, на боці гейтвея викликати нічого).
+
+У будь-якому разі `chargePaymentMethod()` лише ІНІЦІЮЄ списання, так само як `charge()`: результат приходить через звичайний webhook pipeline для всіх чотирьох гейтвеїв.
 
 ## Конвертація валют
 

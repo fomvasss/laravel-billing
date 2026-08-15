@@ -7,7 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
-- Stripe and Monobank drivers now implement `TokenizesPaymentMethod` — `createCustomer()`, `attachPaymentMethod()`, `chargePaymentMethod()`, `detachPaymentMethod()` — so `billing:process-recurring-charges` can actually charge a subscription off-session with a saved card. See README "Tokenization / saved cards" for both flows: Stripe's is a synchronous frontend-SDK token, Monobank's arrives asynchronously via webhook (`saveCard: true` on the first charge, `handleWebhook()` auto-attaches the resulting `PaymentMethod` once the bank tokenizes it — no extra call needed). LiqPay/WayForPay don't implement it yet.
+- Stripe, Monobank, LiqPay and WayForPay drivers now implement `TokenizesPaymentMethod` — `createCustomer()`, `attachPaymentMethod()`, `chargePaymentMethod()`, `detachPaymentMethod()` — so `billing:process-recurring-charges` can actually charge a subscription off-session with a saved card. See README "Tokenization / saved cards" for all three flows: Stripe's is a synchronous frontend-SDK token; Monobank's and LiqPay's arrive asynchronously via webhook after `saveCard: true` on the first charge; WayForPay's needs no opt-in at all — its token comes back automatically on any approved card payment. `handleWebhook()` auto-attaches the resulting `PaymentMethod` for all three — no extra call needed. Only Hutko is left without it — no token API to wrap.
 
 ### Changed
 - `TokenizesPaymentMethod`'s methods now type-hint `Model&Billable` instead of the bare `Billable` marker interface (a real Eloquent model is required to persist `PaymentMethod.billable_type`/`billable_id`).

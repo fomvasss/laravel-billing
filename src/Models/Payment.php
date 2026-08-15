@@ -6,6 +6,7 @@ namespace Fomvasss\Billing\Models;
 
 use Fomvasss\Billing\Enums\PaymentStatus;
 use Fomvasss\Billing\Enums\PaymentType;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -81,5 +82,56 @@ class Payment extends Model
     public function refunds(): HasMany
     {
         return $this->hasMany(self::class, 'parent_payment_id');
+    }
+
+    public function isPaid(): bool
+    {
+        return $this->status === PaymentStatus::Paid;
+    }
+
+    public function isPending(): bool
+    {
+        return $this->status === PaymentStatus::Pending;
+    }
+
+    public function isFailed(): bool
+    {
+        return $this->status === PaymentStatus::Failed;
+    }
+
+    public function isRefund(): bool
+    {
+        return $this->type === PaymentType::Refund;
+    }
+
+    /** Total refunded against this charge, in minor units — 0 when nothing was refunded. */
+    public function refundedAmount(): int
+    {
+        return (int) $this->refunds()->where('status', PaymentStatus::Paid)->sum('amount');
+    }
+
+    /** The checkout link is still usable — no need to call charge() again (see BillingManager::charge()). */
+    public function hasActivePaymentUrl(): bool
+    {
+        return $this->payment_url !== null
+            && ($this->payment_url_expires_at === null || $this->payment_url_expires_at->isFuture());
+    }
+
+    /** @param  Builder<self>  $query */
+    public function scopePaid(Builder $query): void
+    {
+        $query->where('status', PaymentStatus::Paid);
+    }
+
+    /** @param  Builder<self>  $query */
+    public function scopePending(Builder $query): void
+    {
+        $query->where('status', PaymentStatus::Pending);
+    }
+
+    /** @param  Builder<self>  $query */
+    public function scopeForBillable(Builder $query, Model $billable): void
+    {
+        $query->where('billable_type', $billable->getMorphClass())->where('billable_id', $billable->getKey());
     }
 }

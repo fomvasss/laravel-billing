@@ -539,6 +539,39 @@ foreach (['base' => 'stripe', 'ai-addon' => 'stripe', 'channel-viber' => 'wayfor
 
 Cancelling or lapsing one doesn't touch the others — each row is its own independent lifecycle.
 
+## Model helpers
+
+Things you'd otherwise write yourself in every consumer:
+
+```php
+// Subscription
+$subscription->isActive();     // entitled to the service right now — trialing, active,
+                               // or past_due but still inside the dunning grace window
+$subscription->onTrial();      // trialing and trial_ends_at hasn't passed
+$subscription->onGracePeriod();// a renewal failed but retries are still running
+$subscription->isCanceled();
+$subscription->isCancelling(); // cancel() was called for period end — still running until then
+
+Subscription::active()->get();               // trialing + active
+Subscription::forBillable($organization)->get();
+```
+
+```php
+// Payment
+$payment->isPaid();
+$payment->isPending();
+$payment->isFailed();
+$payment->isRefund();               // this row is a refund (type=refund), not a charge
+$payment->refundedAmount();         // total refunded against this charge, minor units
+$payment->hasActivePaymentUrl();    // checkout link still usable — no need to charge() again
+
+Payment::paid()->get();
+Payment::pending()->get();
+Payment::forBillable($organization)->latest()->get();
+```
+
+`isActive()` is the one to reach for in a gate/middleware — it deliberately keeps access on during the dunning grace window, so a customer isn't locked out mid-retry over a card that failed once.
+
 ## Currency conversion
 
 If a `Price`'s currency isn't accepted by the chosen gateway, `BillingManager::resolveChargeAmount()` tries, in order: (1) the price's own currency, if accepted; (2) a sibling `Price` of the same `Plan`+gateway in an accepted currency; (3) a bound `CurrencyConverterContract`; (4) throws `BillingException`. Bind a converter (e.g. an adapter over [`fomvasss/laravel-currency`](https://github.com/fomvasss/laravel-currency), not a hard dependency of this package):

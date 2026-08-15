@@ -9,6 +9,7 @@ use Fomvasss\Billing\Events\SubscriptionCancelled;
 use Fomvasss\Billing\Events\SubscriptionPaused;
 use Fomvasss\Billing\Events\SubscriptionResumed;
 use Fomvasss\Billing\Events\UsageLimitReached;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -125,5 +126,54 @@ class Subscription extends Model
     public function swapPlan(Price $newPrice): void
     {
         $this->update(['price_id' => $newPrice->id]);
+    }
+
+    /**
+     * "Is the customer entitled to the service right now" — the one check most consumer code
+     * actually wants. True while trialing, active, or still inside the dunning grace window
+     * (a failed renewal shouldn't cut access off mid-retry); false once canceled/ended/paused.
+     */
+    public function isActive(): bool
+    {
+        return match ($this->status) {
+            SubscriptionStatus::Trialing, SubscriptionStatus::Active => true,
+            SubscriptionStatus::PastDue => $this->onGracePeriod(),
+            default => false,
+        };
+    }
+
+    public function onTrial(): bool
+    {
+        return $this->status === SubscriptionStatus::Trialing
+            && ($this->trial_ends_at === null || $this->trial_ends_at->isFuture());
+    }
+
+    /** A failed renewal still being retried — access usually stays on until this window closes. */
+    public function onGracePeriod(): bool
+    {
+        return $this->grace_ends_at !== null && $this->grace_ends_at->isFuture();
+    }
+
+    public function isCanceled(): bool
+    {
+        return $this->status === SubscriptionStatus::Canceled;
+    }
+
+    /** Cancelled at period end (cancel()) but still running until then. */
+    public function isCancelling(): bool
+    {
+        return $this->cancels_at !== null && $this->cancels_at->isFuture() && ! $this->isCanceled();
+    }
+
+    /** @param  Builder<self>  $query */
+    public function scopeActive(Builder $query): void
+    {
+        $query->whereIn('status', [SubscriptionStatus::Trialing, SubscriptionStatus::Active]);
+    }
+
+    /** @param  Builder<self>  $query */
+    public function scopeForBillable(Builder $query, Model $billable): void
+    {
+        $query->where('billable_type', $billable->getMorphClass())->where('billable_id', $billable->getKey());
     }
 }

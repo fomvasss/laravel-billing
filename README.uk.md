@@ -535,6 +535,39 @@ foreach (['base' => 'stripe', 'ai-addon' => 'stripe', 'channel-viber' => 'wayfor
 
 Скасування чи спливання однієї не зачіпає решту — кожен рядок має власний незалежний життєвий цикл.
 
+## Хелпери моделей
+
+Те, що інакше довелось би писати самим у кожному проєкті:
+
+```php
+// Subscription
+$subscription->isActive();     // має право користуватись сервісом прямо зараз — trialing, active,
+                               // або past_due, але ще в межах grace-вікна dunning'у
+$subscription->onTrial();      // trialing і trial_ends_at ще не минув
+$subscription->onGracePeriod();// продовження не вдалось, але ретраї ще тривають
+$subscription->isCanceled();
+$subscription->isCancelling(); // викликали cancel() на кінець періоду — до того ще працює
+
+Subscription::active()->get();               // trialing + active
+Subscription::forBillable($organization)->get();
+```
+
+```php
+// Payment
+$payment->isPaid();
+$payment->isPending();
+$payment->isFailed();
+$payment->isRefund();               // цей рядок — рефанд (type=refund), не списання
+$payment->refundedAmount();         // сумарно повернуто за цим списанням, мінорні одиниці
+$payment->hasActivePaymentUrl();    // посилання на оплату ще живе — не треба знову charge()
+
+Payment::paid()->get();
+Payment::pending()->get();
+Payment::forBillable($organization)->latest()->get();
+```
+
+`isActive()` — саме те, що варто використовувати в gate/middleware: він навмисно лишає доступ увімкненим на час grace-вікна, щоб клієнта не відрізало посеред ретраїв через картку, яка один раз не пройшла.
+
 ## Конвертація валют
 
 Якщо валюта `Price` не приймається обраним гейтвеєм, `BillingManager::resolveChargeAmount()` пробує по черзі: (1) власну валюту ціни, якщо приймається; (2) сіблінг-`Price` того ж `Plan`+гейтвея в прийнятній валюті; (3) забінджений `CurrencyConverterContract`; (4) кидає `BillingException`. Забіндити конвертер (напр. адаптер над [`fomvasss/laravel-currency`](https://github.com/fomvasss/laravel-currency), не жорстка залежність цього пакета):

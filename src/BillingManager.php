@@ -52,7 +52,7 @@ class BillingManager
             'label' => $class::label(),
             'currencies' => $class::supportedCurrencies(),
             'credential_fields' => $class::credentialFields(),
-            'webhook_url' => route("billing.webhook.{$name}"),
+            'webhook_url' => route("webhook-client-{$name}"),
             'capabilities' => [
                 'refunds' => is_subclass_of($class, RefundsPayments::class),
                 'subscriptions' => is_subclass_of($class, SubscriptionGatewayContract::class),

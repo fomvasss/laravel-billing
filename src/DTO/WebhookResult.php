@@ -13,11 +13,20 @@ final readonly class WebhookResult
 {
     public function __construct(
         public WebhookEventType $type,
-        /** Value within $type: 'succeeded'/'failed'/'canceled' for Payment, 'attached'/'detached' for PaymentMethod, ... */
+        /**
+         * Value within $type — the exact vocabulary ProcessWebhookJob matches on to dispatch a core
+         * event:
+         *  - Payment: 'succeeded' | 'failed' | 'refunded' | 'canceled' (canceled dispatches nothing)
+         *  - Subscription: 'created' | 'renewed' | 'payment_failed' | 'canceled' | 'trial_will_end'
+         *  - PaymentMethod: 'attached' | 'detached'
+         *  - Ignored: unused
+         */
         public string $status,
         public ?Payment $payment = null,
         public ?Subscription $subscription = null,
         public ?PaymentMethod $paymentMethod = null,
+        /** Dedup key for ProcessWebhookJob's unique(name, external_id) check on webhook_calls — always set except for Ignored. */
+        public ?string $externalId = null,
         public array $raw = [],
     ) {}
 }

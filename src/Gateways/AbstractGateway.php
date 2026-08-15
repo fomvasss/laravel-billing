@@ -37,7 +37,9 @@ abstract class AbstractGateway implements PaymentGatewayContract
 
     protected function webhookUrl(ChargeOptions $options): string
     {
-        return route("billing.webhook.{$this->gatewayName}", $options->webhookUrlParams);
+        // "webhook-client-{name}" — the name spatie/laravel-webhook-client's Route::webhooks()
+        // macro actually registers the route under, not a package-chosen convention.
+        return route("webhook-client-{$this->gatewayName}", $options->webhookUrlParams);
     }
 
     protected function successUrl(ChargeOptions $options): string

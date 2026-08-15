@@ -17,12 +17,23 @@
 composer require fomvasss/laravel-billing
 ```
 
-Міграції запускаються автоматично (`loadMigrationsFrom`, `vendor:publish` для схеми не потрібен). Єдиний виняток — таблиця `webhook_calls` від `spatie/laravel-webhook-client`: опублікувати й прогнати один раз, до міграцій цього пакета:
+Спершу опублікувати й прогнати власну міграцію `spatie/laravel-webhook-client` (таблиця `webhook_calls`, яку розширюють міграції цього пакета):
 
 ```bash
 php artisan vendor:publish --tag="webhook-client-migrations"
 php artisan migrate
 ```
+
+Далі — власні міграції пакета, групами, щоб отримати лише ті таблиці, які реально потрібні. `billing-migrations-core` (таблиця `payments`) потрібна всім:
+
+```bash
+php artisan vendor:publish --tag=billing-migrations-core
+php artisan vendor:publish --tag=billing-migrations-subscriptions    # лише якщо є Plan/Price/Subscription
+php artisan vendor:publish --tag=billing-migrations-payment-methods  # лише якщо є збережені картки/токени
+php artisan migrate
+```
+
+Повторний `vendor:publish` — безпечний: файли копіюються під фіксованими іменами, вже опублікована міграція пропускається, не дублюється.
 
 Опублікувати конфіг, якщо потрібно змінити дефолти (return-URL, дебаг-лог, grace-період тощо):
 

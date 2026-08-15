@@ -21,12 +21,23 @@ Built-in gateways: **LiqPay**, **WayForPay**, **Monobank Acquiring**, **Stripe**
 composer require fomvasss/laravel-billing
 ```
 
-Migrations run automatically (`loadMigrationsFrom`, no `vendor:publish` needed for the schema). `spatie/laravel-webhook-client`'s own `webhook_calls` table is the one exception — publish and run it once, before this package's migrations:
+Publish and run `spatie/laravel-webhook-client`'s own migration first (its `webhook_calls` table, which this package's own migrations extend):
 
 ```bash
 php artisan vendor:publish --tag="webhook-client-migrations"
 php artisan migrate
 ```
+
+Then publish this package's own migrations — in groups, so you only get the tables you actually use. `billing-migrations-core` (the `payments` table) is the only one everyone needs:
+
+```bash
+php artisan vendor:publish --tag=billing-migrations-core
+php artisan vendor:publish --tag=billing-migrations-subscriptions    # only if you use Plan/Price/Subscription
+php artisan vendor:publish --tag=billing-migrations-payment-methods  # only if you use saved cards/tokens
+php artisan migrate
+```
+
+Re-running a `vendor:publish` command is safe — files are copied under fixed names, so an already-published migration is skipped, not duplicated.
 
 Publish the config file if you need to change defaults (return URLs, debug logging, grace period, etc.):
 

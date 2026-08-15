@@ -18,3 +18,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `CredentialResolverContract` and `CurrencyConverterContract` — bind your own implementation for dynamic per-tenant credentials or multi-currency pricing.
 - Artisan commands (off by default, `billing.schedule.enabled`): `billing:process-recurring-charges`, `billing:reconcile-pending-payments`, `billing:expire-trials`.
 - Manual/offline payments (cash, bank transfer) supported without a gateway driver — create a `Payment` row directly with `status: paid`.
+- Migrations are published, not auto-run — `vendor:publish --tag=billing-migrations-core` (required) plus `-subscriptions`/`-payment-methods` (only if you use those features), same pattern as `spatie/laravel-webhook-client`'s own migration.

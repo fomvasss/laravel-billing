@@ -322,68 +322,41 @@ Three artisan commands, off by default (`billing.schedule.enabled`, since they t
 'schedule' => ['enabled' => true],
 ```
 
-```bash
-php artisan billing:process-recurring-charges   # hourly — charges due subscriptions via a saved PaymentMethod
-php artisan billing:reconcile-pending-payments  # hourly — fallback for a missed webhook or gateway `expired` status
-php artisan billing:expire-trials               # daily  — trialing + trial_ends_at passed → ended
-```
+| Command | Runs | What it does |
+|---|---|---|
+| `billing:process-recurring-charges` | hourly | Finds subscriptions where `current_period_ends_at <= now()` and charges the saved `PaymentMethod` via `chargePaymentMethod()`. Only *initiates* the charge — the outcome arrives later through the normal webhook pipeline, handled automatically (period advances on `PaymentSucceeded`, or the grace/dunning cycle via `grace_ends_at`/`recurring_attempts`/`max_recurring_attempts` kicks in on `PaymentFailed`, up to `SubscriptionCancelled`). |
+| `billing:reconcile-pending-payments` | every 15 min | Fallback for a `Payment` stuck `pending` because a webhook was lost, or a gateway `expired` status that never gets its own webhook. Only looks at payments older than `config('billing.reconcile_after_minutes')` (default 60 min) — that cutoff already delays how soon a stuck payment qualifies, which is why this runs more often than the other two, not hourly like them. |
+| `billing:expire-trials` | daily | `trialing` subscriptions whose `trial_ends_at` has passed → `ended`. Doesn't touch anything else — converting a trial to paid is a normal `chargeWithMethod()` call, same as any renewal (see "Free trial period" in Recipes). |
 
-`process-recurring-charges` only *initiates* a charge — the outcome (success/failure) arrives through the normal webhook pipeline and is handled automatically (period advances, or the grace/dunning cycle via `grace_ends_at`/`recurring_attempts`/`max_recurring_attempts` kicks in, up to `SubscriptionCancelled`).
+None of this fires on its own — `Schedule::command()`/`->hourly()` etc. just register with Laravel's own scheduler, which still needs the standard system cron entry running `php artisan schedule:run` every minute (the usual Laravel deployment requirement, nothing package-specific).
 
 ### Tokenization / saved cards
 
-`process-recurring-charges` (and any off-session charge you trigger yourself) works for every built-in gateway — all 5 implement `TokenizesPaymentMethod`.
+All 5 built-in gateways implement `TokenizesPaymentMethod` — attach a card once, then `chargeWithMethod()` it any time after (renewals, overage charges, upgrades, ...).
 
-Three mechanisms, same end result — a `PaymentMethod` row you can hand to `chargeWithMethod()`:
-
-| Gateway | Mechanism | Deliveries |
-|---|---|---|
-| Stripe | synchronous, frontend SDK | — |
-| Monobank | async, `saveCard: true` opts in | 2 (card token in a separate webhook delivery) |
-| LiqPay | async, `saveCard: true` opts in | 1 (rides along with the payment status) |
-| WayForPay, Hutko | async, no opt-in — token comes back automatically | 1 (rides along with the payment status) |
-
-**Stripe** — a synchronous frontend-SDK token:
+**Stripe** needs an explicit attach step, driven by your frontend:
 
 ```php
-// 1. Create (or reuse) a Stripe customer, hand its id to your frontend to collect a card via
-//    Stripe.js/Elements + a SetupIntent — standard Stripe flow, outside this package.
 $customerId = Billing::driver('stripe')->createCustomer($user);
 
-// 2. Frontend confirms the SetupIntent, gets back a PaymentMethod id (pm_...) — POST it to your
-//    own endpoint, then attach it:
+// frontend collects a card via Stripe.js/Elements against that customer id, confirms a
+// SetupIntent, gets back a PaymentMethod id (pm_...) — POST it to your own endpoint
 $method = Billing::driver('stripe')->attachPaymentMethod($user, ['payment_method_id' => $pmId]);
 
-// 3. From then on, `billing:process-recurring-charges` (or your own code) can charge it directly:
 Billing::chargeWithMethod($payment, $method);
 ```
 
-`attachPaymentMethod()`/`detachPaymentMethod()` dispatch `PaymentMethodAttached`/`PaymentMethodDetached` themselves, synchronously — no webhook round-trip for those two.
-
-**Monobank** — the token isn't available synchronously at all: pass `saveCard: true` on the *first* charge, and the resulting card token arrives later through the normal webhook pipeline, as its own delivery (`walletData.status: created`) — `handleWebhook()` catches it and attaches the `PaymentMethod` automatically, no extra call needed:
+**Monobank, LiqPay, WayForPay, Hutko** attach themselves — no separate step, the `PaymentMethod` just shows up once the customer pays:
 
 ```php
+// Monobank/LiqPay need the flag to save the card; WayForPay/Hutko save it regardless (flag is a no-op there)
 Billing::charge($payment, new ChargeOptions(saveCard: true));
-// ... customer pays, webhook arrives, handleWebhook() persists the PaymentMethod and fires
-// PaymentMethodAttached on its own — nothing else to call.
+// ... customer pays, the PaymentMethod attaches on its own and PaymentMethodAttached fires — nothing else to call
 ```
 
-`Billing::driver('monobank')->attachPaymentMethod($user, ['card_token' => $token])` exists too, for the uncommon case of a token already known some other way (verifies it against `GET /wallet` before persisting).
+Already have a token from somewhere else? `attachPaymentMethod($billable, [...])` takes it directly — the array key differs per gateway: `payment_method_id` (Stripe), `card_token` (Monobank/LiqPay), `rec_token` (WayForPay), `rectoken` (Hutko). `detachPaymentMethod($method)` removes the saved card — only Monobank also revokes it at the bank, the other three just stop using it locally.
 
-**LiqPay, WayForPay, Hutko** — the same webhook-driven idea as Monobank, but *one* delivery instead of two: the card token rides along in the very same callback as the payment status, not a separate one.
-
-```php
-// LiqPay: recurringbytoken opts in, card_token arrives in the same server_url callback.
-Billing::charge($payment, new ChargeOptions(saveCard: true));
-
-// WayForPay/Hutko: no opt-in flag at all — the token comes back automatically on any approved
-// card payment. handleWebhook() persists it whenever present, no charge()-side change needed.
-Billing::charge($payment, new ChargeOptions());
-```
-
-`attachPaymentMethod($billable, ['card_token' => $token])` / `['rec_token' => $token]` / `['rectoken' => $token]` exist for all three, for a token already known some other way — none of these gateways exposes a lookup endpoint to verify it against first (unlike Monobank's `GET /wallet`), so these trust the caller. None exposes a token-revocation endpoint either — `detachPaymentMethod()` for all three is local-only (deletes the `PaymentMethod` row, nothing to call on the gateway's side).
-
-Either way, `chargePaymentMethod()` only *initiates* the charge, same as `charge()`: the outcome still arrives through the usual webhook pipeline for every gateway.
+Either way, `chargeWithMethod()`/`chargePaymentMethod()` only *initiate* the charge — the outcome always arrives through the normal webhook pipeline, same as `charge()`.
 
 ## Recipes
 

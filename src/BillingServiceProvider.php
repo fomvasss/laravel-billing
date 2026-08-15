@@ -156,7 +156,10 @@ class BillingServiceProvider extends ServiceProvider
             $schedule = $this->app->make(Schedule::class);
 
             $schedule->command('billing:process-recurring-charges')->hourly();
-            $schedule->command('billing:reconcile-pending-payments')->hourly();
+            // 15 min, not hourly — reconcile_after_minutes (default 60) already delays how soon a
+            // stuck payment qualifies; hourly on top of that meant a real "paid but webhook lost"
+            // payment could sit unresolved for up to ~2h before this ever looked at it.
+            $schedule->command('billing:reconcile-pending-payments')->everyFifteenMinutes();
             $schedule->command('billing:expire-trials')->daily();
         });
     }

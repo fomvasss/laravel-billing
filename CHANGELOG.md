@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Changed
 - WayForPay's `charge()` now returns `PaymentResult::$url` directly instead of `$form` — a plain redirect, not a form you have to render and submit yourself. LiqPay is now the only built-in gateway that returns `$form`.
 - `TokenizesPaymentMethod`'s methods now require an actual Eloquent model (`Model&Billable`), not just the bare `Billable` interface.
+- `billing:reconcile-pending-payments` now runs every 15 minutes instead of hourly (when `billing.schedule.enabled`) — it's the fallback for a payment stuck `pending` because a webhook was lost, and `reconcile_after_minutes` (default 60 min) already delays how soon a stuck payment even qualifies, so hourly on top of that meant up to ~2h before a real "paid but webhook lost" payment got noticed.
 
 ### Fixed
 - `PaymentResult` was missing its `$raw` property on three built-in drivers' `refund()` — calling `refund()` on Stripe, Monobank, or LiqPay would have thrown an error.

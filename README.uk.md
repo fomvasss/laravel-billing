@@ -318,68 +318,41 @@ $subscription->swapPlan($newPrice);
 'schedule' => ['enabled' => true],
 ```
 
-```bash
-php artisan billing:process-recurring-charges   # щогодини — списує прострочені підписки збереженим PaymentMethod
-php artisan billing:reconcile-pending-payments  # щогодини — fallback на пропущений вебхук чи статус expired
-php artisan billing:expire-trials               # щодня — trialing + минув trial_ends_at → ended
-```
+| Команда | Запускається | Що робить |
+|---|---|---|
+| `billing:process-recurring-charges` | щогодини | Знаходить підписки з `current_period_ends_at <= now()` і списує зі збереженого `PaymentMethod` через `chargePaymentMethod()`. Лише ІНІЦІЮЄ списання — результат приходить пізніше через звичайний webhook pipeline, обробляється автоматично (посування періоду при `PaymentSucceeded`, або dunning-цикл через `grace_ends_at`/`recurring_attempts`/`max_recurring_attempts` при `PaymentFailed`, аж до `SubscriptionCancelled`). |
+| `billing:reconcile-pending-payments` | кожні 15 хв | Fallback для `Payment`, що завис `pending` через загублений вебхук, або статус `expired` гейтвея, для якого власного вебхука не буває. Бере лише платежі старші за `config('billing.reconcile_after_minutes')` (дефолт 60 хв) — цей cutoff уже сам по собі відкладає, коли платіж кваліфікується як "завис", тому ця команда запускається частіше за інші дві, не щогодини. |
+| `billing:expire-trials` | щодня | `trialing`-підписки з простроченим `trial_ends_at` → `ended`. Нічого іншого не чіпає — конвертація trial у платну підписку — звичайний виклик `chargeWithMethod()`, той самий, що й будь-яке продовження (див. "Безкоштовний період" у Практичних прикладах). |
 
-`process-recurring-charges` лише ІНІЦІЮЄ списання — результат (успіх/невдача) приходить через звичайний webhook pipeline і обробляється автоматично (посування періоду, або dunning-цикл через `grace_ends_at`/`recurring_attempts`/`max_recurring_attempts`, аж до `SubscriptionCancelled`).
+Ніщо з цього не запускається саме собою — `Schedule::command()`/`->hourly()` тощо лише реєструються у власному Laravel-планувальнику застосунку, якому все одно потрібен стандартний системний cron-запис `php artisan schedule:run` щохвилини (звичайна вимога деплою Laravel, не специфіка пакета).
 
 ### Токенізація / збережені картки
 
-`process-recurring-charges` (і будь-яке власне off-session списання) працює з усіма 5 вбудованими гейтвеями — кожен реалізує `TokenizesPaymentMethod`.
+Усі 5 вбудованих гейтвеїв реалізують `TokenizesPaymentMethod` — прив'язуєте картку один раз, далі `chargeWithMethod()` будь-коли (продовження підписки, овербюджет, апгрейд, ...).
 
-Три механізми, той самий результат — рядок `PaymentMethod`, який можна передати в `chargeWithMethod()`:
-
-| Гейтвей | Механізм | Доставок |
-|---|---|---|
-| Stripe | синхронний, фронтенд SDK | — |
-| Monobank | асинхронний, опція `saveCard: true` | 2 (токен картки — окремою доставкою) |
-| LiqPay | асинхронний, опція `saveCard: true` | 1 (разом зі статусом платежу) |
-| WayForPay, Hutko | асинхронний, без опції — токен завжди повертається | 1 (разом зі статусом платежу) |
-
-**Stripe** — синхронний токен із фронтенд SDK:
+**Stripe** потребує окремого кроку прив'язки, керованого фронтендом:
 
 ```php
-// 1. Створюємо (або перевикористовуємо) Stripe-клієнта, віддаємо його id фронтенду для збору
-//    картки через Stripe.js/Elements + SetupIntent — стандартний Stripe-флоу, поза пакетом.
 $customerId = Billing::driver('stripe')->createCustomer($user);
 
-// 2. Фронтенд підтверджує SetupIntent, отримує PaymentMethod id (pm_...) — POST на свій ендпоінт,
-//    далі прив'язуємо:
+// фронтенд збирає картку через Stripe.js/Elements проти цього customer id, підтверджує
+// SetupIntent, отримує PaymentMethod id (pm_...) — POST на свій ендпоінт
 $method = Billing::driver('stripe')->attachPaymentMethod($user, ['payment_method_id' => $pmId]);
 
-// 3. Відтепер `billing:process-recurring-charges` (або власний код) може списувати напряму:
 Billing::chargeWithMethod($payment, $method);
 ```
 
-`attachPaymentMethod()`/`detachPaymentMethod()` самі диспатчать `PaymentMethodAttached`/`PaymentMethodDetached`, синхронно — без вебхука для цих двох.
-
-**Monobank** — токен синхронно недоступний узагалі: передаєте `saveCard: true` на *першій* оплаті, і токен картки прилітає пізніше через звичайний webhook pipeline, окремою доставкою (`walletData.status: created`) — `handleWebhook()` ловить її і сам прив'язує `PaymentMethod`, без жодного додаткового виклику:
+**Monobank, LiqPay, WayForPay, Hutko** прив'язуються самі — без окремого кроку, `PaymentMethod` просто з'являється, щойно клієнт оплатив:
 
 ```php
+// Monobank/LiqPay потребують прапорця, щоб зберегти картку; WayForPay/Hutko зберігають і без нього
 Billing::charge($payment, new ChargeOptions(saveCard: true));
-// ... клієнт платить, приходить вебхук, handleWebhook() сам зберігає PaymentMethod
-// і диспатчить PaymentMethodAttached — більше нічого викликати не треба.
+// ... клієнт платить, PaymentMethod прив'язується сам, диспатчиться PaymentMethodAttached — більше нічого викликати не треба
 ```
 
-`Billing::driver('monobank')->attachPaymentMethod($user, ['card_token' => $token])` теж існує — для рідкісного випадку, коли токен уже відомий якимось іншим шляхом (перевіряє його через `GET /wallet` перед збереженням).
+Уже маєте токен звідкись іншим шляхом? `attachPaymentMethod($billable, [...])` бере його напряму — ключ масиву різний для кожного гейтвея: `payment_method_id` (Stripe), `card_token` (Monobank/LiqPay), `rec_token` (WayForPay), `rectoken` (Hutko). `detachPaymentMethod($method)` видаляє збережену картку — лише Monobank реально відкликає її й на боці банку, решта три просто перестають нею користуватись локально.
 
-**LiqPay, WayForPay, Hutko** — та сама webhook-driven ідея, що в Monobank, але *одна* доставка замість двох: токен картки прилітає в тому самому колбеку, що й статус платежу, не окремим викликом.
-
-```php
-// LiqPay: recurringbytoken — явна опція, card_token приходить у тому ж server_url callback.
-Billing::charge($payment, new ChargeOptions(saveCard: true));
-
-// WayForPay/Hutko: жодного прапорця не потрібно — токен прилітає автоматично на будь-яку
-// успішну карткову оплату. handleWebhook() зберігає його щоразу, коли він присутній.
-Billing::charge($payment, new ChargeOptions());
-```
-
-`attachPaymentMethod($billable, ['card_token' => $token])` / `['rec_token' => $token]` / `['rectoken' => $token]` існують для всіх трьох — для токена, вже відомого іншим шляхом; жоден із гейтвеїв не має ендпоінта для перевірки токена (на відміну від Monobank-івського `GET /wallet`), тож усі три довіряють виклику. Жоден не має й ендпоінта відкликання токена — `detachPaymentMethod()` для всіх трьох лише локальний (видаляє рядок `PaymentMethod`, на боці гейтвея викликати нічого).
-
-У будь-якому разі `chargePaymentMethod()` лише ІНІЦІЮЄ списання, так само як `charge()`: результат приходить через звичайний webhook pipeline для кожного гейтвея.
+У будь-якому разі `chargeWithMethod()`/`chargePaymentMethod()` лише ІНІЦІЮЮТЬ списання — результат завжди приходить через звичайний webhook pipeline, так само як `charge()`.
 
 ## Практичні приклади
 

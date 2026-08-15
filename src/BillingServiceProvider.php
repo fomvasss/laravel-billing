@@ -7,6 +7,8 @@ namespace Fomvasss\Billing;
 use Fomvasss\Billing\Contracts\CredentialResolverContract;
 use Fomvasss\Billing\Gateways\Fake\FakeGateway;
 use Fomvasss\Billing\Gateways\Fake\FakeSignatureValidator;
+use Fomvasss\Billing\Gateways\LiqPay\LiqPayGateway;
+use Fomvasss\Billing\Gateways\LiqPay\LiqPaySignatureValidator;
 use Fomvasss\Billing\Gateways\Monobank\MonobankGateway;
 use Fomvasss\Billing\Gateways\Monobank\MonobankSignatureValidator;
 use Fomvasss\Billing\Support\DefaultCredentialResolver;
@@ -63,5 +65,8 @@ class BillingServiceProvider extends ServiceProvider
 
         $manager->extend('monobank', MonobankGateway::class);
         WebhookConfigRegistrar::register('monobank', MonobankSignatureValidator::class);
+
+        $manager->extend('liqpay', LiqPayGateway::class);
+        WebhookConfigRegistrar::register('liqpay', LiqPaySignatureValidator::class);
     }
 }

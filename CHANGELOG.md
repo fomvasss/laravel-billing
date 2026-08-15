@@ -19,6 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `PaymentResult` was missing its `$raw` property on three built-in drivers' `refund()` — calling `refund()` on Stripe, Monobank, or LiqPay would have thrown an error.
 - The `fake` gateway's local test page posted to a webhook URL that no longer existed.
 - The `Billing` facade's docblock was missing `charge()`/`chargeWithMethod()`/`resolveChargeAmount()` — IDE autocomplete now covers all of it.
+- `Billing::charge()` now actually fills `ChargeOptions::$receiptItems` from `$payment->payable->receiptItems()` when it implements `HasReceiptItems` and you didn't pass one yourself — documented since 0.1.0 but never wired up, so the fiscal basket silently stayed empty unless you built it by hand.
 
 ## [0.1.0] - 2026-08-15
 

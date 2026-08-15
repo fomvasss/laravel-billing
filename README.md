@@ -385,6 +385,154 @@ Billing::charge($payment, new ChargeOptions());
 
 Either way, `chargePaymentMethod()` only *initiates* the charge, same as `charge()`: the outcome still arrives through the usual webhook pipeline for every gateway.
 
+## Recipes
+
+Everything above is the building blocks; here's how they combine for a few real scenarios.
+
+### 1. Store checkout with fiscal receipt items
+
+`Order` implements `HasReceiptItems` — `charge()` picks it up automatically (no need to pass `receiptItems` yourself), and Monobank/LiqPay/WayForPay use it to fiscalize the basket on their side:
+
+```php
+class Order extends Model implements Payable, HasReceiptItems
+{
+    public function receiptItems(): array
+    {
+        return $this->items->map(fn (OrderItem $item) => [
+            'name' => $item->product->name,
+            'qty' => $item->qty,
+            'unitAmount' => $item->unit_price, // minor units
+            'sku' => $item->product->sku,
+        ])->all();
+    }
+}
+```
+
+```php
+$payment = Payment::create([
+    'status' => 'pending',
+    'type' => 'charge',
+    'gateway' => 'monobank',
+    'amount' => $order->total, // minor units
+    'currency_code' => 'UAH',
+    'payable_type' => Order::class,
+    'payable_id' => $order->id,
+    'billable_type' => $order->user::class,
+    'billable_id' => $order->user->id,
+]);
+
+Billing::charge($payment, new ChargeOptions(
+    description: "Order #{$order->number}",
+    customerEmail: $order->user->email,
+));
+
+return redirect($payment->payment_url);
+```
+
+```php
+Event::listen(PaymentSucceeded::class, function (PaymentSucceeded $event) {
+    if ($event->payment->payable instanceof Order) {
+        $event->payment->payable->markAsPaid();
+    }
+});
+```
+
+### 2. Subscribe to a 15 GB plan — and how the auto-renewal actually works
+
+```php
+$plan = Plan::create(['code' => 'storage-15gb', 'name' => '15 GB storage']);
+
+$price = $plan->prices()->create([
+    'gateway' => 'stripe',
+    'currency_code' => 'USD',
+    'amount' => 500, // $5.00/month
+    'pricing_type' => 'flat',
+    'interval' => 'month',
+    'interval_count' => 1,
+]);
+
+$subscription = Subscription::create([
+    'status' => 'active',
+    'gateway' => 'stripe',
+    'price_id' => $price->id,
+    'billable_type' => $organization::class,
+    'billable_id' => $organization->id,
+    'current_period_ends_at' => now()->addMonth(),
+]);
+```
+
+The first charge tokenizes the card (`saveCard: true`, see "Tokenization" above) — everything after that is automatic, **but only if you turn it on**:
+
+1. `config('billing.schedule.enabled', true)` (or your own cron entry calling the same command) — off by default, since it touches money.
+2. Once enabled, `billing:process-recurring-charges` runs hourly, finds subscriptions where `current_period_ends_at <= now()`, and charges the saved `PaymentMethod` via `chargePaymentMethod()`. This only *initiates* the charge.
+3. The outcome resolves later through the normal webhook pipeline → `PaymentSucceeded`/`PaymentFailed` → the package's own listener advances `current_period_ends_at` by another month on success, or starts the grace/dunning cycle on failure (`grace_ends_at`, `recurring_attempts`, up to `max_recurring_attempts` → `SubscriptionCancelled`).
+
+You don't write any of step 3 yourself — it's already wired up. You only need step 1 and a saved `PaymentMethod`.
+
+### 3. One-off purchase of extra 5 GB (not part of the subscription cycle)
+
+Not a subscription line item — the package has no "wallet"/addon-balance concept on purpose (see below), so this is just a regular one-off `Payment` your own listener turns into a quota bump:
+
+```php
+$payment = Payment::create([
+    'status' => 'pending',
+    'type' => 'charge',
+    'gateway' => 'stripe',
+    'amount' => 200, // $2.00
+    'currency_code' => 'USD',
+    'payable_type' => $organization::class,
+    'payable_id' => $organization->id,
+    'billable_type' => $organization::class,
+    'billable_id' => $organization->id,
+]);
+
+Billing::chargeWithMethod($payment, $organization->defaultPaymentMethod); // or Billing::charge() for a redirect checkout
+```
+
+```php
+Event::listen(PaymentSucceeded::class, function (PaymentSucceeded $event) {
+    if ($event->payment->payable instanceof Organization) {
+        $event->payment->payable->increment('extra_storage_gb', 5);
+    }
+});
+```
+
+### 4. Free trial period
+
+No gateway call, no `PaymentMethod` needed — just a `Subscription` row:
+
+```php
+$subscription = Subscription::create([
+    'status' => 'trialing',
+    'gateway' => 'stripe',
+    'price_id' => $price->id,
+    'billable_type' => $organization::class,
+    'billable_id' => $organization->id,
+    'trial_ends_at' => now()->addDays(14),
+]);
+```
+
+`TrialWillEnd` fires so you can prompt for a card before the trial ends. If nobody converts, `billing:expire-trials` (daily) finds `trialing` subscriptions past `trial_ends_at` and moves them to `ended`. Converting mid-trial or right at the end is the same call either way — a `chargeWithMethod()` against this subscription's `Payment` flips it straight to `active` on `PaymentSucceeded` (the listener doesn't care that it started as `trialing`), no separate "convert trial" method to call.
+
+### 5. Several independent subscriptions on the same customer at once
+
+`Subscription::$billable_id` isn't unique — one `Organization` can have as many concurrent, independently-billed subscriptions as it needs (a base plan, an AI add-on, a per-channel add-on, ...), each with its own gateway/status/renewal cycle:
+
+```php
+foreach (['base' => 'stripe', 'ai-addon' => 'stripe', 'channel-viber' => 'wayforpay'] as $planCode => $gateway) {
+    Subscription::create([
+        'status' => 'active',
+        'gateway' => $gateway,
+        'price_id' => Plan::where('code', $planCode)->firstOrFail()->prices()->firstOrFail()->id,
+        'billable_type' => $organization::class,
+        'billable_id' => $organization->id,
+        'current_period_ends_at' => now()->addMonth(),
+    ]);
+}
+```
+
+Cancelling or lapsing one doesn't touch the others — each row is its own independent lifecycle.
+
 ## Currency conversion
 
 If a `Price`'s currency isn't accepted by the chosen gateway, `BillingManager::resolveChargeAmount()` tries, in order: (1) the price's own currency, if accepted; (2) a sibling `Price` of the same `Plan`+gateway in an accepted currency; (3) a bound `CurrencyConverterContract`; (4) throws `BillingException`. Bind a converter (e.g. an adapter over [`fomvasss/laravel-currency`](https://github.com/fomvasss/laravel-currency), not a hard dependency of this package):

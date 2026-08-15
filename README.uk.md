@@ -381,6 +381,154 @@ Billing::charge($payment, new ChargeOptions());
 
 У будь-якому разі `chargePaymentMethod()` лише ІНІЦІЮЄ списання, так само як `charge()`: результат приходить через звичайний webhook pipeline для кожного гейтвея.
 
+## Практичні приклади
+
+Усе вище — будівельні блоки; ось як вони складаються в кілька реальних сценаріїв.
+
+### 1. Оплата замовлення в магазині з фіскальним чеком
+
+`Order` реалізує `HasReceiptItems` — `charge()` підхоплює це автоматично (не треба самим передавати `receiptItems`), і Monobank/LiqPay/WayForPay використовують це для фіскалізації кошика на своєму боці:
+
+```php
+class Order extends Model implements Payable, HasReceiptItems
+{
+    public function receiptItems(): array
+    {
+        return $this->items->map(fn (OrderItem $item) => [
+            'name' => $item->product->name,
+            'qty' => $item->qty,
+            'unitAmount' => $item->unit_price, // мінорні одиниці
+            'sku' => $item->product->sku,
+        ])->all();
+    }
+}
+```
+
+```php
+$payment = Payment::create([
+    'status' => 'pending',
+    'type' => 'charge',
+    'gateway' => 'monobank',
+    'amount' => $order->total, // мінорні одиниці
+    'currency_code' => 'UAH',
+    'payable_type' => Order::class,
+    'payable_id' => $order->id,
+    'billable_type' => $order->user::class,
+    'billable_id' => $order->user->id,
+]);
+
+Billing::charge($payment, new ChargeOptions(
+    description: "Замовлення #{$order->number}",
+    customerEmail: $order->user->email,
+));
+
+return redirect($payment->payment_url);
+```
+
+```php
+Event::listen(PaymentSucceeded::class, function (PaymentSucceeded $event) {
+    if ($event->payment->payable instanceof Order) {
+        $event->payment->payable->markAsPaid();
+    }
+});
+```
+
+### 2. Оформлення підписки на 15 ГБ — і як насправді працює автопродовження
+
+```php
+$plan = Plan::create(['code' => 'storage-15gb', 'name' => '15 ГБ сховища']);
+
+$price = $plan->prices()->create([
+    'gateway' => 'stripe',
+    'currency_code' => 'USD',
+    'amount' => 500, // $5.00/міс
+    'pricing_type' => 'flat',
+    'interval' => 'month',
+    'interval_count' => 1,
+]);
+
+$subscription = Subscription::create([
+    'status' => 'active',
+    'gateway' => 'stripe',
+    'price_id' => $price->id,
+    'billable_type' => $organization::class,
+    'billable_id' => $organization->id,
+    'current_period_ends_at' => now()->addMonth(),
+]);
+```
+
+Перша оплата токенізує картку (`saveCard: true`, див. "Токенізація" вище) — усе далі автоматично, **але лише якщо це увімкнено**:
+
+1. `config('billing.schedule.enabled', true)` (або власний запис у cron, що викликає ту саму команду) — вимкнено за замовчуванням, бо стосується грошей.
+2. Після увімкнення `billing:process-recurring-charges` виконується щогодини, знаходить підписки з `current_period_ends_at <= now()` і списує зі збереженого `PaymentMethod` через `chargePaymentMethod()`. Це лише ІНІЦІЮЄ списання.
+3. Результат приходить пізніше через звичайний webhook pipeline → `PaymentSucceeded`/`PaymentFailed` → власний лістенер пакету посуває `current_period_ends_at` на місяць при успіху, або запускає grace/dunning-цикл при невдачі (`grace_ends_at`, `recurring_attempts`, аж до `max_recurring_attempts` → `SubscriptionCancelled`).
+
+Крок 3 самим писати не треба — уже підключено. Потрібні лише крок 1 і збережений `PaymentMethod`.
+
+### 3. Докупка 5 ГБ окремо (поза циклом підписки)
+
+Не рядок підписки — у пакеті свідомо немає концепції "гаманця"/балансу на аддони (див. нижче), тому це звичайний одноразовий `Payment`, який власний лістенер перетворює на приріст квоти:
+
+```php
+$payment = Payment::create([
+    'status' => 'pending',
+    'type' => 'charge',
+    'gateway' => 'stripe',
+    'amount' => 200, // $2.00
+    'currency_code' => 'USD',
+    'payable_type' => $organization::class,
+    'payable_id' => $organization->id,
+    'billable_type' => $organization::class,
+    'billable_id' => $organization->id,
+]);
+
+Billing::chargeWithMethod($payment, $organization->defaultPaymentMethod); // або Billing::charge() для редіректного чекауту
+```
+
+```php
+Event::listen(PaymentSucceeded::class, function (PaymentSucceeded $event) {
+    if ($event->payment->payable instanceof Organization) {
+        $event->payment->payable->increment('extra_storage_gb', 5);
+    }
+});
+```
+
+### 4. Безкоштовний період (trial)
+
+Без жодного виклику гейтвея, без `PaymentMethod` — просто рядок `Subscription`:
+
+```php
+$subscription = Subscription::create([
+    'status' => 'trialing',
+    'gateway' => 'stripe',
+    'price_id' => $price->id,
+    'billable_type' => $organization::class,
+    'billable_id' => $organization->id,
+    'trial_ends_at' => now()->addDays(14),
+]);
+```
+
+`TrialWillEnd` спрацьовує, щоб запросити картку до кінця trial. Якщо ніхто не конвертувався — `billing:expire-trials` (щодня) знаходить `trialing`-підписки з простроченим `trial_ends_at` і переводить у `ended`. Конвертація в середині trial чи прямо в кінці — той самий виклик: `chargeWithMethod()` на `Payment` цієї підписки одразу переводить її в `active` при `PaymentSucceeded` (лістенеру байдуже, що вона починалась як `trialing`) — окремого методу "конвертувати trial" викликати не треба.
+
+### 5. Кілька незалежних підписок на одного клієнта одночасно
+
+`Subscription::$billable_id` не унікальний — одна `Organization` може мати скільки завгодно одночасних, незалежно оплачуваних підписок (базовий план, AI-аддон, аддон на канал, ...), кожна зі своїм гейтвеєм/статусом/циклом продовження:
+
+```php
+foreach (['base' => 'stripe', 'ai-addon' => 'stripe', 'channel-viber' => 'wayforpay'] as $planCode => $gateway) {
+    Subscription::create([
+        'status' => 'active',
+        'gateway' => $gateway,
+        'price_id' => Plan::where('code', $planCode)->firstOrFail()->prices()->firstOrFail()->id,
+        'billable_type' => $organization::class,
+        'billable_id' => $organization->id,
+        'current_period_ends_at' => now()->addMonth(),
+    ]);
+}
+```
+
+Скасування чи спливання однієї не зачіпає решту — кожен рядок має власний незалежний життєвий цикл.
+
 ## Конвертація валют
 
 Якщо валюта `Price` не приймається обраним гейтвеєм, `BillingManager::resolveChargeAmount()` пробує по черзі: (1) власну валюту ціни, якщо приймається; (2) сіблінг-`Price` того ж `Plan`+гейтвея в прийнятній валюті; (3) забінджений `CurrencyConverterContract`; (4) кидає `BillingException`. Забіндити конвертер (напр. адаптер над [`fomvasss/laravel-currency`](https://github.com/fomvasss/laravel-currency), не жорстка залежність цього пакета):

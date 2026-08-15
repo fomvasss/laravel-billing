@@ -6,6 +6,7 @@ namespace Fomvasss\Billing;
 
 use Fomvasss\Billing\Contracts\CredentialResolverContract;
 use Fomvasss\Billing\Contracts\CurrencyConverterContract;
+use Fomvasss\Billing\Contracts\HasReceiptItems;
 use Fomvasss\Billing\Contracts\PaymentGatewayContract;
 use Fomvasss\Billing\Contracts\RefundsPayments;
 use Fomvasss\Billing\Contracts\SubscriptionGatewayContract;
@@ -118,10 +119,29 @@ class BillingManager
      * payment_url is ALWAYS a plain redirectable link here, regardless of whether the driver
      * returned $result->url or $result->form — a form-only gateway (LiqPay, currently the only
      * one) goes through storeCheckoutForm() so callers never have to branch on which one they got.
+     *
+     * $options->receiptItems auto-fills from $payment->payable->receiptItems() when the caller
+     * didn't already set one explicitly and $payable implements HasReceiptItems — the fiscal
+     * basket a driver like Monobank/LiqPay needs, without every caller repeating the same
+     * "does this order implement HasReceiptItems" check themselves.
      */
     public function charge(Payment $payment, ChargeOptions $options = new ChargeOptions()): PaymentResult
     {
         $driver = $this->driver($payment->gateway, $payment->billable?->tenantId());
+
+        if ($options->receiptItems === [] && $payment->payable instanceof HasReceiptItems) {
+            $options = new ChargeOptions(
+                receiptItems: $payment->payable->receiptItems(),
+                customerEmail: $options->customerEmail,
+                locale: $options->locale,
+                description: $options->description,
+                saveCard: $options->saveCard,
+                successUrl: $options->successUrl,
+                failUrl: $options->failUrl,
+                webhookUrlParams: $options->webhookUrlParams,
+                raw: $options->raw,
+            );
+        }
 
         $result = $driver->charge($payment, $options);
 

@@ -118,11 +118,18 @@ class LiqPayGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $data);
         }
 
+        $externalId = (string) ($data['payment_id'] ?? $data['order_id']);
+        $payment->update(['status' => $status, 'external_id' => $externalId]);
+
         return new WebhookResult(
             type: WebhookEventType::Payment,
-            status: $status === PaymentStatus::Paid ? 'succeeded' : 'failed',
+            status: match ($status) {
+                PaymentStatus::Paid => 'succeeded',
+                PaymentStatus::Failed => 'failed',
+                default => 'canceled',
+            },
             payment: $payment,
-            externalId: (string) ($data['payment_id'] ?? $data['order_id']),
+            externalId: $externalId,
             raw: $data,
         );
     }

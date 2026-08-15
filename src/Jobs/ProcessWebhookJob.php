@@ -6,17 +6,7 @@ namespace Fomvasss\Billing\Jobs;
 
 use Fomvasss\Billing\BillingManager;
 use Fomvasss\Billing\DTO\WebhookResult;
-use Fomvasss\Billing\Enums\WebhookEventType;
-use Fomvasss\Billing\Events\PaymentFailed;
-use Fomvasss\Billing\Events\PaymentMethodAttached;
-use Fomvasss\Billing\Events\PaymentMethodDetached;
-use Fomvasss\Billing\Events\PaymentRefunded;
-use Fomvasss\Billing\Events\PaymentSucceeded;
-use Fomvasss\Billing\Events\SubscriptionCancelled;
-use Fomvasss\Billing\Events\SubscriptionCreated;
-use Fomvasss\Billing\Events\SubscriptionPaymentFailed;
-use Fomvasss\Billing\Events\SubscriptionRenewed;
-use Fomvasss\Billing\Events\TrialWillEnd;
+use Fomvasss\Billing\Support\WebhookResultDispatcher;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Spatie\WebhookClient\Jobs\ProcessWebhookJob as SpatieProcessWebhookJob;
@@ -37,7 +27,7 @@ class ProcessWebhookJob extends SpatieProcessWebhookJob
             return; // a duplicate delivery already claimed this external_id — don't fire events twice
         }
 
-        $this->dispatchEvent($result);
+        WebhookResultDispatcher::dispatch($result);
     }
 
     /**
@@ -64,31 +54,5 @@ class ProcessWebhookJob extends SpatieProcessWebhookJob
         }
 
         return true;
-    }
-
-    protected function dispatchEvent(WebhookResult $result): void
-    {
-        match ($result->type) {
-            WebhookEventType::Payment => match ($result->status) {
-                'succeeded' => PaymentSucceeded::dispatch($result->payment),
-                'failed' => PaymentFailed::dispatch($result->payment),
-                'refunded' => PaymentRefunded::dispatch($result->payment),
-                default => null, // 'canceled' and anything else — nothing to notify
-            },
-            WebhookEventType::Subscription => match ($result->status) {
-                'created' => SubscriptionCreated::dispatch($result->subscription),
-                'renewed' => SubscriptionRenewed::dispatch($result->subscription),
-                'payment_failed' => SubscriptionPaymentFailed::dispatch($result->subscription),
-                'canceled' => SubscriptionCancelled::dispatch($result->subscription),
-                'trial_will_end' => TrialWillEnd::dispatch($result->subscription),
-                default => null,
-            },
-            WebhookEventType::PaymentMethod => match ($result->status) {
-                'attached' => PaymentMethodAttached::dispatch($result->paymentMethod),
-                'detached' => PaymentMethodDetached::dispatch($result->paymentMethod),
-                default => null,
-            },
-            WebhookEventType::Ignored => null,
-        };
     }
 }

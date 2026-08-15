@@ -125,9 +125,15 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $data);
         }
 
+        $payment->update(['status' => $status, 'external_id' => $data['invoiceId']]);
+
         return new WebhookResult(
             type: WebhookEventType::Payment,
-            status: $status === PaymentStatus::Paid ? 'succeeded' : 'failed',
+            status: match ($status) {
+                PaymentStatus::Paid => 'succeeded',
+                PaymentStatus::Failed => 'failed',
+                default => 'canceled',
+            },
             payment: $payment,
             externalId: $data['invoiceId'],
             raw: $data,

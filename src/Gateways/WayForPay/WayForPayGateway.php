@@ -117,6 +117,8 @@ class WayForPayGateway extends AbstractGateway implements ChecksPaymentStatus
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $data);
         }
 
+        $payment->update(['status' => $status]);
+
         return new WebhookResult(
             type: WebhookEventType::Payment,
             status: $status === PaymentStatus::Paid ? 'succeeded' : 'failed',

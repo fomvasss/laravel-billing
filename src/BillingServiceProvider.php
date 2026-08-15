@@ -42,12 +42,12 @@ class BillingServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
-        $this->loadMigrationsFrom(__DIR__ . '/../database/migrations');
-
         if ($this->app->runningInConsole()) {
             $this->publishes([
                 __DIR__ . '/../config/billing.php' => config_path('billing.php'),
             ], 'billing-config');
+
+            $this->publishMigrations();
         }
 
         $this->registerFakeGateway();
@@ -65,6 +65,36 @@ class BillingServiceProvider extends ServiceProvider
                 $this->registerSchedule();
             }
         }
+    }
+
+    /**
+     * Published, not auto-loaded (`loadMigrationsFrom()`) — reconsidered from the original
+     * decision: billing schema deserves the same review-before-you-run step Cashier and this
+     * package's own `spatie/laravel-webhook-client` dependency both require, and lets a consumer
+     * skip subscriptions/payment_methods entirely if they never need them. Destination filenames
+     * are the SOURCE's own fixed names, not a freshly generated timestamp — `vendor:publish` skips
+     * a file that already exists at that exact path without `--force`, so re-publishing is
+     * naturally idempotent (the ai-tasks `date('Y_m_d_His')`-destination bug this avoids is
+     * documented in the package plan).
+     */
+    protected function publishMigrations(): void
+    {
+        $path = __DIR__ . '/../database/migrations/';
+
+        $this->publishes([
+            $path . '2026_08_15_000001_create_billing_payments_table.php' => database_path('migrations/2026_08_15_000001_create_billing_payments_table.php'),
+            $path . '9999_12_31_235959_add_external_id_to_webhook_calls_table.php' => database_path('migrations/9999_12_31_235959_add_external_id_to_webhook_calls_table.php'),
+        ], 'billing-migrations-core');
+
+        $this->publishes([
+            $path . '2026_08_15_000002_create_billing_plans_table.php' => database_path('migrations/2026_08_15_000002_create_billing_plans_table.php'),
+            $path . '2026_08_15_000003_create_billing_prices_table.php' => database_path('migrations/2026_08_15_000003_create_billing_prices_table.php'),
+            $path . '2026_08_15_000004_create_billing_subscriptions_table.php' => database_path('migrations/2026_08_15_000004_create_billing_subscriptions_table.php'),
+        ], 'billing-migrations-subscriptions');
+
+        $this->publishes([
+            $path . '2026_08_15_000005_create_billing_payment_methods_table.php' => database_path('migrations/2026_08_15_000005_create_billing_payment_methods_table.php'),
+        ], 'billing-migrations-payment-methods');
     }
 
     protected function registerListeners(): void

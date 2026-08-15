@@ -53,6 +53,10 @@ class LiqPayGateway extends AbstractGateway implements RefundsPayments, ChecksPa
     public function charge(Payment $payment, ChargeOptions $options = new ChargeOptions()): PaymentResult
     {
         $params = array_filter([
+            // Gateway-specific extras the package has no neutral shape for — LiqPay's rro_info
+            // (fiscalization) is the canonical case. Merged first so the driver's own fields
+            // below always win: raw can add what we don't set, never override amount/order_id.
+            ...$options->raw,
             'version' => 3,
             'public_key' => $this->publicKey(),
             'action' => 'pay',

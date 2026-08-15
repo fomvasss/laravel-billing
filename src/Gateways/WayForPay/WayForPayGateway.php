@@ -63,6 +63,10 @@ class WayForPayGateway extends AbstractGateway implements ChecksPaymentStatus, T
         $orderDate = now()->timestamp;
 
         $fields = array_filter([
+            // Gateway-specific extras (orderLifetime, paymentSystems, delivery fields, ...). Merged
+            // first so the driver's own fields below always win — and, critically, so raw can never
+            // desync a field from the signature computed over them further down.
+            ...$options->raw,
             'merchantAccount' => $this->merchantAccount(),
             'merchantAuthType' => 'SimpleSignature',
             'merchantDomainName' => $this->merchantDomainName(),

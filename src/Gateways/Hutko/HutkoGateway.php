@@ -48,6 +48,9 @@ class HutkoGateway extends AbstractGateway implements TokenizesPaymentMethod
     public function charge(Payment $payment, ChargeOptions $options = new ChargeOptions()): PaymentResult
     {
         $data = $this->request('checkout/url', array_filter([
+            // Gateway-specific extras. Merged first so the driver's own fields below always win —
+            // raw adds what we don't set, never overrides amount/order_id.
+            ...$options->raw,
             'order_id' => (string) $payment->id,
             'order_desc' => $options->description ?? "Payment #{$payment->id}",
             'amount' => $payment->amount,

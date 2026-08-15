@@ -47,6 +47,9 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
     public function charge(Payment $payment, ChargeOptions $options = new ChargeOptions()): PaymentResult
     {
         $response = $this->http()->asForm()->post('/checkout/sessions', array_filter([
+            // Gateway-specific extras (automatic_tax, custom_fields, ...). Merged first so the
+            // driver's own fields below always win — raw adds, never overrides amount/metadata.
+            ...$options->raw,
             'mode' => 'payment',
             'line_items' => $this->lineItems($payment, $options),
             'success_url' => $this->successUrl($options),

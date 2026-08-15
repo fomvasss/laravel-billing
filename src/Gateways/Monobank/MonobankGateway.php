@@ -51,6 +51,9 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
     public function charge(Payment $payment, ChargeOptions $options = new ChargeOptions()): PaymentResult
     {
         $response = $this->http()->post('/api/merchant/invoice/create', array_filter([
+            // Gateway-specific extras (Monobank's x_cms, agentFeePercent, ...). Merged first so
+            // the driver's own fields below always win — raw adds, never overrides amount/reference.
+            ...$options->raw,
             'amount' => $payment->amount,
             'ccy' => $this->currencyCode($payment->currency_code),
             'merchantPaymInfo' => array_filter([

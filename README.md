@@ -357,7 +357,7 @@ Everything above is the building blocks; here's how they combine for a few real 
 
 ### 1. Store checkout with fiscal receipt items
 
-`Order` implements `HasReceiptItems` — `charge()` picks it up automatically (no need to pass `receiptItems` yourself), and Monobank/LiqPay/WayForPay use it to fiscalize the basket on their side:
+`Order` implements `HasReceiptItems` — `charge()` picks it up automatically, no need to pass `receiptItems` yourself:
 
 ```php
 class Order extends Model implements Payable, HasReceiptItems
@@ -373,6 +373,8 @@ class Order extends Model implements Payable, HasReceiptItems
     }
 }
 ```
+
+What each gateway does with it differs — **Monobank** (`basketOrder`), **WayForPay** (`productName[]`/`productPrice[]`/`productCount[]`) and **Stripe** (`line_items`) send the basket as-is. **LiqPay** fiscalizes through `rro_info`, whose line items reference goods registered in your LiqPay account by their catalog id — a value this neutral shape has no field for, so pass it explicitly via `ChargeOptions::$raw` (see below). **Hutko** has no fiscalization API at all, so the items are simply unused there.
 
 ```php
 $payment = Payment::create([
@@ -402,6 +404,28 @@ Event::listen(PaymentSucceeded::class, function (PaymentSucceeded $event) {
     }
 });
 ```
+
+Anything a gateway supports that has no neutral equivalent goes through `ChargeOptions::$raw` — merged into the request as-is, read only by whichever driver you're charging through, ignored by the rest:
+
+```php
+Billing::charge($payment, new ChargeOptions(
+    description: "Order #{$order->number}",
+    raw: [
+        // LiqPay fiscalization — ids come from your LiqPay account (SCR → Kasa → Goods)
+        'rro_info' => [
+            'items' => $order->items->map(fn ($item) => [
+                'id' => $item->product->liqpay_goods_id,
+                'amount' => $item->qty,
+                'price' => $item->unit_price / 100,
+                'cost' => $item->total / 100,
+            ])->all(),
+            'delivery_emails' => [$order->user->email],
+        ],
+    ],
+));
+```
+
+`$raw` is merged *under* the driver's own fields, so it can add what the driver doesn't set but never override the amount or the merchant reference the webhook matches on.
 
 ### 2. Subscribe to a 15 GB plan — and how the auto-renewal actually works
 

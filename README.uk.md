@@ -353,7 +353,7 @@ Billing::charge($payment, new ChargeOptions(saveCard: true));
 
 ### 1. Оплата замовлення в магазині з фіскальним чеком
 
-`Order` реалізує `HasReceiptItems` — `charge()` підхоплює це автоматично (не треба самим передавати `receiptItems`), і Monobank/LiqPay/WayForPay використовують це для фіскалізації кошика на своєму боці:
+`Order` реалізує `HasReceiptItems` — `charge()` підхоплює це автоматично, не треба самим передавати `receiptItems`:
 
 ```php
 class Order extends Model implements Payable, HasReceiptItems
@@ -369,6 +369,8 @@ class Order extends Model implements Payable, HasReceiptItems
     }
 }
 ```
+
+Що саме гейтвей із цим робить — різне: **Monobank** (`basketOrder`), **WayForPay** (`productName[]`/`productPrice[]`/`productCount[]`) і **Stripe** (`line_items`) надсилають кошик як є. **LiqPay** фіскалізує через `rro_info`, чиї позиції посилаються на товари, зареєстровані у вашому кабінеті LiqPay, за їхнім каталожним id — значення, під яке в цій нейтральній структурі поля немає, тож передавайте його явно через `ChargeOptions::$raw` (нижче). У **Hutko** фіскалізації в API немає взагалі, тож там ці позиції просто не використовуються.
 
 ```php
 $payment = Payment::create([
@@ -398,6 +400,28 @@ Event::listen(PaymentSucceeded::class, function (PaymentSucceeded $event) {
     }
 });
 ```
+
+Усе, що гейтвей підтримує, але для чого немає нейтрального еквівалента, йде через `ChargeOptions::$raw` — вливається в запит як є, читається лише тим драйвером, яким платите, рештою ігнорується:
+
+```php
+Billing::charge($payment, new ChargeOptions(
+    description: "Замовлення #{$order->number}",
+    raw: [
+        // Фіскалізація LiqPay — id беруться з вашого кабінету LiqPay (SCR → Каса → Товари)
+        'rro_info' => [
+            'items' => $order->items->map(fn ($item) => [
+                'id' => $item->product->liqpay_goods_id,
+                'amount' => $item->qty,
+                'price' => $item->unit_price / 100,
+                'cost' => $item->total / 100,
+            ])->all(),
+            'delivery_emails' => [$order->user->email],
+        ],
+    ],
+));
+```
+
+`$raw` вливається *під* власні поля драйвера, тож може додати те, чого драйвер не встановлює, але ніколи не перевизначить суму чи merchant reference, за яким матчиться вебхук.
 
 ### 2. Оформлення підписки на 15 ГБ — і як насправді працює автопродовження
 

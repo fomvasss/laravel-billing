@@ -87,7 +87,12 @@ class LiqPayGateway extends AbstractGateway implements RefundsPayments, ChecksPa
         // still encoded.
         $decoded = json_decode(base64_decode($webhookCall->payload['data']), true, 512, JSON_THROW_ON_ERROR);
 
-        $payment = Payment::findOrFail($decoded['order_id']);
+        // A callback for a payment this package didn't create is Ignored, not a failed job.
+        $payment = isset($decoded['order_id']) ? Payment::find($decoded['order_id']) : null;
+
+        if ($payment === null) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $decoded);
+        }
 
         $status = match ($decoded['status']) {
             'success', 'sandbox' => PaymentStatus::Paid,
@@ -97,6 +102,14 @@ class LiqPayGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             // plan; explicit RefundsPayments::refund() below is the primary, supported path.
             default => null,
         };
+
+        if ($status === PaymentStatus::Paid && $this->paidAmountMismatch(
+            $payment,
+            isset($decoded['amount']) ? (int) round((float) $decoded['amount'] * 100) : null,
+            $decoded['currency'] ?? null,
+        )) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $decoded);
+        }
 
         // card_token rides along in the SAME callback as the payment status (unlike Monobank's
         // separate delivery) — only present when charge() ran with recurringbytoken (saveCard),
@@ -287,7 +300,12 @@ class LiqPayGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             $decoded['sender_card_type'] ?? null,
         );
 
-        PaymentMethodAttached::dispatch($method);
+        // Direct dispatch runs BEFORE ProcessWebhookJob's dedup claim, so a re-delivered callback
+        // would fire it again — wasRecentlyCreated is the dedup here: only a token not yet
+        // persisted counts as "attached".
+        if ($method->wasRecentlyCreated) {
+            PaymentMethodAttached::dispatch($method);
+        }
     }
 
     protected function customerId(string $billableType, string $billableId): string

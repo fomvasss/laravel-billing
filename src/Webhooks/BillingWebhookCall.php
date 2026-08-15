@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace Fomvasss\Billing\Webhooks;
 
+use Fomvasss\Billing\Support\WebhookPayload;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
+use Illuminate\Database\Eloquent\MassPrunable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\Request;
 
@@ -17,6 +20,7 @@ use Illuminate\Http\Request;
 class BillingWebhookCall extends Model
 {
     use HasUuids;
+    use MassPrunable;
 
     protected $table = 'billing_webhook_calls';
 
@@ -37,7 +41,7 @@ class BillingWebhookCall extends Model
             'name' => $gateway,
             'url' => $request->fullUrl(),
             'headers' => $request->headers->all(),
-            'payload' => (array) $request->all(),
+            'payload' => WebhookPayload::fromRequest($request),
         ]);
     }
 
@@ -51,5 +55,16 @@ class BillingWebhookCall extends Model
         $this->save();
 
         return $this;
+    }
+
+    /**
+     * schedule('model:prune') — registered by BillingServiceProvider when billing.schedule.enabled.
+     * Pruning also drops the rows' dedup claims, so the window is a trade-off: a gateway re-delivery
+     * arriving later than prune_after_days would fire its events again. 30 days is far beyond any
+     * built-in gateway's retry horizon (WayForPay's, the longest, is 4 days).
+     */
+    public function prunable(): Builder
+    {
+        return static::where('created_at', '<', now()->subDays((int) config('billing.webhook.prune_after_days', 30)));
     }
 }

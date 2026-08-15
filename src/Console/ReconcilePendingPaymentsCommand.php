@@ -14,8 +14,9 @@ use Illuminate\Console\Command;
 
 /**
  * Fallback for a missed webhook or a gateway-side `expired` status (never sent as a webhook — see
- * "Webhook pipeline" in the package plan). Reuses WebhookResultDispatcher so a status found this
- * way fires the exact same events a webhook would have.
+ * "Webhook pipeline" in the package plan). Dispatches through dispatchOnce() so a status found
+ * this way fires the exact same events a webhook would have — and never twice when the real
+ * webhook races this poll.
  */
 class ReconcilePendingPaymentsCommand extends Command
 {
@@ -33,7 +34,14 @@ class ReconcilePendingPaymentsCommand extends Command
             ->where('created_at', '<', $cutoff)
             ->chunkById(200, function ($payments) use ($billing, &$count) {
                 foreach ($payments as $payment) {
-                    $this->reconcile($payment, $billing);
+                    try {
+                        $this->reconcile($payment, $billing);
+                    } catch (\Throwable $exception) {
+                        // One gateway/network failure must not strand every later pending payment.
+                        report($exception);
+                        $this->error("Payment {$payment->id}: {$exception->getMessage()}");
+                    }
+
                     $count++;
                 }
             });
@@ -56,7 +64,7 @@ class ReconcilePendingPaymentsCommand extends Command
         }
 
         if ($driver instanceof ChecksPaymentStatus) {
-            WebhookResultDispatcher::dispatch($driver->checkStatus($payment));
+            WebhookResultDispatcher::dispatchOnce($payment->gateway, $driver->checkStatus($payment));
 
             return;
         }

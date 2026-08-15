@@ -99,7 +99,21 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $event);
         }
 
-        $payment = Payment::findOrFail($paymentId);
+        // An event for a payment this package didn't create is Ignored, not a failed job.
+        $payment = Payment::find($paymentId);
+
+        if ($payment === null) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $event);
+        }
+
+        // amount_total on a Checkout Session, amount on a bare PaymentIntent — both minor units.
+        if ($status === PaymentStatus::Paid && $this->paidAmountMismatch(
+            $payment,
+            isset($object['amount_total']) || isset($object['amount']) ? (int) ($object['amount_total'] ?? $object['amount']) : null,
+            $object['currency'] ?? null,
+        )) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $event);
+        }
 
         $externalId = $object['payment_intent'] ?? $object['id'] ?? null;
 
@@ -226,6 +240,13 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
 
     public function checkStatus(Payment $payment): WebhookResult
     {
+        // external_id starts out as the Checkout Session id, but becomes the PaymentIntent id once
+        // a webhook lands — and is a PI from the very start for off-session chargePaymentMethod()
+        // payments. Poll whichever object it actually is.
+        if (str_starts_with((string) $payment->external_id, 'pi_')) {
+            return $this->checkPaymentIntentStatus($payment);
+        }
+
         $data = $this->http()->get("/checkout/sessions/{$payment->external_id}")->throw()->json();
 
         $status = match (true) {
@@ -246,6 +267,38 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             status: $status === PaymentStatus::Paid ? 'succeeded' : 'canceled',
             payment: $payment,
             externalId: $externalId,
+            raw: $data,
+        );
+    }
+
+    protected function checkPaymentIntentStatus(Payment $payment): WebhookResult
+    {
+        $data = $this->http()->get("/payment_intents/{$payment->external_id}")->throw()->json();
+
+        $status = match ($data['status']) {
+            'succeeded' => PaymentStatus::Paid,
+            'canceled' => PaymentStatus::Canceled,
+            // An off-session PI dropped back to requires_payment_method is a decline whose webhook
+            // never made it — terminal for reconciliation purposes.
+            'requires_payment_method' => PaymentStatus::Failed,
+            default => null, // processing / requires_action / requires_confirmation
+        };
+
+        if ($status === null) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $data);
+        }
+
+        $payment->update(['status' => $status]);
+
+        return new WebhookResult(
+            type: WebhookEventType::Payment,
+            status: match ($status) {
+                PaymentStatus::Paid => 'succeeded',
+                PaymentStatus::Failed => 'failed',
+                default => 'canceled',
+            },
+            payment: $payment,
+            externalId: $data['id'],
             raw: $data,
         );
     }

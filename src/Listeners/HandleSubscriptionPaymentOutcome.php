@@ -38,6 +38,7 @@ class HandleSubscriptionPaymentOutcome
             'current_period_ends_at' => $this->nextPeriodEnd($subscription, $price),
             'recurring_attempts' => 0,
             'grace_ends_at' => null,
+            'next_retry_at' => null,
             // metered usage resets on a successful renewal — see "Ліміти/квоти" in the plan
             'current_usage' => $price?->pricing_type?->value === 'metered' ? 0 : $subscription->current_usage,
         ]);
@@ -50,6 +51,13 @@ class HandleSubscriptionPaymentOutcome
         $subscription = $event->payment->payable;
 
         if (! $subscription instanceof Subscription) {
+            return;
+        }
+
+        // A failed charge against a still-trialing subscription is a failed conversion attempt at
+        // checkout, not a failed renewal — dunning here would cancel the trial after a few
+        // declined cards. The trial keeps running; expire-trials ends it if nobody converts.
+        if ($subscription->status === SubscriptionStatus::Trialing) {
             return;
         }
 
@@ -76,6 +84,10 @@ class HandleSubscriptionPaymentOutcome
             'status' => SubscriptionStatus::PastDue,
             'recurring_attempts' => $attempts,
             'grace_ends_at' => now()->addDays((int) config('billing.grace_period_days', 3)),
+            // Spaces the retries out — without this, the hourly scheduler would re-pick a past_due
+            // subscription every run and burn through max_recurring_attempts within hours, making
+            // the multi-day grace window meaningless.
+            'next_retry_at' => now()->addHours((int) config('billing.retry_interval_hours', 24)),
         ]);
 
         SubscriptionPaymentFailed::dispatch($subscription);

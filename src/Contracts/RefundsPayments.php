@@ -11,6 +11,9 @@ use Fomvasss\Billing\Support\Money;
 /** Optional — implement only if the gateway can refund via API (some require doing it manually in the bank's dashboard). */
 interface RefundsPayments
 {
-    /** Returns the PaymentResult for a new Payment row (type=refund), not a separate entity. */
+    /**
+     * Only the gateway API call — the child Payment row (type=refund) and the PaymentRefunded
+     * event are BillingManager::refund()'s job, which is the entry point consumers should use.
+     */
     public function refund(Payment $payment, ?Money $amount = null): PaymentResult;
 }

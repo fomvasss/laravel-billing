@@ -18,10 +18,10 @@ use Fomvasss\Billing\Webhooks\BillingWebhookCall;
 interface PaymentGatewayContract
 {
     /**
-     * $payment — the already-created, status=pending row (BillingManager::charge() creates it
-     * before calling the driver), not a bare Payable+Money pair: the driver needs $payment->id/
-     * link_token as the merchant reference it hands the gateway, so the later webhook can look the
-     * row back up. $payment->payable/billable/amount/currency_code cover what charge() itself needs.
+     * $payment — the already-created, status=pending row (the caller creates it before
+     * BillingManager::charge()), not a bare Payable+Money pair: the driver needs $payment->id as
+     * the merchant reference it hands the gateway, so the later webhook can look the row back up.
+     * $payment->payable/billable/amount/currency_code cover what charge() itself needs.
      */
     public function charge(Payment $payment, ChargeOptions $options = new ChargeOptions()): PaymentResult;
 

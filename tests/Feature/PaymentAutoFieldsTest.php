@@ -11,13 +11,6 @@ use Fomvasss\Billing\Tests\TestCase;
 
 class PaymentAutoFieldsTest extends TestCase
 {
-    public function test_link_token_is_generated_automatically(): void
-    {
-        $payment = $this->makePayment();
-
-        $this->assertNotEmpty($payment->link_token);
-    }
-
     public function test_paid_at_is_stamped_only_when_status_becomes_paid(): void
     {
         $payment = $this->makePayment();

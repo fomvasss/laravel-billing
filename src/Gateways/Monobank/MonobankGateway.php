@@ -93,7 +93,13 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
         }
 
         // Same schema as GET /invoice/status — "reference" is exactly what we set to $payment->id on charge().
-        $payment = Payment::findOrFail($payload['reference']);
+        // A webhook for a payment this package didn't create (another integration on the same
+        // merchant account, a row created before install) is Ignored, not a failed job.
+        $payment = isset($payload['reference']) ? Payment::find($payload['reference']) : null;
+
+        if ($payment === null) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
+        }
 
         $status = match ($payload['status'] ?? null) {
             'success' => PaymentStatus::Paid,
@@ -103,6 +109,14 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
         };
 
         if ($status === null) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
+        }
+
+        if ($status === PaymentStatus::Paid && $this->paidAmountMismatch(
+            $payment,
+            isset($payload['amount']) ? (int) $payload['amount'] : null,
+            isset($payload['ccy']) ? (string) array_search((int) $payload['ccy'], self::CURRENCY_CODES, true) : null,
+        )) {
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
         }
 
@@ -272,7 +286,12 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
      */
     protected function handleWalletData(array $payload): WebhookResult
     {
-        $payment = Payment::findOrFail($payload['reference']);
+        $payment = isset($payload['reference']) ? Payment::find($payload['reference']) : null;
+
+        if ($payment === null) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
+        }
+
         $billable = $payment->billable;
         $maskedPan = $payload['paymentInfo']['maskedPan'] ?? null;
 

@@ -13,7 +13,6 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
 use Illuminate\Database\Eloquent\SoftDeletes;
-use Illuminate\Support\Str;
 
 class Payment extends Model
 {
@@ -46,12 +45,6 @@ class Payment extends Model
      */
     protected static function booted(): void
     {
-        static::creating(function (self $payment) {
-            if (empty($payment->link_token)) {
-                $payment->link_token = Str::random(40);
-            }
-        });
-
         static::saving(function (self $payment) {
             if (! $payment->isDirty('status')) {
                 return;

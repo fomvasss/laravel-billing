@@ -7,6 +7,7 @@ namespace Fomvasss\Billing\Gateways;
 use Fomvasss\Billing\Contracts\PaymentGatewayContract;
 use Fomvasss\Billing\DTO\ChargeOptions;
 use Fomvasss\Billing\Exceptions\BillingException;
+use Fomvasss\Billing\Models\Payment;
 use Fomvasss\Billing\Models\PaymentMethod;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -55,6 +56,28 @@ abstract class AbstractGateway implements PaymentGatewayContract
         return $options->failUrl
             ?? config('billing.return_urls.failed')
             ?? throw BillingException::missingReturnUrl('failed');
+    }
+
+    /**
+     * A signed "paid" callback whose sum/currency doesn't match this Payment row is NOT proof this
+     * row was paid — the classic case is a stale checkout link paid after the amount was edited
+     * and charge() re-issued. The driver refuses to mark paid on a mismatch; the row stays pending
+     * for reconciliation/manual review (the stored webhook call keeps the full payload).
+     */
+    protected function paidAmountMismatch(Payment $payment, ?int $amountMinor, ?string $currency): bool
+    {
+        $mismatch = ($amountMinor !== null && $amountMinor !== $payment->amount)
+            || ($currency !== null && strcasecmp($currency, $payment->currency_code) !== 0);
+
+        if ($mismatch) {
+            Log::warning("Billing [{$this->gatewayName}]: paid webhook amount/currency mismatch — leaving payment pending", [
+                'payment_id' => $payment->id,
+                'expected' => [$payment->amount, $payment->currency_code],
+                'received' => [$amountMinor, $currency],
+            ]);
+        }
+
+        return $mismatch;
     }
 
     /**

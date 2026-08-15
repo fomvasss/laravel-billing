@@ -52,9 +52,12 @@ class ModelHelpersTest extends TestCase
         $user = TestUser::create(['name' => 'Buyer']);
         $this->subscription(['status' => SubscriptionStatus::Active], $user);
         $this->subscription(['status' => SubscriptionStatus::Canceled], $user);
+        // active() matches isActive(): past_due inside the grace window still counts, expired doesn't
+        $this->subscription(['status' => SubscriptionStatus::PastDue, 'grace_ends_at' => now()->addDay()], $user);
+        $this->subscription(['status' => SubscriptionStatus::PastDue, 'grace_ends_at' => now()->subDay()], $user);
 
-        $this->assertCount(1, Subscription::active()->get());
-        $this->assertCount(2, Subscription::forBillable($user)->get());
+        $this->assertCount(2, Subscription::active()->get());
+        $this->assertCount(4, Subscription::forBillable($user)->get());
     }
 
     public function test_payment_status_helpers_and_scopes(): void

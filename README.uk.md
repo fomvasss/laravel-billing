@@ -168,6 +168,21 @@ Payment::create([
 
 `paid_at` виставляється автоматично в момент, коли `status` стає `paid`.
 
+### Повернення коштів
+
+`Billing::refund()` — єдина точка входу: робить виклик до гейтвея *і* фіксує результат — дочірній рядок `Payment` (`type=refund`, зв'язок через `parent_payment_id`) плюс подія `PaymentRefunded` з цим рядком. За замовчуванням — повне повернення, часткове — через `Money`; сумарні повернення ніколи не перевищать оригінальне списання:
+
+```php
+use Fomvasss\Billing\Support\Money;
+
+$refund = Billing::refund($payment);                          // неповернутий залишок, повністю
+$refund = Billing::refund($payment, new Money(2500, 'UAH'));  // часткове
+
+$payment->refundedAmount(); // мінорні одиниці, сума всіх оплачених рядків повернення
+```
+
+Підтримується там, де в гейтвея є refund-API: Monobank, LiqPay, Stripe (`RefundsPayments` — перевіряйте `Billing::gateways()[$name]['capabilities']['refunds']`). Повернення WayForPay/Hutko робляться в кабінеті банку; якщо потрібні у вашому обліку — створіть рядок повернення вручну.
+
 ## Схема послідовності
 
 ```mermaid
@@ -206,8 +221,11 @@ sequenceDiagram
 
 | Подія | Коли |
 |---|---|
-| `PaymentSucceeded` / `PaymentFailed` / `PaymentRefunded` | Статус `Payment` дійшов до термінального стану |
-| `SubscriptionCreated` / `SubscriptionRenewed` / `SubscriptionPaymentFailed` / `SubscriptionCancelled` / `TrialWillEnd` | Гейтвей-driven зміна стану підписки (лише нативні підписки гейтвея) |
+| `PaymentSucceeded` / `PaymentFailed` | Статус `Payment` дійшов до термінального стану |
+| `PaymentRefunded` | `Billing::refund()` створив рядок повернення (див. "Повернення коштів") |
+| `SubscriptionRenewed` / `SubscriptionPaymentFailed` / `SubscriptionCancelled` | Результат рекурентного списання, оброблений власним лістенером пакета (період посунуто / dunning / скасовано після `max_recurring_attempts` або в момент `cancels_at`) |
+| `SubscriptionCreated` | Лише гейтвеї з нативними підписками — жоден вбудований драйвер поки її не диспатчить |
+| `TrialWillEnd` | З `billing:expire-trials`, за `trial_ending_notice_days` (дефолт 3) до `trial_ends_at`, один раз на підписку |
 | `SubscriptionPaused` / `SubscriptionResumed` | Лише локально, через `$subscription->pause()`/`resume()` — гейтвей не бере участі |
 | `PaymentMethodAttached` / `PaymentMethodDetached` | Збережена картка/токен прив'язана або відв'язана |
 | `UsageLimitReached` | `Subscription::reportUsage()` перетнув `price.included_units` |
@@ -219,6 +237,14 @@ Event::listen(PaymentSucceeded::class, function (PaymentSucceeded $event) {
     $event->payment->payable; // ваш Order, Subscription тощо
 });
 ```
+
+### Що гарантує пайплайн
+
+- **Валідатори підписів fail closed.** Усі п'ять webhook-маршрутів існують навіть для гейтвеїв, яких ви не налаштовували — маршрут гейтвея без секрету відповідає 403 на все, а не "перевіряє" проти порожнього ключа.
+- **"Оплачений" колбек має збігтися із сумою й валютою платежу.** Підписаний колбек з іншою сумою (класика: стара checkout-лінка, оплачена після зміни суми замовлення й повторного `charge()`) *не* помічає платіж оплаченим — пишеться warning у лог, рядок лишається `pending` для реконсиляції/ручного розбору.
+- **Події дедуплікуються за результатом, не за референсом.** Повторно доставлений "оплачено" ніколи не викличе `PaymentSucceeded` двічі — але "відхилено, потім клієнт повторив оплату того ж чекауту і заплатив" диспатчить і `PaymentFailed`, і `PaymentSucceeded`, навіть на гейтвеях, що використовують один референс на всі спроби. Команда реконсиляції ділить той самий дедуп, тож гонка "poll проти пізнього вебхука" теж не подвоїть подію.
+- **Колбек про платіж, якого пакет не знає** (інша інтеграція на тому ж мерчант-акаунті, рядки до встановлення пакета), ігнорується — без failed jobs.
+- **Збережені webhook-виклики чистяться** через `config('billing.webhook.prune_after_days')` (дефолт 30) щоденним `model:prune`, зареєстрованим разом з іншими команди розкладу.
 
 ### Кастомізація webhook-маршруту
 
@@ -302,6 +328,8 @@ $subscription->cancel(atPeriodEnd: false); // негайно
 $subscription->swapPlan($newPrice);
 ```
 
+`cancel()` на кінець періоду лише проставляє `cancels_at` — фактична зміна статусу (і гарантія, що клієнта *не* спишуть за наступний період) відбувається в `billing:process-recurring-charges`, коли цей момент настає. Тобто скасування на кінець періоду потребує увімкненого розкладу — так само, як і саме автопродовження.
+
 ### Рекурентні списання, реконсиляція, спливання тріалу
 
 Три artisan-команди, вимкнені за замовчуванням (`billing.schedule.enabled`, бо стосуються грошей і стану підписок):
@@ -313,9 +341,10 @@ $subscription->swapPlan($newPrice);
 
 | Команда | Запускається | Що робить |
 |---|---|---|
-| `billing:process-recurring-charges` | щогодини | Знаходить підписки з `current_period_ends_at <= now()` і списує зі збереженого `PaymentMethod` через `chargePaymentMethod()`. Лише ІНІЦІЮЄ списання — результат приходить пізніше через звичайний webhook pipeline, обробляється автоматично (посування періоду при `PaymentSucceeded`, або dunning-цикл через `grace_ends_at`/`recurring_attempts`/`max_recurring_attempts` при `PaymentFailed`, аж до `SubscriptionCancelled`). |
-| `billing:reconcile-pending-payments` | кожні 15 хв | Fallback для `Payment`, що завис `pending` через загублений вебхук, або статус `expired` гейтвея, для якого власного вебхука не буває. Бере лише платежі старші за `config('billing.reconcile_after_minutes')` (дефолт 60 хв) — цей cutoff уже сам по собі відкладає, коли платіж кваліфікується як "завис", тому ця команда запускається частіше за інші дві, не щогодини. |
-| `billing:expire-trials` | щодня | `trialing`-підписки з простроченим `trial_ends_at` → `ended`. Нічого іншого не чіпає — конвертація trial у платну підписку — звичайний виклик `chargeWithMethod()`, той самий, що й будь-яке продовження (див. "Безкоштовний період" у Практичних прикладах). |
+| `billing:process-recurring-charges` | щогодини | Спершу фіналізує підписки, чий `cancels_at` настав (статус → `canceled`, диспатчиться `SubscriptionCancelled`) — скасування на кінець періоду ніколи не буде списане ще раз. Далі знаходить підписки з `current_period_ends_at <= now()` і списує зі збереженого `PaymentMethod` через `chargePaymentMethod()` — крім випадку, коли попередній renewal-`Payment` ще `pending` (вебхук не дійшов): це блокує друге списання за той самий період. Лише ІНІЦІЮЄ списання — результат приходить пізніше через звичайний webhook pipeline, обробляється автоматично: період посувається при `PaymentSucceeded`; при `PaymentFailed` підписка стає `past_due` і ретраїться кожні `retry_interval_hours` (дефолт 24 — з інтервалом, а *не* кожен щогодинний запуск) до вичерпання `max_recurring_attempts`, далі `SubscriptionCancelled`. З дефолтами це 3 спроби з добовим інтервалом упродовж 3-денного grace-вікна. |
+| `billing:reconcile-pending-payments` | кожні 15 хв | Fallback для `Payment`, що завис `pending` через загублений вебхук, або статус `expired` гейтвея, для якого власного вебхука не буває. Бере лише платежі старші за `config('billing.reconcile_after_minutes')` (дефолт 60 хв) — цей cutoff уже сам по собі відкладає, коли платіж кваліфікується як "завис", тому ця команда запускається частіше за інші дві, не щогодини. Помилка на одному платежі репортиться й пропускається, ніколи не блокує решту. |
+| `billing:expire-trials` | щодня | Диспатчить `TrialWillEnd` для тріалів у вікні `trial_ending_notice_days` (раз на підписку), потім переводить `trialing`-підписки з простроченим `trial_ends_at` у `ended`. Конвертація trial у платну підписку — звичайний виклик `chargeWithMethod()`, той самий, що й будь-яке продовження (див. "Безкоштовний період" у Практичних прикладах). |
+| `model:prune` (BillingWebhookCall) | щодня | Видаляє збережені webhook-виклики, старші за `webhook.prune_after_days` (дефолт 30). |
 
 Ніщо з цього не запускається саме собою — `Schedule::command()`/`->hourly()` тощо лише реєструються у власному Laravel-планувальнику застосунку, якому все одно потрібен стандартний системний cron-запис `php artisan schedule:run` щохвилини (звичайна вимога деплою Laravel, не специфіка пакета).
 
@@ -531,7 +560,7 @@ $subscription = Subscription::create([
 ]);
 ```
 
-`TrialWillEnd` спрацьовує, щоб запросити картку до кінця trial. Якщо ніхто не конвертувався — `billing:expire-trials` (щодня) знаходить `trialing`-підписки з простроченим `trial_ends_at` і переводить у `ended`. Конвертація в середині trial чи прямо в кінці — той самий виклик: `chargeWithMethod()` на `Payment` цієї підписки одразу переводить її в `active` при `PaymentSucceeded` (лістенеру байдуже, що вона починалась як `trialing`) — окремого методу "конвертувати trial" викликати не треба.
+`TrialWillEnd` спрацьовує за `trial_ending_notice_days` (дефолт 3) до `trial_ends_at` — зі щоденного запуску `billing:expire-trials`, тож потребує увімкненого розкладу — і дає хук запросити картку до кінця trial. Якщо ніхто не конвертувався — та сама команда переводить `trialing`-підписки з простроченим `trial_ends_at` у `ended`. Відхилена картка *під час* trial нічого не скасовує — dunning стосується лише реальних продовжень, trial живе далі до конвертації або спливання. Конвертація в середині trial чи прямо в кінці — той самий виклик: `chargeWithMethod()` на `Payment` цієї підписки одразу переводить її в `active` при `PaymentSucceeded` (лістенеру байдуже, що вона починалась як `trialing`) — окремого методу "конвертувати trial" викликати не треба.
 
 ### 5. Кілька незалежних підписок на одного клієнта одночасно
 
@@ -588,7 +617,8 @@ $subscription->onGracePeriod();// продовження не вдалось, а
 $subscription->isCanceled();
 $subscription->isCancelling(); // викликали cancel() на кінець періоду — до того ще працює
 
-Subscription::active()->get();               // trialing + active
+Subscription::active()->get();               // те саме визначення, що isActive(): trialing + active
+                                             // + past_due, що ще в межах grace-вікна
 Subscription::forBillable($organization)->get();
 ```
 
@@ -610,7 +640,7 @@ Payment::forBillable($organization)->latest()->get();
 
 ## Конвертація валют
 
-Якщо валюта `Price` не приймається обраним гейтвеєм, `BillingManager::resolveChargeAmount()` пробує по черзі: (1) власну валюту ціни, якщо приймається; (2) сіблінг-`Price` того ж `Plan`+гейтвея в прийнятній валюті; (3) забінджений `CurrencyConverterContract`; (4) кидає `BillingException`. Забіндити конвертер (напр. адаптер над [`fomvasss/laravel-currency`](https://github.com/fomvasss/laravel-currency), не жорстка залежність цього пакета):
+Якщо валюта `Price` не приймається обраним гейтвеєм, `BillingManager::resolveChargeAmount()` пробує по черзі: (1) власну валюту ціни, якщо приймається; (2) сіблінг-`Price` того ж `Plan` у прийнятній валюті — спершу прив'язаний до цього гейтвея, потім generic (`gateway = null`); (3) забінджений `CurrencyConverterContract`; (4) кидає `BillingException`. Забіндити конвертер (напр. адаптер над [`fomvasss/laravel-currency`](https://github.com/fomvasss/laravel-currency), не жорстка залежність цього пакета):
 
 ```php
 $this->app->bind(\Fomvasss\Billing\Contracts\CurrencyConverterContract::class, MyCurrencyConverter::class);

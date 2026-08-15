@@ -58,6 +58,27 @@ class WayForPayTokenizationTest extends TestCase
         Event::assertDispatchedTimes(PaymentMethodAttached::class, 1);
     }
 
+    public function test_a_redelivered_approved_callback_does_not_fire_attached_again(): void
+    {
+        Event::fake([PaymentMethodAttached::class]);
+
+        $user = $this->makeUser();
+        $payment = $this->pendingPayment($user);
+
+        $payload = [
+            'orderReference' => (string) $payment->id,
+            'transactionStatus' => 'Approved',
+            'recToken' => 'rec_tok_dup',
+        ];
+
+        // attachFromWebhook dispatches directly, BEFORE the job-level dedup claim — the
+        // wasRecentlyCreated guard is what keeps a WayForPay re-delivery from double-firing.
+        Billing::driver('wayforpay')->handleWebhook(new BillingWebhookCall(['name' => 'wayforpay', 'payload' => $payload]));
+        Billing::driver('wayforpay')->handleWebhook(new BillingWebhookCall(['name' => 'wayforpay', 'payload' => $payload]));
+
+        Event::assertDispatchedTimes(PaymentMethodAttached::class, 1);
+    }
+
     public function test_attaching_a_known_token_persists_it_without_any_http_call(): void
     {
         Event::fake([PaymentMethodAttached::class]);

@@ -36,6 +36,11 @@ class ScheduleTest extends TestCase
         $this->assertSame('0 0 * * *', $this->expressionFor('billing:expire-trials'));
     }
 
+    public function test_webhook_calls_are_pruned_daily(): void
+    {
+        $this->assertSame('0 0 * * *', $this->expressionFor('model:prune'));
+    }
+
     private function expressionFor(string $command): ?string
     {
         $schedule = $this->app->make(Schedule::class);

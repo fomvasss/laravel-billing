@@ -76,7 +76,12 @@ class HutkoGateway extends AbstractGateway implements TokenizesPaymentMethod
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
         }
 
-        $payment = Payment::findOrFail($payload['order_id']);
+        // A callback for a payment this package didn't create is Ignored, not a failed job.
+        $payment = isset($payload['order_id']) ? Payment::find($payload['order_id']) : null;
+
+        if ($payment === null) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
+        }
 
         $status = match ($payload['order_status'] ?? null) {
             'approved' => PaymentStatus::Paid,
@@ -85,6 +90,14 @@ class HutkoGateway extends AbstractGateway implements TokenizesPaymentMethod
             // created/processing — not terminal
             default => null,
         };
+
+        if ($status === PaymentStatus::Paid && $this->paidAmountMismatch(
+            $payment,
+            isset($payload['amount']) ? (int) $payload['amount'] : null, // minor units, same as the request's own `amount`
+            $payload['currency'] ?? null,
+        )) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
+        }
 
         // rectoken rides along in the SAME callback as the payment status, automatically on any
         // approved card payment (no opt-in flag — see class docblock). Persisted as a side effect,
@@ -301,7 +314,11 @@ class HutkoGateway extends AbstractGateway implements TokenizesPaymentMethod
             $payload['card_type'] ?? null,
         );
 
-        PaymentMethodAttached::dispatch($method);
+        // Direct dispatch runs BEFORE ProcessWebhookJob's dedup claim — wasRecentlyCreated keeps a
+        // re-delivered callback from firing PaymentMethodAttached again (same as LiqPay/WayForPay).
+        if ($method->wasRecentlyCreated) {
+            PaymentMethodAttached::dispatch($method);
+        }
     }
 
     protected function customerId(string $billableType, string $billableId): string

@@ -61,6 +61,33 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Retry interval
+    |--------------------------------------------------------------------------
+    |
+    | Hours between recurring-charge retries after a failure. Spaces the
+    | max_recurring_attempts across the grace window (default: 3 attempts,
+    | 24h apart, 3-day grace) instead of burning them on consecutive
+    | scheduler runs.
+    |
+    */
+
+    'retry_interval_hours' => env('BILLING_RETRY_INTERVAL_HOURS', 24),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Trial ending notice
+    |--------------------------------------------------------------------------
+    |
+    | How many days before trial_ends_at the TrialWillEnd event fires (once per
+    | subscription, from billing:expire-trials) — the hook for "add a card
+    | before your trial runs out" notifications.
+    |
+    */
+
+    'trial_ending_notice_days' => env('BILLING_TRIAL_ENDING_NOTICE_DAYS', 3),
+
+    /*
+    |--------------------------------------------------------------------------
     | Reconciliation
     |--------------------------------------------------------------------------
     |
@@ -99,13 +126,18 @@ return [
     | `path` to match your own convention (e.g. 'webhook/billing/{gateway}');
     | `middleware` is empty by default — webhook endpoints deliberately skip
     | the `web` group (no CSRF, no session), add your own (IP allowlist, rate
-    | limiting, logging) here if needed.
+    | limiting, logging) here if needed. `prune_after_days` — how long stored
+    | webhook calls are kept before `model:prune` (scheduled daily when
+    | billing.schedule.enabled) deletes them; pruned rows also drop their
+    | dedup claims, so keep it beyond any gateway's retry horizon (WayForPay
+    | retries for up to 4 days).
     |
     */
 
     'webhook' => [
         'path' => env('BILLING_WEBHOOK_PATH', 'billing/webhooks/{gateway}'),
         'middleware' => [],
+        'prune_after_days' => env('BILLING_WEBHOOK_PRUNE_AFTER_DAYS', 30),
     ],
 
     /*

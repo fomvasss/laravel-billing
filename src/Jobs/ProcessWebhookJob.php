@@ -43,20 +43,22 @@ class ProcessWebhookJob implements ShouldQueue
     }
 
     /**
-     * Idempotency without a second table (see "Webhook pipeline" in the package plan): stamp
-     * external_id onto THIS webhook call row. If another row already holds the same
+     * Idempotency without a second table (see "Webhook pipeline" in the package plan): stamp the
+     * result's dedupKey() onto THIS webhook call row. If another row already holds the same
      * (name, external_id), the unique index rejects the UPDATE just like it would an INSERT.
      */
     protected function claimDedup(WebhookResult $result): bool
     {
-        if ($result->externalId === null) {
+        $key = $result->dedupKey();
+
+        if ($key === null) {
             return true;
         }
 
         try {
             DB::table('billing_webhook_calls')
                 ->where('id', $this->webhookCall->id)
-                ->update(['external_id' => $result->externalId]);
+                ->update(['external_id' => $key]);
         } catch (QueryException $exception) {
             if ((int) $exception->getCode() === 23000) {
                 return false;

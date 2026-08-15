@@ -33,6 +33,8 @@ class CheckoutFormTest extends TestCase
         $payment->refresh();
         $this->assertNotNull($payment->payment_url);
         $this->assertStringContainsString('/billing/checkout/' . $payment->id, $payment->payment_url);
+        // Must mirror the cached form's TTL — hasActivePaymentUrl() may not outlive the cache entry.
+        $this->assertNotNull($payment->payment_url_expires_at);
     }
 
     public function test_visiting_the_checkout_form_url_renders_the_liqpay_form(): void

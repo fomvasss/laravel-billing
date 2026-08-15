@@ -16,6 +16,8 @@ use Fomvasss\Billing\Events\SubscriptionCreated;
 use Fomvasss\Billing\Events\SubscriptionPaymentFailed;
 use Fomvasss\Billing\Events\SubscriptionRenewed;
 use Fomvasss\Billing\Events\TrialWillEnd;
+use Fomvasss\Billing\Webhooks\BillingWebhookCall;
+use Illuminate\Database\QueryException;
 
 /**
  * Shared by ProcessWebhookJob (webhook path) and ReconcilePendingPaymentsCommand (status-polling
@@ -47,5 +49,36 @@ final class WebhookResultDispatcher
             },
             WebhookEventType::Ignored => null,
         };
+    }
+
+    /**
+     * The polling-path twin of ProcessWebhookJob's claim: reconciliation has no webhook-call row
+     * of its own to stamp, so it claims the dedup key by INSERTing a synthetic one. The same
+     * unique(name, external_id) index then arbitrates between a late real webhook and this poll —
+     * whichever lands second is silently dropped instead of double-dispatching (double period
+     * advance, double order fulfillment).
+     */
+    public static function dispatchOnce(string $gateway, WebhookResult $result): void
+    {
+        $key = $result->dedupKey();
+
+        if ($key !== null) {
+            try {
+                BillingWebhookCall::create([
+                    'name' => $gateway,
+                    'url' => 'reconcile',
+                    'external_id' => $key,
+                    'payload' => $result->raw,
+                ]);
+            } catch (QueryException $exception) {
+                if ((int) $exception->getCode() === 23000) {
+                    return;
+                }
+
+                throw $exception;
+            }
+        }
+
+        self::dispatch($result);
     }
 }

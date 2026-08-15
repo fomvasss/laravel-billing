@@ -105,7 +105,12 @@ class WayForPayGateway extends AbstractGateway implements ChecksPaymentStatus, T
     {
         $payload = $webhookCall->payload;
 
-        $payment = Payment::findOrFail($payload['orderReference']);
+        // A callback for a payment this package didn't create is Ignored, not a failed job.
+        $payment = isset($payload['orderReference']) ? Payment::find($payload['orderReference']) : null;
+
+        if ($payment === null) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
+        }
 
         $status = match ($payload['transactionStatus'] ?? null) {
             'Approved' => PaymentStatus::Paid,
@@ -114,6 +119,14 @@ class WayForPayGateway extends AbstractGateway implements ChecksPaymentStatus, T
             // transition here, same "recognized, no consumer yet" reasoning as LiqPay's 'reversed'
             default => null,
         };
+
+        if ($status === PaymentStatus::Paid && $this->paidAmountMismatch(
+            $payment,
+            isset($payload['amount']) ? (int) round((float) $payload['amount'] * 100) : null,
+            $payload['currency'] ?? null,
+        )) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
+        }
 
         // recToken rides along in the SAME callback as the payment status, automatically on any
         // approved card payment (no opt-in flag — see class docblock). Persisted as a side effect,
@@ -331,7 +344,11 @@ class WayForPayGateway extends AbstractGateway implements ChecksPaymentStatus, T
             $payload['cardType'] ?? null,
         );
 
-        PaymentMethodAttached::dispatch($method);
+        // Direct dispatch runs BEFORE ProcessWebhookJob's dedup claim — wasRecentlyCreated keeps a
+        // re-delivered callback from firing PaymentMethodAttached again (same as LiqPay/Hutko).
+        if ($method->wasRecentlyCreated) {
+            PaymentMethodAttached::dispatch($method);
+        }
     }
 
     protected function customerId(string $billableType, string $billableId): string

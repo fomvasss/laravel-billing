@@ -172,6 +172,21 @@ Payment::create([
 
 `paid_at` is stamped automatically the moment `status` becomes `paid`.
 
+### Refunds
+
+`Billing::refund()` is the entry point — it makes the gateway call *and* records what happened: a child `Payment` row (`type=refund`, linked via `parent_payment_id`) plus a `PaymentRefunded` event carrying that row. Full refund by default, partial via `Money`; cumulative refunds can never exceed the original charge:
+
+```php
+use Fomvasss\Billing\Support\Money;
+
+$refund = Billing::refund($payment);                          // the unrefunded remainder, in full
+$refund = Billing::refund($payment, new Money(2500, 'UAH'));  // partial
+
+$payment->refundedAmount(); // minor units, sums all paid refund rows
+```
+
+Supported where the gateway has a refund API: Monobank, LiqPay, Stripe (`RefundsPayments` — check `Billing::gateways()[$name]['capabilities']['refunds']`). WayForPay/Hutko refunds happen in the bank's own dashboard; record them as a manual refund row if you need them in your books.
+
 ## Flow
 
 ```mermaid
@@ -210,8 +225,11 @@ One route (`POST /billing/webhooks/{gateway}`) handles every gateway, resolved a
 
 | Event | Fires when |
 |---|---|
-| `PaymentSucceeded` / `PaymentFailed` / `PaymentRefunded` | A `Payment`'s status resolves to a terminal state |
-| `SubscriptionCreated` / `SubscriptionRenewed` / `SubscriptionPaymentFailed` / `SubscriptionCancelled` / `TrialWillEnd` | Gateway-driven subscription state changes (native-subscription gateways only) |
+| `PaymentSucceeded` / `PaymentFailed` | A `Payment`'s status resolves to a terminal state |
+| `PaymentRefunded` | `Billing::refund()` created a refund row (see "Refunds") |
+| `SubscriptionRenewed` / `SubscriptionPaymentFailed` / `SubscriptionCancelled` | The outcome of a renewal charge, handled by the package's own listener (period advanced / dunning / cancelled after `max_recurring_attempts` or at `cancels_at`) |
+| `SubscriptionCreated` | Native-subscription gateways only — no built-in driver dispatches it yet |
+| `TrialWillEnd` | From `billing:expire-trials`, `trial_ending_notice_days` (default 3) before `trial_ends_at`, once per subscription |
 | `SubscriptionPaused` / `SubscriptionResumed` | Local-only, via `$subscription->pause()`/`resume()` — never gateway-driven |
 | `PaymentMethodAttached` / `PaymentMethodDetached` | A saved card/token is attached or removed |
 | `UsageLimitReached` | `Subscription::reportUsage()` crosses `price.included_units` |
@@ -223,6 +241,14 @@ Event::listen(PaymentSucceeded::class, function (PaymentSucceeded $event) {
     $event->payment->payable; // your Order, Subscription, etc.
 });
 ```
+
+### What the pipeline guarantees
+
+- **Signature validators fail closed.** All five webhook routes exist even for gateways you never configured — a route whose gateway has no secret set responds 403 to everything instead of "verifying" against an empty key.
+- **A paid callback must match the payment's amount and currency.** A signed callback whose sum differs (classic case: a stale checkout link paid after the order's amount was edited and `charge()` re-issued) does *not* mark the payment paid — it's logged as a warning and left `pending` for reconciliation/manual review.
+- **Events are deduplicated per outcome, not per reference.** A re-delivered "paid" callback never fires `PaymentSucceeded` twice — but "declined, then the customer retries the same checkout and pays" dispatches both `PaymentFailed` and `PaymentSucceeded`, even on gateways that reuse one reference across attempts. The reconciliation command shares the same dedup, so a poll racing a late webhook can't double-dispatch either.
+- **A callback for a payment the package doesn't know** (another integration on the same merchant account, rows predating the install) is ignored — no failed jobs.
+- **Stored webhook calls are pruned** after `config('billing.webhook.prune_after_days')` (default 30) by a daily `model:prune` run, registered together with the other scheduled commands.
 
 ### Customizing the webhook route
 
@@ -306,6 +332,8 @@ $subscription->cancel(atPeriodEnd: false); // immediately
 $subscription->swapPlan($newPrice);
 ```
 
+`cancel()` at period end only stamps `cancels_at` — the actual status flip (and the guarantee the customer is *not* charged for another period) happens in `billing:process-recurring-charges` when that moment passes. In other words: period-end cancellation requires the schedule to be enabled, same as auto-renewal itself.
+
 ### Recurring charges, reconciliation, trial expiry
 
 Three artisan commands, off by default (`billing.schedule.enabled`, since they touch money and subscription state):
@@ -317,9 +345,10 @@ Three artisan commands, off by default (`billing.schedule.enabled`, since they t
 
 | Command | Runs | What it does |
 |---|---|---|
-| `billing:process-recurring-charges` | hourly | Finds subscriptions where `current_period_ends_at <= now()` and charges the saved `PaymentMethod` via `chargePaymentMethod()`. Only *initiates* the charge — the outcome arrives later through the normal webhook pipeline, handled automatically (period advances on `PaymentSucceeded`, or the grace/dunning cycle via `grace_ends_at`/`recurring_attempts`/`max_recurring_attempts` kicks in on `PaymentFailed`, up to `SubscriptionCancelled`). |
-| `billing:reconcile-pending-payments` | every 15 min | Fallback for a `Payment` stuck `pending` because a webhook was lost, or a gateway `expired` status that never gets its own webhook. Only looks at payments older than `config('billing.reconcile_after_minutes')` (default 60 min) — that cutoff already delays how soon a stuck payment qualifies, which is why this runs more often than the other two, not hourly like them. |
-| `billing:expire-trials` | daily | `trialing` subscriptions whose `trial_ends_at` has passed → `ended`. Doesn't touch anything else — converting a trial to paid is a normal `chargeWithMethod()` call, same as any renewal (see "Free trial period" in Recipes). |
+| `billing:process-recurring-charges` | hourly | First finalizes subscriptions whose `cancels_at` has passed (status → `canceled`, `SubscriptionCancelled` fires) so a period-end cancellation is never billed again. Then finds subscriptions where `current_period_ends_at <= now()` and charges the saved `PaymentMethod` via `chargePaymentMethod()` — unless an earlier renewal `Payment` is still `pending` (webhook not yet resolved), which blocks a second charge for the same period. Only *initiates* the charge — the outcome arrives later through the normal webhook pipeline, handled automatically: the period advances on `PaymentSucceeded`; on `PaymentFailed` the subscription goes `past_due` and is retried every `retry_interval_hours` (default 24 — spaced out, *not* every hourly run) until `max_recurring_attempts` is reached, then `SubscriptionCancelled`. With the defaults that's 3 attempts a day apart across the 3-day grace window. |
+| `billing:reconcile-pending-payments` | every 15 min | Fallback for a `Payment` stuck `pending` because a webhook was lost, or a gateway `expired` status that never gets its own webhook. Only looks at payments older than `config('billing.reconcile_after_minutes')` (default 60 min) — that cutoff already delays how soon a stuck payment qualifies, which is why this runs more often than the other two, not hourly like them. A failure on one payment is reported and skipped, never blocks the rest. |
+| `billing:expire-trials` | daily | Dispatches `TrialWillEnd` for trials inside the `trial_ending_notice_days` window (once per subscription), then moves `trialing` subscriptions past `trial_ends_at` to `ended`. Converting a trial to paid is a normal `chargeWithMethod()` call, same as any renewal (see "Free trial period" in Recipes). |
+| `model:prune` (BillingWebhookCall) | daily | Deletes stored webhook calls older than `webhook.prune_after_days` (default 30). |
 
 None of this fires on its own — `Schedule::command()`/`->hourly()` etc. just register with Laravel's own scheduler, which still needs the standard system cron entry running `php artisan schedule:run` every minute (the usual Laravel deployment requirement, nothing package-specific).
 
@@ -535,7 +564,7 @@ $subscription = Subscription::create([
 ]);
 ```
 
-`TrialWillEnd` fires so you can prompt for a card before the trial ends. If nobody converts, `billing:expire-trials` (daily) finds `trialing` subscriptions past `trial_ends_at` and moves them to `ended`. Converting mid-trial or right at the end is the same call either way — a `chargeWithMethod()` against this subscription's `Payment` flips it straight to `active` on `PaymentSucceeded` (the listener doesn't care that it started as `trialing`), no separate "convert trial" method to call.
+`TrialWillEnd` fires `trial_ending_notice_days` (default 3) before `trial_ends_at` — from the daily `billing:expire-trials` run, so it needs the schedule enabled — giving you the hook to prompt for a card before the trial ends. If nobody converts, the same command moves `trialing` subscriptions past `trial_ends_at` to `ended`. A declined card *during* the trial doesn't cancel anything — dunning only applies to real renewals, the trial keeps running until it converts or expires. Converting mid-trial or right at the end is the same call either way — a `chargeWithMethod()` against this subscription's `Payment` flips it straight to `active` on `PaymentSucceeded` (the listener doesn't care that it started as `trialing`), no separate "convert trial" method to call.
 
 ### 5. Several independent subscriptions on the same customer at once
 
@@ -592,7 +621,8 @@ $subscription->onGracePeriod();// a renewal failed but retries are still running
 $subscription->isCanceled();
 $subscription->isCancelling(); // cancel() was called for period end — still running until then
 
-Subscription::active()->get();               // trialing + active
+Subscription::active()->get();               // same definition as isActive(): trialing + active
+                                             // + past_due still inside the grace window
 Subscription::forBillable($organization)->get();
 ```
 
@@ -614,7 +644,7 @@ Payment::forBillable($organization)->latest()->get();
 
 ## Currency conversion
 
-If a `Price`'s currency isn't accepted by the chosen gateway, `BillingManager::resolveChargeAmount()` tries, in order: (1) the price's own currency, if accepted; (2) a sibling `Price` of the same `Plan`+gateway in an accepted currency; (3) a bound `CurrencyConverterContract`; (4) throws `BillingException`. Bind a converter (e.g. an adapter over [`fomvasss/laravel-currency`](https://github.com/fomvasss/laravel-currency), not a hard dependency of this package):
+If a `Price`'s currency isn't accepted by the chosen gateway, `BillingManager::resolveChargeAmount()` tries, in order: (1) the price's own currency, if accepted; (2) a sibling `Price` of the same `Plan` in an accepted currency — one pinned to this gateway first, a generic one (`gateway = null`) as fallback; (3) a bound `CurrencyConverterContract`; (4) throws `BillingException`. Bind a converter (e.g. an adapter over [`fomvasss/laravel-currency`](https://github.com/fomvasss/laravel-currency), not a hard dependency of this package):
 
 ```php
 $this->app->bind(\Fomvasss\Billing\Contracts\CurrencyConverterContract::class, MyCurrencyConverter::class);

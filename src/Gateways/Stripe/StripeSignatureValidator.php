@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Fomvasss\Billing\Gateways\Stripe;
 
+use Fomvasss\Billing\Contracts\CredentialResolverContract;
 use Illuminate\Http\Request;
 use Fomvasss\Billing\Contracts\SignatureValidator;
 
@@ -18,6 +19,13 @@ class StripeSignatureValidator implements SignatureValidator
 
     public function isValid(Request $request): bool
     {
+        $secret = app(CredentialResolverContract::class)->resolve('stripe', null)['webhook_secret'] ?? null;
+
+        // Fail closed — an unconfigured gateway's webhook route must reject, not verify against ''.
+        if (! is_string($secret) || $secret === '') {
+            return false;
+        }
+
         $header = $request->header('Stripe-Signature', '');
         $payload = $request->getContent();
 
@@ -31,7 +39,6 @@ class StripeSignatureValidator implements SignatureValidator
             return false;
         }
 
-        $secret = config('billing.gateways.stripe.webhook_secret', '');
         $expected = hash_hmac('sha256', "{$timestamp}.{$payload}", $secret);
 
         foreach ($signatures as $signature) {

@@ -25,8 +25,22 @@ final readonly class WebhookResult
         public ?Payment $payment = null,
         public ?Subscription $subscription = null,
         public ?PaymentMethod $paymentMethod = null,
-        /** Dedup key for ProcessWebhookJob's unique(name, external_id) check on webhook_calls — always set except for Ignored. */
+        /** The gateway-side reference this event is about — combined into dedupKey(), always set except for Ignored. */
         public ?string $externalId = null,
         public array $raw = [],
     ) {}
+
+    /**
+     * Dedup identity of this delivery, claimed against unique(name, external_id) on
+     * billing_webhook_calls. type+status are part of the key on purpose: a DIFFERENT outcome for
+     * the same gateway reference (declined, then the customer retries the same checkout and pays —
+     * Stripe reuses the PaymentIntent, WayForPay/Hutko the order reference) must still dispatch,
+     * while a re-delivery of the SAME outcome must not.
+     */
+    public function dedupKey(): ?string
+    {
+        return $this->externalId === null
+            ? null
+            : $this->type->name . ':' . $this->status . ':' . $this->externalId;
+    }
 }

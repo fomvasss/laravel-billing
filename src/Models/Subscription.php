@@ -31,9 +31,11 @@ class Subscription extends Model
             'qty' => 'integer',
             'current_usage' => 'float',
             'trial_ends_at' => 'datetime',
+            'trial_ends_notified_at' => 'datetime',
             'current_period_ends_at' => 'datetime',
             'cancels_at' => 'datetime',
             'grace_ends_at' => 'datetime',
+            'next_retry_at' => 'datetime',
             'recurring_attempts' => 'integer',
         ];
     }
@@ -165,10 +167,20 @@ class Subscription extends Model
         return $this->cancels_at !== null && $this->cancels_at->isFuture() && ! $this->isCanceled();
     }
 
-    /** @param  Builder<self>  $query */
+    /**
+     * Same definition as isActive() — entitled to the service right now, INCLUDING past_due still
+     * inside the dunning grace window.
+     *
+     * @param  Builder<self>  $query
+     */
     public function scopeActive(Builder $query): void
     {
-        $query->whereIn('status', [SubscriptionStatus::Trialing, SubscriptionStatus::Active]);
+        $query->where(function (Builder $query) {
+            $query->whereIn('status', [SubscriptionStatus::Trialing, SubscriptionStatus::Active])
+                ->orWhere(fn (Builder $query) => $query
+                    ->where('status', SubscriptionStatus::PastDue)
+                    ->where('grace_ends_at', '>', now()));
+        });
     }
 
     /** @param  Builder<self>  $query */

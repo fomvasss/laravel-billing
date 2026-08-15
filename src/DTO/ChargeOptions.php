@@ -22,4 +22,10 @@ final readonly class ChargeOptions
         /** Driver-specific: Monobank x_cms/validity, LiqPay rro_info, etc. — read only by the matching driver. */
         public array $raw = [],
     ) {}
+
+    /** Everything else copied as-is — new constructor fields propagate without touching this method. */
+    public function withReceiptItems(array $receiptItems): self
+    {
+        return new self(...['receiptItems' => $receiptItems] + get_object_vars($this));
+    }
 }

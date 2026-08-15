@@ -161,6 +161,7 @@ class BillingServiceProvider extends ServiceProvider
             // payment could sit unresolved for up to ~2h before this ever looked at it.
             $schedule->command('billing:reconcile-pending-payments')->everyFifteenMinutes();
             $schedule->command('billing:expire-trials')->daily();
+            $schedule->command('model:prune', ['--model' => [\Fomvasss\Billing\Webhooks\BillingWebhookCall::class]])->daily();
         });
     }
 

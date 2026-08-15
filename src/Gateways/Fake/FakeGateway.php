@@ -32,7 +32,11 @@ class FakeGateway extends AbstractGateway
     {
         $payload = $webhookCall->payload;
 
-        $payment = Payment::findOrFail($payload['payment_id']);
+        $payment = isset($payload['payment_id']) ? Payment::find($payload['payment_id']) : null;
+
+        if ($payment === null) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
+        }
 
         $succeeded = ($payload['result'] ?? null) === 'success';
 

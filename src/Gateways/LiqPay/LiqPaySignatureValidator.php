@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Fomvasss\Billing\Gateways\LiqPay;
 
+use Fomvasss\Billing\Contracts\CredentialResolverContract;
+use Fomvasss\Billing\Support\WebhookPayload;
 use Illuminate\Http\Request;
 use Fomvasss\Billing\Contracts\SignatureValidator;
 
@@ -16,14 +18,21 @@ class LiqPaySignatureValidator implements SignatureValidator
 {
     public function isValid(Request $request): bool
     {
-        $data = $request->input('data');
-        $signature = $request->input('signature');
+        $privateKey = app(CredentialResolverContract::class)->resolve('liqpay', null)['private_key'] ?? null;
+
+        // Fail closed: every built-in gateway's webhook route exists even when the gateway is not
+        // configured — with no key an attacker could compute the "signature" themselves.
+        if (! is_string($privateKey) || $privateKey === '') {
+            return false;
+        }
+
+        $payload = WebhookPayload::fromRequest($request);
+        $data = $payload['data'] ?? null;
+        $signature = $payload['signature'] ?? null;
 
         if (! is_string($data) || ! is_string($signature) || $data === '' || $signature === '') {
             return false;
         }
-
-        $privateKey = config('billing.gateways.liqpay.private_key', '');
 
         $expected = base64_encode(sha1($privateKey . $data . $privateKey, true));
 

@@ -14,6 +14,9 @@ use Fomvasss\Billing\Contracts\TokenizesPaymentMethod;
 use Fomvasss\Billing\DTO\ChargeOptions;
 use Fomvasss\Billing\DTO\PaymentResult;
 use Fomvasss\Billing\DTO\ResolvedAmount;
+use Fomvasss\Billing\Enums\PaymentStatus;
+use Fomvasss\Billing\Enums\PaymentType;
+use Fomvasss\Billing\Events\PaymentRefunded;
 use Fomvasss\Billing\Exceptions\BillingException;
 use Fomvasss\Billing\Exceptions\NotSupportedException;
 use Fomvasss\Billing\Models\Payment;
@@ -114,11 +117,15 @@ class BillingManager
      * The orchestration a bare $driver->charge() call can't do on its own: resolves the driver
      * for $payment->gateway (with $payment->billable's tenant, for dynamic per-tenant credentials),
      * calls it, then writes the result's external_id/payment_url/payment_url_expires_at back onto
-     * $payment — the same three columns PaymentRedirectController reads on a repeat visit.
+     * $payment.
      *
      * payment_url is ALWAYS a plain redirectable link here, regardless of whether the driver
      * returned $result->url or $result->form — a form-only gateway (LiqPay, currently the only
-     * one) goes through storeCheckoutForm() so callers never have to branch on which one they got.
+     * one) gets its form cached and served by CheckoutFormController so callers never have to
+     * branch on which one they got. Cached, not recomputed per visit: recomputing would assume
+     * charge() is side-effect-free for every current AND future form-returning driver, which isn't
+     * safe to bake in. The cache TTL and payment_url_expires_at are the same value on purpose —
+     * hasActivePaymentUrl() must not say "alive" for a link whose cached form is already gone.
      *
      * $options->receiptItems auto-fills from $payment->payable->receiptItems() when the caller
      * didn't already set one explicitly and $payable implements HasReceiptItems — the fiscal
@@ -130,51 +137,42 @@ class BillingManager
         $driver = $this->driver($payment->gateway, $payment->billable?->tenantId());
 
         if ($options->receiptItems === [] && $payment->payable instanceof HasReceiptItems) {
-            $options = new ChargeOptions(
-                receiptItems: $payment->payable->receiptItems(),
-                customerEmail: $options->customerEmail,
-                locale: $options->locale,
-                description: $options->description,
-                saveCard: $options->saveCard,
-                successUrl: $options->successUrl,
-                failUrl: $options->failUrl,
-                webhookUrlParams: $options->webhookUrlParams,
-                raw: $options->raw,
-            );
+            $options = $options->withReceiptItems($payment->payable->receiptItems());
         }
 
         $result = $driver->charge($payment, $options);
 
+        $url = $result->url;
+        $urlExpiresAt = $result->expiresAt;
+
+        if ($url === null && $result->form !== null) {
+            $urlExpiresAt ??= now()->addHour();
+            Cache::put("billing.checkout_form.{$payment->id}", $result->form, $urlExpiresAt);
+            $url = route('billing.checkout-form', $payment);
+        }
+
         $payment->fill([
             'external_id' => $result->externalId ?? $payment->external_id,
-            'payment_url' => $result->url ?? $this->storeCheckoutForm($payment, $result),
-            'payment_url_expires_at' => $result->expiresAt,
+            'payment_url' => $url,
+            'payment_url_expires_at' => $urlExpiresAt,
         ])->save();
 
         return $result;
     }
 
-    /**
-     * Bridges PaymentResult::$form into a plain URL — CheckoutFormController renders whatever's
-     * cached here as a self-submitting HTML form. Cached, not recomputed on each visit: recomputing
-     * would assume charge() is side-effect-free for every current AND future form-returning driver,
-     * which isn't safe to bake in here (a hypothetical driver could create a real gateway-side
-     * session inside charge() the same way Stripe's checkout() does).
-     */
-    protected function storeCheckoutForm(Payment $payment, PaymentResult $result): ?string
-    {
-        if ($result->form === null) {
-            return null;
-        }
-
-        Cache::put("billing.checkout_form.{$payment->id}", $result->form, $result->expiresAt ?? now()->addHour());
-
-        return route('billing.checkout-form', $payment);
-    }
-
     /** Same orchestration as charge(), for a saved payment method instead of a redirect/form. */
     public function chargeWithMethod(Payment $payment, PaymentMethod $method, array $options = []): PaymentResult
     {
+        // Cheap guards against a caller-side mixup that would debit the wrong card: the method
+        // must be from the same gateway AND belong to the same billable as the payment.
+        if ($method->gateway !== $payment->gateway) {
+            throw new BillingException("Payment method belongs to gateway \"{$method->gateway}\", the payment to \"{$payment->gateway}\".");
+        }
+
+        if ($method->billable_type !== $payment->billable_type || (string) $method->billable_id !== (string) $payment->billable_id) {
+            throw new BillingException("Payment method {$method->id} does not belong to payment {$payment->id}'s billable.");
+        }
+
         $driver = $this->driver($payment->gateway, $payment->billable?->tenantId());
 
         if (! $driver instanceof TokenizesPaymentMethod) {
@@ -190,6 +188,59 @@ class BillingManager
         ])->save();
 
         return $result;
+    }
+
+    /**
+     * The orchestration half of RefundsPayments — drivers only make the API call; this creates the
+     * child Payment row (type=refund, parent_payment_id) and dispatches PaymentRefunded, so
+     * refundedAmount() and the event actually reflect what happened. $amount null = refund the
+     * unrefunded remainder in full.
+     */
+    public function refund(Payment $payment, ?Money $amount = null): Payment
+    {
+        $driver = $this->driver($payment->gateway, $payment->billable?->tenantId());
+
+        if (! $driver instanceof RefundsPayments) {
+            throw NotSupportedException::forCapability($payment->gateway, RefundsPayments::class);
+        }
+
+        if (! $payment->isPaid() || $payment->isRefund()) {
+            throw new BillingException("Only a paid charge can be refunded (payment {$payment->id} is {$payment->type->value}/{$payment->status->value}).");
+        }
+
+        $money = $amount ?? new Money($payment->amount - $payment->refundedAmount(), $payment->currency_code);
+
+        if ($money->currency !== $payment->currency_code) {
+            throw new BillingException("Refund currency \"{$money->currency}\" does not match the charge's \"{$payment->currency_code}\".");
+        }
+
+        if ($money->amount <= 0 || $money->amount + $payment->refundedAmount() > $payment->amount) {
+            throw new BillingException("Refund of {$money->amount} exceeds the refundable remainder of payment {$payment->id}.");
+        }
+
+        // Always an explicit amount, even for "full": with earlier partial refunds, a null/full
+        // gateway-side refund and our computed remainder would disagree.
+        $result = $driver->refund($payment, $money);
+
+        $refund = Payment::create([
+            'status' => PaymentStatus::Paid,
+            'type' => PaymentType::Refund,
+            'gateway' => $payment->gateway,
+            'amount' => $money->amount,
+            'currency_code' => $money->currency,
+            'external_id' => $result->externalId,
+            'raw_response' => $result->raw,
+            'tenant_id' => $payment->tenant_id,
+            'payable_type' => $payment->payable_type,
+            'payable_id' => $payment->payable_id,
+            'billable_type' => $payment->billable_type,
+            'billable_id' => $payment->billable_id,
+            'parent_payment_id' => $payment->id,
+        ]);
+
+        PaymentRefunded::dispatch($refund);
+
+        return $refund;
     }
 
     /**
@@ -209,11 +260,18 @@ class BillingManager
             return new ResolvedAmount(new Money($price->amount, $price->currency_code));
         }
 
+        // A gateway-specific sibling wins; a generic (gateway=null) price in an accepted currency
+        // is still better than paying for a conversion.
         $sibling = $price->plan
             ->prices()
             ->where('gateway', $gateway)
             ->whereIn('currency_code', $supported)
-            ->first();
+            ->first()
+            ?? $price->plan
+                ->prices()
+                ->whereNull('gateway')
+                ->whereIn('currency_code', $supported)
+                ->first();
 
         if ($sibling !== null) {
             return new ResolvedAmount(new Money($sibling->amount, $sibling->currency_code));

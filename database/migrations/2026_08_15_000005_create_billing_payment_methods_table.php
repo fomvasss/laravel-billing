@@ -21,10 +21,13 @@ return new class extends Migration
             $table->boolean('is_default')->default(false);
             $table->timestamps();
             $table->string('tenant_id', 100)->nullable();
-            $table->morphs('billable');
+            // String morph id — billables with int and UUID keys both fit (same as billing_payments).
+            $table->string('billable_type');
+            $table->string('billable_id', 64);
             $table->string('external_customer_id')->nullable();
             $table->string('external_id');
 
+            $table->index(['billable_type', 'billable_id']);
             $table->unique(['gateway', 'external_customer_id', 'external_id'], 'billing_payment_methods_unique_token');
         });
     }

@@ -5,7 +5,10 @@ declare(strict_types=1);
 namespace Fomvasss\Billing;
 
 use Fomvasss\Billing\Contracts\CredentialResolverContract;
+use Fomvasss\Billing\Gateways\Fake\FakeGateway;
+use Fomvasss\Billing\Gateways\Fake\FakeSignatureValidator;
 use Fomvasss\Billing\Support\DefaultCredentialResolver;
+use Fomvasss\Billing\Support\WebhookConfigRegistrar;
 use Illuminate\Support\ServiceProvider;
 
 class BillingServiceProvider extends ServiceProvider
@@ -27,5 +30,22 @@ class BillingServiceProvider extends ServiceProvider
                 __DIR__ . '/../config/billing.php' => config_path('billing.php'),
             ], 'billing-config');
         }
+
+        $this->registerFakeGateway();
+    }
+
+    /** local/testing only — BillingManager::extend() itself refuses "fake" everywhere else. */
+    protected function registerFakeGateway(): void
+    {
+        if (! $this->app->environment(['local', 'testing'])) {
+            return;
+        }
+
+        $this->app->make(BillingManager::class)->extend('fake', FakeGateway::class);
+
+        WebhookConfigRegistrar::register('fake', FakeSignatureValidator::class);
+
+        $this->loadViewsFrom(__DIR__ . '/../resources/views', 'billing');
+        $this->loadRoutesFrom(__DIR__ . '/../routes/fake.php');
     }
 }

@@ -9,7 +9,10 @@ use Fomvasss\Billing\Contracts\PaymentGatewayContract;
 use Fomvasss\Billing\Contracts\RefundsPayments;
 use Fomvasss\Billing\Contracts\SubscriptionGatewayContract;
 use Fomvasss\Billing\Contracts\TokenizesPaymentMethod;
+use Fomvasss\Billing\DTO\ChargeOptions;
+use Fomvasss\Billing\DTO\PaymentResult;
 use Fomvasss\Billing\Exceptions\BillingException;
+use Fomvasss\Billing\Models\Payment;
 
 class BillingManager
 {
@@ -64,5 +67,26 @@ class BillingManager
     public function gateway(string $name): ?array
     {
         return $this->gateways()[$name] ?? null;
+    }
+
+    /**
+     * The orchestration a bare $driver->charge() call can't do on its own: resolves the driver
+     * for $payment->gateway (with $payment->billable's tenant, for dynamic per-tenant credentials),
+     * calls it, then writes the result's external_id/payment_url/payment_url_expires_at back onto
+     * $payment — the same three columns PaymentRedirectController reads on a repeat visit.
+     */
+    public function charge(Payment $payment, ChargeOptions $options = new ChargeOptions()): PaymentResult
+    {
+        $driver = $this->driver($payment->gateway, $payment->billable?->tenantId());
+
+        $result = $driver->charge($payment, $options);
+
+        $payment->fill([
+            'external_id' => $result->externalId ?? $payment->external_id,
+            'payment_url' => $result->url,
+            'payment_url_expires_at' => $result->expiresAt,
+        ])->save();
+
+        return $result;
     }
 }

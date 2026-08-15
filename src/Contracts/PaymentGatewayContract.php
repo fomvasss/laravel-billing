@@ -7,7 +7,7 @@ namespace Fomvasss\Billing\Contracts;
 use Fomvasss\Billing\DTO\ChargeOptions;
 use Fomvasss\Billing\DTO\PaymentResult;
 use Fomvasss\Billing\DTO\WebhookResult;
-use Fomvasss\Billing\Support\Money;
+use Fomvasss\Billing\Models\Payment;
 use Spatie\WebhookClient\Models\WebhookCall;
 
 /**
@@ -17,7 +17,13 @@ use Spatie\WebhookClient\Models\WebhookCall;
  */
 interface PaymentGatewayContract
 {
-    public function charge(Payable $payable, Money $amount, ChargeOptions $options = new ChargeOptions()): PaymentResult;
+    /**
+     * $payment — the already-created, status=pending row (BillingManager::charge() creates it
+     * before calling the driver), not a bare Payable+Money pair: the driver needs $payment->id/
+     * link_token as the merchant reference it hands the gateway, so the later webhook can look the
+     * row back up. $payment->payable/billable/amount/currency_code cover what charge() itself needs.
+     */
+    public function charge(Payment $payment, ChargeOptions $options = new ChargeOptions()): PaymentResult;
 
     /**
      * $webhookCall — the already-stored, already-signature-verified record (ProcessWebhookJob runs

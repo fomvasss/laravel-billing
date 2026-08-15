@@ -5,8 +5,7 @@ declare(strict_types=1);
 namespace Fomvasss\Billing\Gateways\WayForPay;
 
 use Illuminate\Http\Request;
-use Spatie\WebhookClient\SignatureValidator\SignatureValidator;
-use Spatie\WebhookClient\WebhookConfig;
+use Fomvasss\Billing\Contracts\SignatureValidator;
 
 /**
  * merchantAccount;orderReference;amount;currency;authCode;cardPan;transactionStatus;reasonCode,
@@ -14,7 +13,7 @@ use Spatie\WebhookClient\WebhookConfig;
  */
 class WayForPaySignatureValidator implements SignatureValidator
 {
-    public function isValid(Request $request, WebhookConfig $config): bool
+    public function isValid(Request $request): bool
     {
         $signature = $request->input('merchantSignature');
 

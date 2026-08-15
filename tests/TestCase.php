@@ -8,7 +8,6 @@ use Fomvasss\Billing\BillingServiceProvider;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Schema;
 use Orchestra\Testbench\TestCase as OrchestraTestCase;
-use Spatie\WebhookClient\WebhookClientServiceProvider;
 
 abstract class TestCase extends OrchestraTestCase
 {
@@ -17,7 +16,6 @@ abstract class TestCase extends OrchestraTestCase
     protected function getPackageProviders($app): array
     {
         return [
-            WebhookClientServiceProvider::class,
             BillingServiceProvider::class,
         ];
     }
@@ -44,30 +42,12 @@ abstract class TestCase extends OrchestraTestCase
 
     protected function defineDatabaseMigrations(): void
     {
-        // webhook_calls must exist BEFORE our own migrations run — the package's
-        // add_external_id_to_webhook_calls_table migration asserts it does (see there for why).
-        $this->createFixtureTables();
         $this->loadMigrationsFrom(__DIR__ . '/../database/migrations');
+        $this->createFixtureTables();
     }
 
-    /**
-     * spatie/laravel-webhook-client ships create_webhook_calls_table as a .stub — never
-     * auto-loaded (consumers publish it themselves, see "Webhook pipeline" in the package plan).
-     * Recreated here verbatim from the stub, same reasoning as visits' test_users/test_orders.
-     */
     private function createFixtureTables(): void
     {
-        Schema::create('webhook_calls', function ($table) {
-            $table->bigIncrements('id');
-            $table->string('name');
-            $table->string('url', 512);
-            $table->json('headers')->nullable();
-            $table->json('payload')->nullable();
-            $table->json('attachments')->nullable();
-            $table->text('exception')->nullable();
-            $table->timestamps();
-        });
-
         Schema::create('test_users', function ($table) {
             $table->id();
             $table->string('name')->nullable();

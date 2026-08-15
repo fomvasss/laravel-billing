@@ -8,7 +8,7 @@ use Fomvasss\Billing\DTO\ChargeOptions;
 use Fomvasss\Billing\DTO\PaymentResult;
 use Fomvasss\Billing\DTO\WebhookResult;
 use Fomvasss\Billing\Models\Payment;
-use Spatie\WebhookClient\Models\WebhookCall;
+use Fomvasss\Billing\Webhooks\BillingWebhookCall;
 
 /**
  * The whole "entry ticket" into the driver system — 4 required methods, everything else
@@ -28,10 +28,10 @@ interface PaymentGatewayContract
     /**
      * $webhookCall — the already-stored, already-signature-verified record (ProcessWebhookJob runs
      * queued, long after the live Request is gone). Signature verification itself does NOT happen
-     * here — it's spatie's own SignatureValidator, run synchronously pre-queue; see the driver's
-     * matching SignatureValidator class, registered alongside extend() in "Webhook pipeline".
+     * here — it's the driver's own Contracts\SignatureValidator, run synchronously in
+     * WebhookController before the call is even stored; see "Webhook pipeline".
      */
-    public function handleWebhook(WebhookCall $webhookCall): WebhookResult;
+    public function handleWebhook(BillingWebhookCall $webhookCall): WebhookResult;
 
     /** Human-readable name for the admin UI — required even without AbstractGateway, BillingManager::gateways() calls it statically. */
     public static function label(): string;

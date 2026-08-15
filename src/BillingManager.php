@@ -18,12 +18,19 @@ use Fomvasss\Billing\Exceptions\NotSupportedException;
 use Fomvasss\Billing\Models\Payment;
 use Fomvasss\Billing\Models\PaymentMethod;
 use Fomvasss\Billing\Models\Price;
+use Fomvasss\Billing\Support\DefaultWebhookResponder;
 use Fomvasss\Billing\Support\Money;
 
 class BillingManager
 {
     /** @var array<string, class-string<PaymentGatewayContract>> */
     protected array $drivers = [];
+
+    /** @var array<string, class-string<\Fomvasss\Billing\Contracts\SignatureValidator>> */
+    protected array $signatureValidators = [];
+
+    /** @var array<string, class-string<\Fomvasss\Billing\Contracts\WebhookResponder>> */
+    protected array $responders = [];
 
     /**
      * @param  class-string<PaymentGatewayContract>  $class  FQCN, not a closure — lets BillingManager
@@ -39,6 +46,32 @@ class BillingManager
         $this->drivers[$name] = $class;
 
         return $this;
+    }
+
+    /**
+     * One call alongside extend() registers everything the incoming webhook route needs for this
+     * gateway — no separate config file, no per-gateway route (a single wildcard route handles all
+     * of them, resolved through this registry at request time).
+     *
+     * @param  class-string<\Fomvasss\Billing\Contracts\SignatureValidator>  $signatureValidator
+     * @param  class-string<\Fomvasss\Billing\Contracts\WebhookResponder>|null  $responder  Defaults to a bare 200 — pass your own when the gateway requires a specific acknowledgment body (WayForPay does).
+     */
+    public function registerWebhook(string $name, string $signatureValidator, ?string $responder = null): static
+    {
+        $this->signatureValidators[$name] = $signatureValidator;
+        $this->responders[$name] = $responder ?? DefaultWebhookResponder::class;
+
+        return $this;
+    }
+
+    public function signatureValidatorFor(string $name): string
+    {
+        return $this->signatureValidators[$name] ?? throw BillingException::unknownGateway($name);
+    }
+
+    public function responderFor(string $name): string
+    {
+        return $this->responders[$name] ?? DefaultWebhookResponder::class;
     }
 
     public function driver(string $name, ?string $tenantId = null): PaymentGatewayContract
@@ -61,7 +94,7 @@ class BillingManager
             'label' => $class::label(),
             'currencies' => $class::supportedCurrencies(),
             'credential_fields' => $class::credentialFields(),
-            'webhook_url' => route("webhook-client-{$name}"),
+            'webhook_url' => route('billing.webhook', ['gateway' => $name]),
             'capabilities' => [
                 'refunds' => is_subclass_of($class, RefundsPayments::class),
                 'subscriptions' => is_subclass_of($class, SubscriptionGatewayContract::class),

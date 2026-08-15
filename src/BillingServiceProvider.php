@@ -23,11 +23,12 @@ use Fomvasss\Billing\Gateways\Stripe\StripeSignatureValidator;
 use Fomvasss\Billing\Gateways\WayForPay\WayForPayGateway;
 use Fomvasss\Billing\Gateways\WayForPay\WayForPaySignatureValidator;
 use Fomvasss\Billing\Gateways\WayForPay\WayForPayWebhookResponder;
+use Fomvasss\Billing\Http\Controllers\WebhookController;
 use Fomvasss\Billing\Listeners\HandleSubscriptionPaymentOutcome;
 use Fomvasss\Billing\Support\DefaultCredentialResolver;
-use Fomvasss\Billing\Support\WebhookConfigRegistrar;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
 
 class BillingServiceProvider extends ServiceProvider
@@ -50,6 +51,7 @@ class BillingServiceProvider extends ServiceProvider
             $this->publishMigrations();
         }
 
+        $this->registerWebhookRoute();
         $this->registerFakeGateway();
         $this->registerBuiltInGateways();
         $this->registerListeners();
@@ -68,22 +70,20 @@ class BillingServiceProvider extends ServiceProvider
     }
 
     /**
-     * Published, not auto-loaded (`loadMigrationsFrom()`) — reconsidered from the original
-     * decision: billing schema deserves the same review-before-you-run step Cashier and this
-     * package's own `spatie/laravel-webhook-client` dependency both require, and lets a consumer
-     * skip subscriptions/payment_methods entirely if they never need them. Destination filenames
-     * are the SOURCE's own fixed names, not a freshly generated timestamp — `vendor:publish` skips
-     * a file that already exists at that exact path without `--force`, so re-publishing is
-     * naturally idempotent (the ai-tasks `date('Y_m_d_His')`-destination bug this avoids is
-     * documented in the package plan).
+     * Published, not auto-loaded (`loadMigrationsFrom()`) — billing schema deserves the same
+     * review-before-you-run step Cashier requires, and lets a consumer skip subscriptions/
+     * payment_methods entirely if they never need them. Destination filenames are the SOURCE's own
+     * fixed names, not a freshly generated timestamp — `vendor:publish` skips a file that already
+     * exists at that exact path without `--force`, so re-publishing is naturally idempotent (the
+     * ai-tasks `date('Y_m_d_His')`-destination bug this avoids is documented in the package plan).
      */
     protected function publishMigrations(): void
     {
         $path = __DIR__ . '/../database/migrations/';
 
         $this->publishes([
+            $path . '2026_08_15_000000_create_billing_webhook_calls_table.php' => database_path('migrations/2026_08_15_000000_create_billing_webhook_calls_table.php'),
             $path . '2026_08_15_000001_create_billing_payments_table.php' => database_path('migrations/2026_08_15_000001_create_billing_payments_table.php'),
-            $path . '9999_12_31_235959_add_external_id_to_webhook_calls_table.php' => database_path('migrations/9999_12_31_235959_add_external_id_to_webhook_calls_table.php'),
         ], 'billing-migrations-core');
 
         $this->publishes([
@@ -95,6 +95,16 @@ class BillingServiceProvider extends ServiceProvider
         $this->publishes([
             $path . '2026_08_15_000005_create_billing_payment_methods_table.php' => database_path('migrations/2026_08_15_000005_create_billing_payment_methods_table.php'),
         ], 'billing-migrations-payment-methods');
+    }
+
+    /**
+     * One route for every gateway, resolved through BillingManager's registries at request time —
+     * see WebhookController and "Webhook pipeline" in the package plan for why this replaced a
+     * per-gateway route registered by each driver individually.
+     */
+    protected function registerWebhookRoute(): void
+    {
+        Route::post('billing/webhooks/{gateway}', [WebhookController::class, 'handle'])->name('billing.webhook');
     }
 
     protected function registerListeners(): void
@@ -127,9 +137,9 @@ class BillingServiceProvider extends ServiceProvider
             return;
         }
 
-        $this->app->make(BillingManager::class)->extend('fake', FakeGateway::class);
-
-        WebhookConfigRegistrar::register('fake', FakeSignatureValidator::class);
+        $this->app->make(BillingManager::class)
+            ->extend('fake', FakeGateway::class)
+            ->registerWebhook('fake', FakeSignatureValidator::class);
 
         $this->loadViewsFrom(__DIR__ . '/../resources/views', 'billing');
         $this->loadRoutesFrom(__DIR__ . '/../routes/fake.php');
@@ -144,19 +154,19 @@ class BillingServiceProvider extends ServiceProvider
     {
         $manager = $this->app->make(BillingManager::class);
 
-        $manager->extend('monobank', MonobankGateway::class);
-        WebhookConfigRegistrar::register('monobank', MonobankSignatureValidator::class);
+        $manager->extend('monobank', MonobankGateway::class)
+            ->registerWebhook('monobank', MonobankSignatureValidator::class);
 
-        $manager->extend('liqpay', LiqPayGateway::class);
-        WebhookConfigRegistrar::register('liqpay', LiqPaySignatureValidator::class);
+        $manager->extend('liqpay', LiqPayGateway::class)
+            ->registerWebhook('liqpay', LiqPaySignatureValidator::class);
 
-        $manager->extend('wayforpay', WayForPayGateway::class);
-        WebhookConfigRegistrar::register('wayforpay', WayForPaySignatureValidator::class, responder: WayForPayWebhookResponder::class);
+        $manager->extend('wayforpay', WayForPayGateway::class)
+            ->registerWebhook('wayforpay', WayForPaySignatureValidator::class, WayForPayWebhookResponder::class);
 
-        $manager->extend('stripe', StripeGateway::class);
-        WebhookConfigRegistrar::register('stripe', StripeSignatureValidator::class);
+        $manager->extend('stripe', StripeGateway::class)
+            ->registerWebhook('stripe', StripeSignatureValidator::class);
 
-        $manager->extend('hutko', HutkoGateway::class);
-        WebhookConfigRegistrar::register('hutko', HutkoSignatureValidator::class);
+        $manager->extend('hutko', HutkoGateway::class)
+            ->registerWebhook('hutko', HutkoSignatureValidator::class);
     }
 }

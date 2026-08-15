@@ -4,24 +4,52 @@ declare(strict_types=1);
 
 namespace Fomvasss\Billing\Webhooks;
 
-use Spatie\WebhookClient\Models\WebhookCall;
+use Illuminate\Database\Eloquent\Concerns\HasUuids;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Http\Request;
 
 /**
- * Registered as `webhook_model` in each gateway's webhook-client config entry (see
- * WebhookConfigRegistrar). Adds nothing behavioural over spatie's own WebhookCall yet — exists so
- * the package has one canonical model to extend/query against instead of the vendor's directly,
- * and so the `external_id` column (added by our migration) is a first-class, documented attribute.
+ * Own table (billing_webhook_calls) — no longer an extension of spatie/laravel-webhook-client's
+ * webhook_calls (dropped, see the package plan's "Webhook pipeline" for why). Durable raw
+ * payload+headers storage, plus the dedup key (external_id, unique with name) ProcessWebhookJob
+ * claims before dispatching events.
  */
-class BillingWebhookCall extends WebhookCall
+class BillingWebhookCall extends Model
 {
-    // Eloquent guesses the table from THIS class's basename ("billing_webhook_calls"), not the
-    // parent's — without this override it would miss the real "webhook_calls" table entirely.
-    protected $table = 'webhook_calls';
+    use HasUuids;
 
-    protected $casts = [
-        'headers' => 'array',
-        'payload' => 'array',
-        'attachments' => 'array',
-        'exception' => 'array',
-    ];
+    protected $table = 'billing_webhook_calls';
+
+    protected $guarded = ['id'];
+
+    protected function casts(): array
+    {
+        return [
+            'headers' => 'array',
+            'payload' => 'array',
+            'exception' => 'array',
+        ];
+    }
+
+    public static function storeWebhook(string $gateway, Request $request): self
+    {
+        return static::create([
+            'name' => $gateway,
+            'url' => $request->fullUrl(),
+            'headers' => $request->headers->all(),
+            'payload' => (array) $request->all(),
+        ]);
+    }
+
+    public function saveException(\Throwable $exception): self
+    {
+        $this->exception = [
+            'message' => $exception->getMessage(),
+            'trace' => $exception->getTraceAsString(),
+        ];
+
+        $this->save();
+
+        return $this;
+    }
 }

@@ -17,14 +17,7 @@
 composer require fomvasss/laravel-billing
 ```
 
-Спершу опублікувати й прогнати власну міграцію `spatie/laravel-webhook-client` (таблиця `webhook_calls`, яку розширюють міграції цього пакета):
-
-```bash
-php artisan vendor:publish --tag="webhook-client-migrations"
-php artisan migrate
-```
-
-Далі — власні міграції пакета, групами, щоб отримати лише ті таблиці, які реально потрібні. `billing-migrations-core` (таблиця `payments`) потрібна всім:
+Опублікувати власні міграції пакета, групами, щоб отримати лише ті таблиці, які реально потрібні. `billing-migrations-core` (таблиці `payments` і `webhook_calls`) потрібна всім:
 
 ```bash
 php artisan vendor:publish --tag=billing-migrations-core
@@ -66,7 +59,7 @@ $result = app(BillingManager::class)->charge($payment);
 return redirect($result->url); // локальна сторінка з кнопками "Оплачено"/"Відхилено"
 ```
 
-Натискання кнопки надсилає POST напряму на реальний, зареєстрований webhook-ендпоінт — той самий пайплайн `spatie/laravel-webhook-client` → `ProcessWebhookJob` → подія, яким пройшов би реальний гейтвей, не скорочений шлях.
+Натискання кнопки надсилає POST напряму на реальний, зареєстрований webhook-ендпоінт — той самий пайплайн перевірки підпису → `ProcessWebhookJob` → подія, яким пройшов би реальний гейтвей, не скорочений шлях.
 
 ## Налаштування реального гейтвея
 
@@ -187,7 +180,7 @@ sequenceDiagram
 
 ## Вебхуки
 
-Кожен вбудований гейтвей сам реєструє свій запис у конфізі `spatie/laravel-webhook-client` і маршрут у `BillingServiceProvider::boot()` — нічого налаштовувати вручну. Вхідні вебхуки зберігаються, перевіряються на підпис, ставляться в чергу (`ProcessWebhookJob`) і перетворюються на одну з подій:
+Один маршрут (`POST /billing/webhooks/{gateway}`) обслуговує всі гейтвеї — резолвиться в момент запиту через власний реєстр `BillingManager`, нічого налаштовувати вручну. Вхідні вебхуки перевіряються на підпис, зберігаються (`billing_webhook_calls`), ставляться в чергу (`ProcessWebhookJob`) і перетворюються на одну з подій:
 
 | Подія | Коли |
 |---|---|
@@ -212,11 +205,12 @@ Event::listen(PaymentSucceeded::class, function (PaymentSucceeded $event) {
 ```php
 use Fomvasss\Billing\Gateways\AbstractGateway; // опційно — спільний debug-лог + хелпери webhookUrl()/successUrl()/failUrl()
 use Fomvasss\Billing\Contracts\RefundsPayments;
+use Fomvasss\Billing\Webhooks\BillingWebhookCall;
 
 class MyGateway extends AbstractGateway implements RefundsPayments
 {
     public function charge(Payment $payment, ChargeOptions $options = new ChargeOptions()): PaymentResult { /* ... */ }
-    public function handleWebhook(\Spatie\WebhookClient\Models\WebhookCall $webhookCall): WebhookResult { /* ... */ }
+    public function handleWebhook(BillingWebhookCall $webhookCall): WebhookResult { /* ... */ }
     public static function label(): string { return 'My Gateway'; }
     public static function credentialFields(): array { return [/* ['name' => ..., 'type' => ..., 'secret' => bool, 'help' => ...] */]; }
     public static function supportedCurrencies(): array { return ['UAH']; }
@@ -228,13 +222,12 @@ class MyGateway extends AbstractGateway implements RefundsPayments
 ```php
 // у власному ServiceProvider::boot() — проєкт-споживач або сателіт-пакет (fomvasss/laravel-billing-mygateway)
 use Fomvasss\Billing\Facades\Billing;
-use Fomvasss\Billing\Support\WebhookConfigRegistrar;
 
-Billing::extend('mygateway', MyGateway::class);
-WebhookConfigRegistrar::register('mygateway', MyGatewaySignatureValidator::class);
+Billing::extend('mygateway', MyGateway::class)
+    ->registerWebhook('mygateway', MyGatewaySignatureValidator::class);
 ```
 
-`WebhookConfigRegistrar` одразу зводить і запис конфіга `spatie/laravel-webhook-client`, і маршрут — `config/webhook-client.php` руками чіпати не потрібно. Параметр `responder:` — якщо гейтвей вимагає специфічну відповідь-підтвердження замість голого `200` (так робить WayForPay — приклад у `WayForPayWebhookResponder`).
+`registerWebhook()` — той самий виклик, що зводить маршрут вхідного вебхука для цього гейтвея: усі гейтвеї діляться одним маршрутом `POST /billing/webhooks/{gateway}`, резолвиться через цей реєстр — окремого конфіг-файлу на гейтвей не потрібно. Третій аргумент — якщо гейтвей вимагає специфічну відповідь-підтвердження замість голого `200` (так робить WayForPay — приклад у `WayForPayWebhookResponder`).
 
 ## Підписки
 

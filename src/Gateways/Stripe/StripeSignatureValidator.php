@@ -5,8 +5,7 @@ declare(strict_types=1);
 namespace Fomvasss\Billing\Gateways\Stripe;
 
 use Illuminate\Http\Request;
-use Spatie\WebhookClient\SignatureValidator\SignatureValidator;
-use Spatie\WebhookClient\WebhookConfig;
+use Fomvasss\Billing\Contracts\SignatureValidator;
 
 /**
  * Stripe-Signature: "t={timestamp},v1={hmac},v0={hmac}..." — HMAC-SHA256("{t}.{payload}", secret),
@@ -17,7 +16,7 @@ class StripeSignatureValidator implements SignatureValidator
 {
     protected const TOLERANCE_SECONDS = 300;
 
-    public function isValid(Request $request, WebhookConfig $config): bool
+    public function isValid(Request $request): bool
     {
         $header = $request->header('Stripe-Signature', '');
         $payload = $request->getContent();

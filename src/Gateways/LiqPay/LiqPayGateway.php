@@ -16,7 +16,7 @@ use Fomvasss\Billing\Gateways\AbstractGateway;
 use Fomvasss\Billing\Models\Payment;
 use Fomvasss\Billing\Support\Money;
 use Illuminate\Support\Facades\Http;
-use Spatie\WebhookClient\Models\WebhookCall;
+use Fomvasss\Billing\Webhooks\BillingWebhookCall;
 
 /**
  * https://www.liqpay.ua/api/request (server-server) + https://www.liqpay.ua/api/3/checkout
@@ -60,7 +60,7 @@ class LiqPayGateway extends AbstractGateway implements RefundsPayments, ChecksPa
         );
     }
 
-    public function handleWebhook(WebhookCall $webhookCall): WebhookResult
+    public function handleWebhook(BillingWebhookCall $webhookCall): WebhookResult
     {
         // spatie already verified the signature (LiqPaySignatureValidator) before this ran — the
         // stored payload is the raw POST fields (['data' => ..., 'signature' => ...]), still encoded.

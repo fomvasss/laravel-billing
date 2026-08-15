@@ -5,8 +5,7 @@ declare(strict_types=1);
 namespace Fomvasss\Billing\Gateways\LiqPay;
 
 use Illuminate\Http\Request;
-use Spatie\WebhookClient\SignatureValidator\SignatureValidator;
-use Spatie\WebhookClient\WebhookConfig;
+use Fomvasss\Billing\Contracts\SignatureValidator;
 
 /**
  * Same formula LiqPayGateway::sign() uses to sign outgoing requests, applied to the incoming
@@ -15,7 +14,7 @@ use Spatie\WebhookClient\WebhookConfig;
  */
 class LiqPaySignatureValidator implements SignatureValidator
 {
-    public function isValid(Request $request, WebhookConfig $config): bool
+    public function isValid(Request $request): bool
     {
         $data = $request->input('data');
         $signature = $request->input('signature');

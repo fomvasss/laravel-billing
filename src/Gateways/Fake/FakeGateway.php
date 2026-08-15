@@ -11,7 +11,7 @@ use Fomvasss\Billing\Enums\PaymentStatus;
 use Fomvasss\Billing\Enums\WebhookEventType;
 use Fomvasss\Billing\Gateways\AbstractGateway;
 use Fomvasss\Billing\Models\Payment;
-use Spatie\WebhookClient\Models\WebhookCall;
+use Fomvasss\Billing\Webhooks\BillingWebhookCall;
 
 /**
  * No real bank involved — for local dev/CI (see "Sandbox / тестовий режим" in the package plan).
@@ -28,7 +28,7 @@ class FakeGateway extends AbstractGateway
         );
     }
 
-    public function handleWebhook(WebhookCall $webhookCall): WebhookResult
+    public function handleWebhook(BillingWebhookCall $webhookCall): WebhookResult
     {
         $payload = $webhookCall->payload;
 

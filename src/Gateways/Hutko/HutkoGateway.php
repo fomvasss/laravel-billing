@@ -13,7 +13,7 @@ use Fomvasss\Billing\Exceptions\BillingException;
 use Fomvasss\Billing\Gateways\AbstractGateway;
 use Fomvasss\Billing\Models\Payment;
 use Illuminate\Support\Facades\Http;
-use Spatie\WebhookClient\Models\WebhookCall;
+use Fomvasss\Billing\Webhooks\BillingWebhookCall;
 
 /**
  * https://pay.hutko.org/api/ — no dropshop reference existed for this one (see the package plan's
@@ -51,7 +51,7 @@ class HutkoGateway extends AbstractGateway
         return new PaymentResult(url: $data['checkout_url']);
     }
 
-    public function handleWebhook(WebhookCall $webhookCall): WebhookResult
+    public function handleWebhook(BillingWebhookCall $webhookCall): WebhookResult
     {
         $payload = $webhookCall->payload;
 

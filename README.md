@@ -21,14 +21,7 @@ Built-in gateways: **LiqPay**, **WayForPay**, **Monobank Acquiring**, **Stripe**
 composer require fomvasss/laravel-billing
 ```
 
-Publish and run `spatie/laravel-webhook-client`'s own migration first (its `webhook_calls` table, which this package's own migrations extend):
-
-```bash
-php artisan vendor:publish --tag="webhook-client-migrations"
-php artisan migrate
-```
-
-Then publish this package's own migrations — in groups, so you only get the tables you actually use. `billing-migrations-core` (the `payments` table) is the only one everyone needs:
+Publish this package's own migrations — in groups, so you only get the tables you actually use. `billing-migrations-core` (the `payments` and `webhook_calls` tables) is the only one everyone needs:
 
 ```bash
 php artisan vendor:publish --tag=billing-migrations-core
@@ -70,7 +63,7 @@ $result = app(BillingManager::class)->charge($payment);
 return redirect($result->url); // a local page with "Paid"/"Rejected" buttons
 ```
 
-Clicking a button POSTs straight to the real, registered webhook endpoint — the same `spatie/laravel-webhook-client` → `ProcessWebhookJob` → event pipeline a real gateway would go through, not a shortcut.
+Clicking a button POSTs straight to the real, registered webhook endpoint — the same signature-check → `ProcessWebhookJob` → event pipeline a real gateway would go through, not a shortcut.
 
 ## Configuring a real gateway
 
@@ -191,7 +184,7 @@ Two independent paths, on purpose: the browser redirect (top half) is UX only, t
 
 ## Webhooks
 
-Each built-in gateway registers its own `spatie/laravel-webhook-client` config entry and route in `BillingServiceProvider::boot()` — nothing to configure by hand. Incoming webhooks are stored, signature-verified, queued (`ProcessWebhookJob`), and turned into one of these events:
+One route (`POST /billing/webhooks/{gateway}`) handles every gateway, resolved at request time through `BillingManager`'s own registry — nothing to configure by hand. Incoming webhooks are signature-verified, stored (`billing_webhook_calls`), queued (`ProcessWebhookJob`), and turned into one of these events:
 
 | Event | Fires when |
 |---|---|
@@ -216,11 +209,12 @@ Four required methods (`PaymentGatewayContract`), everything else opt-in:
 ```php
 use Fomvasss\Billing\Gateways\AbstractGateway; // optional — shared debug log + webhookUrl()/successUrl()/failUrl() helpers
 use Fomvasss\Billing\Contracts\RefundsPayments;
+use Fomvasss\Billing\Webhooks\BillingWebhookCall;
 
 class MyGateway extends AbstractGateway implements RefundsPayments
 {
     public function charge(Payment $payment, ChargeOptions $options = new ChargeOptions()): PaymentResult { /* ... */ }
-    public function handleWebhook(\Spatie\WebhookClient\Models\WebhookCall $webhookCall): WebhookResult { /* ... */ }
+    public function handleWebhook(BillingWebhookCall $webhookCall): WebhookResult { /* ... */ }
     public static function label(): string { return 'My Gateway'; }
     public static function credentialFields(): array { return [/* ['name' => ..., 'type' => ..., 'secret' => bool, 'help' => ...] */]; }
     public static function supportedCurrencies(): array { return ['UAH']; }
@@ -232,13 +226,12 @@ class MyGateway extends AbstractGateway implements RefundsPayments
 ```php
 // in your ServiceProvider::boot() — your own project or a satellite package (fomvasss/laravel-billing-mygateway)
 use Fomvasss\Billing\Facades\Billing;
-use Fomvasss\Billing\Support\WebhookConfigRegistrar;
 
-Billing::extend('mygateway', MyGateway::class);
-WebhookConfigRegistrar::register('mygateway', MyGatewaySignatureValidator::class);
+Billing::extend('mygateway', MyGateway::class)
+    ->registerWebhook('mygateway', MyGatewaySignatureValidator::class);
 ```
 
-`WebhookConfigRegistrar` wires the `spatie/laravel-webhook-client` config entry and the route in one call — no need to touch `config/webhook-client.php` by hand. Pass `responder:` if your gateway needs a specific acknowledgment body instead of a bare `200` (WayForPay does — see `WayForPayWebhookResponder` for a worked example).
+`registerWebhook()` is the one call that wires the incoming webhook route for this gateway — every gateway shares a single `POST /billing/webhooks/{gateway}` route, resolved through this registry, so there's no per-gateway config file to touch. Pass a third argument if your gateway needs a specific acknowledgment body instead of a bare `200` (WayForPay does — see `WayForPayWebhookResponder` for a worked example).
 
 ## Subscriptions
 

@@ -4,20 +4,19 @@ declare(strict_types=1);
 
 namespace Fomvasss\Billing\Gateways\WayForPay;
 
+use Fomvasss\Billing\Contracts\WebhookResponder;
 use Illuminate\Http\Request;
-use Spatie\WebhookClient\WebhookConfig;
-use Spatie\WebhookClient\WebhookResponse\RespondsToWebhook;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
  * WayForPay is the one built-in gateway that doesn't accept a bare HTTP 200 — it retries the
  * callback for up to 4 days until it gets back a signed `{orderReference, status: "accept", time,
  * signature}` JSON body (confirmed from the official PHP SDK's ServiceUrlHandler::getSuccessResponse()).
- * Registered as this gateway's `webhook_response` in WebhookConfigRegistrar::register().
+ * Registered as this gateway's responder in BillingManager::registerWebhook().
  */
-class WayForPayWebhookResponder implements RespondsToWebhook
+class WayForPayWebhookResponder implements WebhookResponder
 {
-    public function respondToValidWebhook(Request $request, WebhookConfig $config): Response
+    public function respond(Request $request): Response
     {
         $orderReference = (string) $request->input('orderReference', '');
         $time = now()->timestamp;

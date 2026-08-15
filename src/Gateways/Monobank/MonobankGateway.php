@@ -17,7 +17,7 @@ use Fomvasss\Billing\Models\Payment;
 use Fomvasss\Billing\Support\Money;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Facades\Http;
-use Spatie\WebhookClient\Models\WebhookCall;
+use Fomvasss\Billing\Webhooks\BillingWebhookCall;
 
 /**
  * https://api.monobank.ua — verified against the official Acquiring API docs (invoice.md/
@@ -68,7 +68,7 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
         );
     }
 
-    public function handleWebhook(WebhookCall $webhookCall): WebhookResult
+    public function handleWebhook(BillingWebhookCall $webhookCall): WebhookResult
     {
         $payload = $webhookCall->payload;
 

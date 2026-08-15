@@ -14,7 +14,7 @@ use Fomvasss\Billing\Exceptions\BillingException;
 use Fomvasss\Billing\Gateways\AbstractGateway;
 use Fomvasss\Billing\Models\Payment;
 use Illuminate\Support\Facades\Http;
-use Spatie\WebhookClient\Models\WebhookCall;
+use Fomvasss\Billing\Webhooks\BillingWebhookCall;
 
 /**
  * https://secure.wayforpay.com/pay (checkout form) + https://api.wayforpay.com/api (server-server,
@@ -68,7 +68,7 @@ class WayForPayGateway extends AbstractGateway implements ChecksPaymentStatus
         return new PaymentResult(form: ['action' => self::CHECKOUT_URL, 'fields' => $fields]);
     }
 
-    public function handleWebhook(WebhookCall $webhookCall): WebhookResult
+    public function handleWebhook(BillingWebhookCall $webhookCall): WebhookResult
     {
         $payload = $webhookCall->payload;
 

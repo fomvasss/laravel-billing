@@ -18,7 +18,7 @@ use Fomvasss\Billing\Support\Money;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Http;
-use Spatie\WebhookClient\Models\WebhookCall;
+use Fomvasss\Billing\Webhooks\BillingWebhookCall;
 
 /**
  * https://api.stripe.com/v1 — Checkout Sessions (mode=payment), verified against the official docs
@@ -59,7 +59,7 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
         );
     }
 
-    public function handleWebhook(WebhookCall $webhookCall): WebhookResult
+    public function handleWebhook(BillingWebhookCall $webhookCall): WebhookResult
     {
         $event = $webhookCall->payload;
         $object = $event['data']['object'] ?? [];

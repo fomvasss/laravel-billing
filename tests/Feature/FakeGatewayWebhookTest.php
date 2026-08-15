@@ -16,7 +16,7 @@ use Illuminate\Support\Facades\Event;
 /**
  * The same cycle verified by hand in sandbox before this suite existed (see "Кроки реалізації"
  * п.3+4 in the package plan): charge() → real HTTP POST to the fake gateway's webhook route →
- * spatie stores the WebhookCall → ProcessWebhookJob (sync queue) → Payment updated → event fired.
+ * the webhook call is stored → ProcessWebhookJob (sync queue) → Payment updated → event fired.
  */
 class FakeGatewayWebhookTest extends TestCase
 {
@@ -36,7 +36,7 @@ class FakeGatewayWebhookTest extends TestCase
 
         $payment = $this->createPendingPayment();
 
-        $this->postJson(route('webhook-client-fake'), [
+        $this->postJson(route('billing.webhook', ['gateway' => 'fake']), [
             'payment_id' => $payment->id,
             'result' => 'success',
         ])->assertOk();
@@ -52,7 +52,7 @@ class FakeGatewayWebhookTest extends TestCase
     {
         $payment = $this->createPendingPayment();
 
-        $this->postJson(route('webhook-client-fake'), [
+        $this->postJson(route('billing.webhook', ['gateway' => 'fake']), [
             'payment_id' => $payment->id,
             'result' => 'failure',
         ])->assertOk();
@@ -70,8 +70,8 @@ class FakeGatewayWebhookTest extends TestCase
         $payment = $this->createPendingPayment();
         $body = ['payment_id' => $payment->id, 'result' => 'success'];
 
-        $this->postJson(route('webhook-client-fake'), $body)->assertOk();
-        $this->postJson(route('webhook-client-fake'), $body)->assertOk();
+        $this->postJson(route('billing.webhook', ['gateway' => 'fake']), $body)->assertOk();
+        $this->postJson(route('billing.webhook', ['gateway' => 'fake']), $body)->assertOk();
 
         Event::assertDispatchedTimes(PaymentSucceeded::class, 1);
     }

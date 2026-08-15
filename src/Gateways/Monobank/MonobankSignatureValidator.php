@@ -4,11 +4,10 @@ declare(strict_types=1);
 
 namespace Fomvasss\Billing\Gateways\Monobank;
 
+use Fomvasss\Billing\Contracts\SignatureValidator;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
-use Spatie\WebhookClient\SignatureValidator\SignatureValidator;
-use Spatie\WebhookClient\WebhookConfig;
 
 /**
  * ECDSA over the raw request body, per the official docs (webhook.md): cache the public key,
@@ -23,7 +22,7 @@ use Spatie\WebhookClient\WebhookConfig;
  */
 class MonobankSignatureValidator implements SignatureValidator
 {
-    public function isValid(Request $request, WebhookConfig $config): bool
+    public function isValid(Request $request): bool
     {
         $signature = base64_decode($request->header('X-Sign', ''), true);
         $body = $request->getContent();

@@ -10,6 +10,7 @@ use Fomvasss\Billing\Console\ReconcilePendingPaymentsCommand;
 use Fomvasss\Billing\Contracts\CredentialResolverContract;
 use Fomvasss\Billing\Events\PaymentFailed;
 use Fomvasss\Billing\Events\PaymentSucceeded;
+use Fomvasss\Billing\Exceptions\BillingException;
 use Fomvasss\Billing\Gateways\Fake\FakeGateway;
 use Fomvasss\Billing\Gateways\Fake\FakeSignatureValidator;
 use Fomvasss\Billing\Gateways\Hutko\HutkoGateway;
@@ -100,11 +101,22 @@ class BillingServiceProvider extends ServiceProvider
     /**
      * One route for every gateway, resolved through BillingManager's registries at request time —
      * see WebhookController and "Webhook pipeline" in the package plan for why this replaced a
-     * per-gateway route registered by each driver individually.
+     * per-gateway route registered by each driver individually. Path/middleware are both
+     * config-driven (billing.webhook.*) — the route name ('billing.webhook') never changes, so
+     * AbstractGateway::webhookUrl() and BillingManager::gateways() keep working regardless of what
+     * path a host actually mounts it under.
      */
     protected function registerWebhookRoute(): void
     {
-        Route::post('billing/webhooks/{gateway}', [WebhookController::class, 'handle'])->name('billing.webhook');
+        $path = config('billing.webhook.path', 'billing/webhooks/{gateway}');
+
+        if (! str_contains($path, '{gateway}')) {
+            throw new BillingException('config("billing.webhook.path") must contain a {gateway} route parameter.');
+        }
+
+        Route::post($path, [WebhookController::class, 'handle'])
+            ->middleware((array) config('billing.webhook.middleware', []))
+            ->name('billing.webhook');
     }
 
     protected function registerListeners(): void

@@ -90,6 +90,26 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Webhook route
+    |--------------------------------------------------------------------------
+    |
+    | One route handles every gateway (BillingServiceProvider registers it
+    | once) — `{gateway}` must stay in the path, WebhookController resolves
+    | the driver/signature validator/responder from that segment. Override
+    | `path` to match your own convention (e.g. 'webhook/billing/{gateway}');
+    | `middleware` is empty by default — webhook endpoints deliberately skip
+    | the `web` group (no CSRF, no session), add your own (IP allowlist, rate
+    | limiting, logging) here if needed.
+    |
+    */
+
+    'webhook' => [
+        'path' => env('BILLING_WEBHOOK_PATH', 'billing/webhooks/{gateway}'),
+        'middleware' => [],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Gateway credentials
     |--------------------------------------------------------------------------
     |

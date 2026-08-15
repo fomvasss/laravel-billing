@@ -202,6 +202,20 @@ Event::listen(PaymentSucceeded::class, function (PaymentSucceeded $event) {
 });
 ```
 
+### Customizing the webhook route
+
+Both the path and the middleware stack are config-driven — `{gateway}` must stay somewhere in the path (`WebhookController` resolves the driver from that segment), everything else is yours:
+
+```php
+// config/billing.php
+'webhook' => [
+    'path' => 'webhook/billing/{gateway}', // your own prefix convention instead of the default billing/webhooks/{gateway}
+    'middleware' => ['throttle:60,1'], // empty by default — webhook endpoints deliberately skip the `web` group (no CSRF, no session)
+],
+```
+
+The route name (`billing.webhook`) never changes, so `AbstractGateway::webhookUrl()` and the `webhook_url` field in `Billing::gateways()` keep resolving correctly regardless of the configured path — nothing else to update when you change it.
+
 ### Writing your own gateway
 
 Four required methods (`PaymentGatewayContract`), everything else opt-in:

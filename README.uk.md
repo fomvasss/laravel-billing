@@ -198,6 +198,20 @@ Event::listen(PaymentSucceeded::class, function (PaymentSucceeded $event) {
 });
 ```
 
+### Кастомізація webhook-маршруту
+
+І шлях, і стек мідлварів — конфігуровані. `{gateway}` має лишитись десь у шляху (`WebhookController` резолвить драйвер саме з цього сегмента), решта — на ваш розсуд:
+
+```php
+// config/billing.php
+'webhook' => [
+    'path' => 'webhook/billing/{gateway}', // власний префікс замість дефолтного billing/webhooks/{gateway}
+    'middleware' => ['throttle:60,1'], // порожньо за замовчуванням — webhook-ендпоінт навмисно поза групою `web` (без CSRF, без сесії)
+],
+```
+
+Назва маршруту (`billing.webhook`) незмінна — `AbstractGateway::webhookUrl()` і поле `webhook_url` в `Billing::gateways()` і далі резолвляться коректно незалежно від сконфігурованого шляху, нічого більше оновлювати не потрібно.
+
 ### Власний гейтвей
 
 Чотири обов'язкові методи (`PaymentGatewayContract`), решта — опційно:

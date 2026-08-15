@@ -7,6 +7,8 @@ namespace Fomvasss\Billing;
 use Fomvasss\Billing\Contracts\CredentialResolverContract;
 use Fomvasss\Billing\Gateways\Fake\FakeGateway;
 use Fomvasss\Billing\Gateways\Fake\FakeSignatureValidator;
+use Fomvasss\Billing\Gateways\Hutko\HutkoGateway;
+use Fomvasss\Billing\Gateways\Hutko\HutkoSignatureValidator;
 use Fomvasss\Billing\Gateways\LiqPay\LiqPayGateway;
 use Fomvasss\Billing\Gateways\LiqPay\LiqPaySignatureValidator;
 use Fomvasss\Billing\Gateways\Monobank\MonobankGateway;
@@ -79,5 +81,8 @@ class BillingServiceProvider extends ServiceProvider
 
         $manager->extend('stripe', StripeGateway::class);
         WebhookConfigRegistrar::register('stripe', StripeSignatureValidator::class);
+
+        $manager->extend('hutko', HutkoGateway::class);
+        WebhookConfigRegistrar::register('hutko', HutkoSignatureValidator::class);
     }
 }

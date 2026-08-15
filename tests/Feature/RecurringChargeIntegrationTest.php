@@ -26,6 +26,7 @@ class RecurringChargeIntegrationTest extends TestCase
     {
         parent::getEnvironmentSetUp($app);
         $app['config']->set('billing.gateways.stripe.secret_key', 'sk_test_123');
+        $app['config']->set('billing.gateways.monobank.token', 'test-token');
     }
 
     public function test_a_due_stripe_subscription_with_a_saved_card_gets_charged(): void
@@ -73,5 +74,52 @@ class RecurringChargeIntegrationTest extends TestCase
         Http::assertSent(fn ($request) => $request->url() === 'https://api.stripe.com/v1/payment_intents'
             && $request['customer'] === 'cus_999'
             && $request['payment_method'] === 'pm_999');
+    }
+
+    public function test_a_due_monobank_subscription_with_a_saved_card_gets_charged(): void
+    {
+        Http::fake([
+            'https://api.monobank.ua/api/merchant/wallet/payment' => Http::response(['invoiceId' => 'inv_999', 'status' => 'success']),
+        ]);
+
+        $user = TestUser::create(['name' => 'Buyer']);
+        $plan = Plan::create(['code' => 'pro', 'name' => 'Pro']);
+        $price = Price::create([
+            'plan_id' => $plan->id,
+            'gateway' => 'monobank',
+            'currency_code' => 'UAH',
+            'amount' => 10000,
+            'pricing_type' => 'flat',
+            'interval' => 'month',
+            'interval_count' => 1,
+        ]);
+
+        $subscription = Subscription::create([
+            'status' => SubscriptionStatus::Active,
+            'gateway' => 'monobank',
+            'price_id' => $price->id,
+            'billable_type' => TestUser::class,
+            'billable_id' => $user->id,
+            'current_period_ends_at' => now()->subDay(),
+        ]);
+
+        PaymentMethod::create([
+            'gateway' => 'monobank',
+            'external_customer_id' => 'wallet_999',
+            'external_id' => 'card_tok_999',
+            'is_default' => true,
+            'billable_type' => TestUser::class,
+            'billable_id' => $user->id,
+        ]);
+
+        $this->artisan('billing:process-recurring-charges')->assertExitCode(0);
+
+        $payment = Payment::where('payable_type', Subscription::class)->where('payable_id', $subscription->id)->firstOrFail();
+        $this->assertSame(10000, $payment->amount);
+        $this->assertSame('monobank', $payment->gateway);
+
+        Http::assertSent(fn ($request) => $request->url() === 'https://api.monobank.ua/api/merchant/wallet/payment'
+            && $request['cardToken'] === 'card_tok_999'
+            && $request['initiationKind'] === 'merchant');
     }
 }

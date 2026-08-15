@@ -7,7 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
-- Stripe driver now implements `TokenizesPaymentMethod` — `createCustomer()`, `attachPaymentMethod()`, `chargePaymentMethod()`, `detachPaymentMethod()` — so `billing:process-recurring-charges` can actually charge a Stripe subscription off-session with a saved card. See README "Tokenization / saved cards" for the flow. LiqPay/Monobank/WayForPay don't implement it yet — their card tokens arrive asynchronously via webhook, a different shape than this contract expects.
+- Stripe and Monobank drivers now implement `TokenizesPaymentMethod` — `createCustomer()`, `attachPaymentMethod()`, `chargePaymentMethod()`, `detachPaymentMethod()` — so `billing:process-recurring-charges` can actually charge a subscription off-session with a saved card. See README "Tokenization / saved cards" for both flows: Stripe's is a synchronous frontend-SDK token, Monobank's arrives asynchronously via webhook (`saveCard: true` on the first charge, `handleWebhook()` auto-attaches the resulting `PaymentMethod` once the bank tokenizes it — no extra call needed). LiqPay/WayForPay don't implement it yet.
 
 ### Changed
 - `TokenizesPaymentMethod`'s methods now type-hint `Model&Billable` instead of the bare `Billable` marker interface (a real Eloquent model is required to persist `PaymentMethod.billable_type`/`billable_id`).

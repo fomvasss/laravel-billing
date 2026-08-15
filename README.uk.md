@@ -314,7 +314,11 @@ php artisan billing:expire-trials               # щодня — trialing + ми
 
 ### Токенізація / збережені картки
 
-`process-recurring-charges` (і будь-яке власне off-session списання) працює лише з гейтвеєм, чий драйвер реалізує `TokenizesPaymentMethod` — зараз це **лише Stripe**. LiqPay/Monobank/WayForPay віддають токен картки **асинхронно**, як побічний ефект успішного чекауту з прапорцем "зберегти карту", і він прилітає пізніше через вебхук — не синхронно з фронтенд-виклику, як очікує `attachPaymentMethod(Billable, array $token)`. Через цю невідповідність форми ці три драйвери поки не заявляють можливість (окрема, інакше влаштована задача — асинхронний attach через вебхук — не зроблена в цьому проході).
+`process-recurring-charges` (і будь-яке власне off-session списання) працює лише з гейтвеєм, чий драйвер реалізує `TokenizesPaymentMethod` — зараз це **Stripe і Monobank**. LiqPay/WayForPay — поки ні.
+
+Два різні механізми, той самий результат — рядок `PaymentMethod`, який можна передати в `chargeWithMethod()`:
+
+**Stripe** — синхронний токен із фронтенд SDK:
 
 ```php
 // 1. Створюємо (або перевикористовуємо) Stripe-клієнта, віддаємо його id фронтенду для збору
@@ -329,7 +333,19 @@ $method = Billing::driver('stripe')->attachPaymentMethod($user, ['payment_method
 Billing::chargeWithMethod($payment, $method);
 ```
 
-`attachPaymentMethod()`/`detachPaymentMethod()` самі диспатчать `PaymentMethodAttached`/`PaymentMethodDetached`, синхронно — без вебхука для цих двох. `chargePaymentMethod()` лише ІНІЦІЮЄ списання, так само як `charge()`: результат так само приходить через звичайний webhook pipeline (`payment_intent.succeeded`/`payment_intent.payment_failed`).
+`attachPaymentMethod()`/`detachPaymentMethod()` самі диспатчать `PaymentMethodAttached`/`PaymentMethodDetached`, синхронно — без вебхука для цих двох.
+
+**Monobank** — токен синхронно недоступний узагалі: передаєте `saveCard: true` на *першій* оплаті, і токен картки прилітає пізніше через звичайний webhook pipeline, окремою доставкою (`walletData.status: created`) — `handleWebhook()` ловить її і сам прив'язує `PaymentMethod`, без жодного додаткового виклику:
+
+```php
+Billing::charge($payment, new ChargeOptions(saveCard: true));
+// ... клієнт платить, приходить вебхук, handleWebhook() сам зберігає PaymentMethod
+// і диспатчить PaymentMethodAttached — більше нічого викликати не треба.
+```
+
+`Billing::driver('monobank')->attachPaymentMethod($user, ['card_token' => $token])` теж існує — для рідкісного випадку, коли токен уже відомий якимось іншим шляхом (перевіряє його через `GET /wallet` перед збереженням).
+
+У будь-якому разі `chargePaymentMethod()` лише ІНІЦІЮЄ списання, так само як `charge()`: результат приходить через звичайний webhook pipeline (`payment_intent.succeeded`/`payment_intent.payment_failed` для Stripe, звичайний invoice-status вебхук для Monobank).
 
 ## Конвертація валют
 

@@ -436,7 +436,36 @@ $subscription = Subscription::create([
 
 ### 3. Докупка 5 ГБ окремо (поза циклом підписки)
 
-Не рядок підписки — у пакеті свідомо немає концепції "гаманця"/балансу на аддони (див. нижче), тому це звичайний одноразовий `Payment`. Місце, де легко помилитись: **`payable` має вказувати на те, що саме купили, а не на клієнта** — саме так лістенер на `PaymentSucceeded` знає, ЯКА покупка щойно спрацювала (сам `Payment` каже лише хто заплатив і скільки, не за що; два різні аддони можуть коштувати однаково). Невеличка предметна модель, та сама ідея, що `Order` у рецепті №1:
+Не рядок підписки — у пакеті свідомо немає концепції "гаманця"/балансу на аддони (див. нижче), тому це звичайний одноразовий `Payment`. Сам `Payment` каже лише хто заплатив і скільки, не за що — два різні аддони можуть коштувати однаково. Два способи це вирішити, оберіть залежно від того, скільки різних типів одноразових покупок буде на того самого клієнта:
+
+**`Payment::$meta`** — звичайна `json`-колонка, пакету байдужа (та сама ідея, що `Plan::$meta`), найпростіший варіант, якщо тип одноразової покупки лише один:
+
+```php
+$payment = Payment::create([
+    'status' => 'pending',
+    'type' => 'charge',
+    'gateway' => 'stripe',
+    'amount' => 200, // $2.00 за 5 ГБ
+    'currency_code' => 'USD',
+    'payable_type' => $organization::class,
+    'payable_id' => $organization->id,
+    'billable_type' => $organization::class,
+    'billable_id' => $organization->id,
+    'meta' => ['product' => 'storage_addon', 'gb' => 5],
+]);
+
+Billing::chargeWithMethod($payment, $organization->defaultPaymentMethod); // або Billing::charge() для редіректного чекауту
+```
+
+```php
+Event::listen(PaymentSucceeded::class, function (PaymentSucceeded $event) {
+    if (($event->payment->meta['product'] ?? null) === 'storage_addon') {
+        $event->payment->payable->increment('extra_storage_gb', $event->payment->meta['gb']);
+    }
+});
+```
+
+**Окремий `payable`** — має сенс, коли типів одноразових покупок на того самого клієнта кілька (аддони на сховище, докупка місць, ...) і хочеться `instanceof` замість рядкових ключів у `meta`. Та сама ідея, що `Order` у рецепті №1:
 
 ```php
 class StorageAddonPurchase extends Model implements Payable
@@ -453,19 +482,11 @@ class StorageAddonPurchase extends Model implements Payable
 ```php
 $addon = StorageAddonPurchase::create(['organization_id' => $organization->id, 'gb' => 5]);
 
-$payment = Payment::create([
-    'status' => 'pending',
-    'type' => 'charge',
-    'gateway' => 'stripe',
-    'amount' => 200, // $2.00 за 5 ГБ
-    'currency_code' => 'USD',
+Payment::create([
+    // ... ті самі поля, що вище, окрім:
     'payable_type' => StorageAddonPurchase::class,
     'payable_id' => $addon->id,
-    'billable_type' => $organization::class,
-    'billable_id' => $organization->id,
 ]);
-
-Billing::chargeWithMethod($payment, $organization->defaultPaymentMethod); // або Billing::charge() для редіректного чекауту
 ```
 
 ```php
@@ -476,7 +497,7 @@ Event::listen(PaymentSucceeded::class, function (PaymentSucceeded $event) {
 });
 ```
 
-Продаватимете пізніше ще й 10 ГБ чи 20 ГБ за іншою ціною — той самий лістенер, без нової гілки: кількість лежить на `StorageAddonPurchase`, а не вгадується із суми платежу.
+У будь-якому разі: продаватимете пізніше ще й 10 ГБ чи 20 ГБ за іншою ціною — той самий лістенер, без нової гілки: кількість лежить на `meta`/моделі `payable`, а не вгадується із суми платежу.
 
 ### 4. Безкоштовний період (trial)
 

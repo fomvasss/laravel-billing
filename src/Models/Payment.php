@@ -34,6 +34,7 @@ class Payment extends Model
             'payment_url_expires_at' => 'datetime',
             'paid_at' => 'datetime',
             'raw_response' => 'array',
+            'meta' => 'array',
         ];
     }
 

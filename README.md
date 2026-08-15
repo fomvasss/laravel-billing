@@ -440,7 +440,36 @@ You don't write any of step 3 yourself — it's already wired up. You only need 
 
 ### 3. One-off purchase of extra 5 GB (not part of the subscription cycle)
 
-Not a subscription line item — the package has no "wallet"/addon-balance concept on purpose (see below), so this is just a regular one-off `Payment`. The part that's easy to get wrong: **`payable` should point at what was actually bought, not at the customer** — that's how the listener on `PaymentSucceeded` knows *which* purchase just succeeded (a `Payment` alone only tells you who paid and how much, not what for; two different add-ons could even cost the same). A tiny domain model, same idea as `Order` in recipe #1:
+Not a subscription line item — the package has no "wallet"/addon-balance concept on purpose (see below), so this is just a regular one-off `Payment`. The part that's easy to get wrong: a `Payment` alone only tells you who paid and how much, not *what for* — two different add-ons could even cost the same. Two ways to fix that, pick based on how many one-off purchase types you'll ever have pointing at the same customer:
+
+**`Payment::$meta`** — a plain `json` column, opaque to the package (same idea as `Plan::$meta`), the simplest option when there's only one kind of one-off purchase:
+
+```php
+$payment = Payment::create([
+    'status' => 'pending',
+    'type' => 'charge',
+    'gateway' => 'stripe',
+    'amount' => 200, // $2.00 for 5 GB
+    'currency_code' => 'USD',
+    'payable_type' => $organization::class,
+    'payable_id' => $organization->id,
+    'billable_type' => $organization::class,
+    'billable_id' => $organization->id,
+    'meta' => ['product' => 'storage_addon', 'gb' => 5],
+]);
+
+Billing::chargeWithMethod($payment, $organization->defaultPaymentMethod); // or Billing::charge() for a redirect checkout
+```
+
+```php
+Event::listen(PaymentSucceeded::class, function (PaymentSucceeded $event) {
+    if (($event->payment->meta['product'] ?? null) === 'storage_addon') {
+        $event->payment->payable->increment('extra_storage_gb', $event->payment->meta['gb']);
+    }
+});
+```
+
+**A dedicated `payable`** — worth it once you have several *different* one-off purchase types pointing at the same customer (storage add-ons, seat top-ups, ...) and want `instanceof` instead of string keys in `meta` to tell them apart. Same idea as `Order` in recipe #1:
 
 ```php
 class StorageAddonPurchase extends Model implements Payable
@@ -457,19 +486,11 @@ class StorageAddonPurchase extends Model implements Payable
 ```php
 $addon = StorageAddonPurchase::create(['organization_id' => $organization->id, 'gb' => 5]);
 
-$payment = Payment::create([
-    'status' => 'pending',
-    'type' => 'charge',
-    'gateway' => 'stripe',
-    'amount' => 200, // $2.00 for 5 GB
-    'currency_code' => 'USD',
+Payment::create([
+    // ... same fields as above, except:
     'payable_type' => StorageAddonPurchase::class,
     'payable_id' => $addon->id,
-    'billable_type' => $organization::class,
-    'billable_id' => $organization->id,
 ]);
-
-Billing::chargeWithMethod($payment, $organization->defaultPaymentMethod); // or Billing::charge() for a redirect checkout
 ```
 
 ```php
@@ -480,7 +501,7 @@ Event::listen(PaymentSucceeded::class, function (PaymentSucceeded $event) {
 });
 ```
 
-Sell a 10 GB or 20 GB add-on later at a different price — same listener, no new branch: the quantity lives on `StorageAddonPurchase`, not guessed from the payment amount.
+Either way: sell a 10 GB or 20 GB add-on later at a different price — same listener, no new branch, since the quantity lives on `meta`/the `payable` model, not guessed from the payment amount.
 
 ### 4. Free trial period
 

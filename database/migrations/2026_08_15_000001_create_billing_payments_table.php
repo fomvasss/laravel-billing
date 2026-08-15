@@ -27,6 +27,11 @@ return new class extends Migration
             $table->string('link_token', 64)->nullable();
             $table->timestamp('paid_at')->nullable();
             $table->json('raw_response')->nullable();
+            // Opaque, consumer-controlled — the package never reads or writes it. Same idea as
+            // Plan.meta: a place to stash your own "what is this payment for" data (a token-package
+            // quantity, a product code, ...) without a dedicated Payable model when one isn't
+            // otherwise warranted. See "Recipes" in README.
+            $table->json('meta')->nullable();
             $table->timestamps();
             $table->softDeletes();
             $table->string('tenant_id', 100)->nullable();

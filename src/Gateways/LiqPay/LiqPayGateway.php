@@ -66,7 +66,7 @@ class LiqPayGateway extends AbstractGateway implements RefundsPayments, ChecksPa
         // stored payload is the raw POST fields (['data' => ..., 'signature' => ...]), still encoded.
         $decoded = json_decode(base64_decode($webhookCall->payload['data']), true, 512, JSON_THROW_ON_ERROR);
 
-        $payment = Payment::findOrFail((int) $decoded['order_id']);
+        $payment = Payment::findOrFail($decoded['order_id']);
 
         $status = match ($decoded['status']) {
             'success', 'sandbox' => PaymentStatus::Paid,

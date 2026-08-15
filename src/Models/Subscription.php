@@ -9,6 +9,7 @@ use Fomvasss\Billing\Events\SubscriptionCancelled;
 use Fomvasss\Billing\Events\SubscriptionPaused;
 use Fomvasss\Billing\Events\SubscriptionResumed;
 use Fomvasss\Billing\Events\UsageLimitReached;
+use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
@@ -16,6 +17,8 @@ use Illuminate\Support\Facades\Cache;
 
 class Subscription extends Model
 {
+    use HasUuids;
+
     protected $table = 'billing_subscriptions';
 
     protected $guarded = ['id'];

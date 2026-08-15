@@ -72,7 +72,7 @@ class WayForPayGateway extends AbstractGateway implements ChecksPaymentStatus
     {
         $payload = $webhookCall->payload;
 
-        $payment = Payment::findOrFail((int) $payload['orderReference']);
+        $payment = Payment::findOrFail($payload['orderReference']);
 
         $status = match ($payload['transactionStatus'] ?? null) {
             'Approved' => PaymentStatus::Paid,

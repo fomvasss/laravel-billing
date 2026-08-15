@@ -11,7 +11,7 @@ return new class extends Migration
     public function up(): void
     {
         Schema::create('billing_payments', function (Blueprint $table) {
-            $table->id();
+            $table->uuid('id')->primary(); // UUID v7 (Model::HasUuids) — time-ordered, not v4: no insert-fragmentation downside. See "Доменні таблиці" in the package plan.
             $table->string('status', 20)->default('pending');
             $table->string('type', 20)->default('charge');
             $table->string('gateway', 50)->nullable();
@@ -33,7 +33,7 @@ return new class extends Migration
             $table->morphs('payable');
             $table->morphs('billable');
             // No hard FK constraint (self-reference during Schema::create) — indexed only.
-            $table->unsignedBigInteger('parent_payment_id')->nullable();
+            $table->uuid('parent_payment_id')->nullable();
 
             $table->index(['tenant_id', 'status']);
             $table->unique('link_token');

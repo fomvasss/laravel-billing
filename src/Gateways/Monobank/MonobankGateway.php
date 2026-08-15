@@ -73,7 +73,7 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
         $payload = $webhookCall->payload;
 
         // Same schema as GET /invoice/status — "reference" is exactly what we set to $payment->id on charge().
-        $payment = Payment::findOrFail((int) $payload['reference']);
+        $payment = Payment::findOrFail($payload['reference']);
 
         $status = match ($payload['status'] ?? null) {
             'success' => PaymentStatus::Paid,

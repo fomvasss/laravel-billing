@@ -11,7 +11,7 @@ return new class extends Migration
     public function up(): void
     {
         Schema::create('billing_subscriptions', function (Blueprint $table) {
-            $table->id();
+            $table->uuid('id')->primary();
             $table->string('status', 20)->default('trialing');
             $table->string('gateway', 50)->nullable();
             $table->unsignedInteger('qty')->default(1);
@@ -26,7 +26,7 @@ return new class extends Migration
             $table->timestamps();
             $table->string('tenant_id', 100)->nullable();
             $table->morphs('billable');
-            $table->foreignId('price_id')->constrained('billing_prices')->cascadeOnDelete();
+            $table->foreignUuid('price_id')->constrained('billing_prices')->cascadeOnDelete();
 
             $table->index(['status', 'current_period_ends_at']);
         });

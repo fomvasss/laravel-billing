@@ -83,7 +83,7 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $event);
         }
 
-        $payment = Payment::findOrFail((int) $paymentId);
+        $payment = Payment::findOrFail($paymentId);
 
         $externalId = $object['payment_intent'] ?? $object['id'] ?? null;
 

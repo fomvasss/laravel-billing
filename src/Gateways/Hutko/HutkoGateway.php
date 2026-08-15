@@ -62,7 +62,7 @@ class HutkoGateway extends AbstractGateway
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
         }
 
-        $payment = Payment::findOrFail((int) $payload['order_id']);
+        $payment = Payment::findOrFail($payload['order_id']);
 
         $status = match ($payload['order_status'] ?? null) {
             'approved' => PaymentStatus::Paid,

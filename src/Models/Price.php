@@ -6,12 +6,15 @@ namespace Fomvasss\Billing\Models;
 
 use Fomvasss\Billing\Enums\Interval;
 use Fomvasss\Billing\Enums\PricingType;
+use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Price extends Model
 {
+    use HasUuids;
+
     protected $table = 'billing_prices';
 
     protected $guarded = ['id'];

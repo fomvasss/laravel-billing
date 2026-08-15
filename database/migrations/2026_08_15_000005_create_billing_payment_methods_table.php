@@ -11,7 +11,7 @@ return new class extends Migration
     public function up(): void
     {
         Schema::create('billing_payment_methods', function (Blueprint $table) {
-            $table->id();
+            $table->uuid('id')->primary();
             $table->string('gateway', 50);
             // Free-text, not an enum — greespi's Radom (crypto) driver has no card brand/last4.
             $table->string('type', 30)->default('card');

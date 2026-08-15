@@ -1,0 +1,67 @@
+{
+  "name": "fomvasss/laravel-billing",
+  "description": "Universal billing/payments package for Laravel: pluggable payment gateways, subscriptions, webhooks, usage-based pricing",
+  "type": "library",
+  "license": "MIT",
+  "funding": [
+    {
+      "type": "custom",
+      "url": "https://send.monobank.ua/jar/5xsqtHvVrY"
+    },
+    {
+      "type": "ko_fi",
+      "url": "https://ko-fi.com/fomvasss"
+    }
+  ],
+  "keywords": ["laravel", "billing", "payments", "subscriptions", "gateway", "webhooks", "liqpay", "wayforpay", "monobank", "stripe"],
+  "authors": [
+    {
+      "name": "fomvasss",
+      "email": "fomvasss@gmail.com",
+      "role": "Developer"
+    }
+  ],
+  "require": {
+    "php": "^8.3",
+    "illuminate/support": "^12.0|^13.0",
+    "illuminate/contracts": "^12.0|^13.0",
+    "illuminate/queue": "^12.0|^13.0",
+    "illuminate/database": "^12.0|^13.0",
+    "illuminate/events": "^12.0|^13.0",
+    "illuminate/http": "^12.0|^13.0",
+    "spatie/laravel-webhook-client": "^3.0"
+  },
+  "suggest": {
+    "fomvasss/laravel-currency": "Currency conversion adapter for CurrencyConverterContract when a gateway doesn't support the Price's currency"
+  },
+  "require-dev": {
+    "orchestra/testbench": "^10.0|^11.0",
+    "phpunit/phpunit": "^11.0"
+  },
+  "autoload": {
+    "psr-4": {
+      "Fomvasss\\Billing\\": "src/",
+      "Fomvasss\\Billing\\Database\\Factories\\": "database/factories/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "Fomvasss\\Billing\\Tests\\": "tests/"
+    }
+  },
+  "scripts": {
+    "test": "vendor/bin/phpunit"
+  },
+  "extra": {
+    "laravel": {
+      "providers": [
+        "Fomvasss\\Billing\\BillingServiceProvider"
+      ],
+      "aliases": {
+        "Billing": "Fomvasss\\Billing\\Facades\\Billing"
+      }
+    }
+  },
+  "minimum-stability": "dev",
+  "prefer-stable": true
+}

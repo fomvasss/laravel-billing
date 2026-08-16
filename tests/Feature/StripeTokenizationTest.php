@@ -189,7 +189,7 @@ class StripeTokenizationTest extends TestCase
             'type' => 'charge',
             'gateway' => 'stripe',
             'amount' => 2900,
-            'currency_code' => 'USD',
+            'currency' => 'USD',
             'payable_type' => TestUser::class,
             'payable_id' => $user->id,
             'billable_type' => TestUser::class,

@@ -78,7 +78,7 @@ class ChargeOptionsRawTest extends TestCase
             'type' => 'charge',
             'gateway' => $gateway,
             'amount' => 10000,
-            'currency_code' => 'UAH',
+            'currency' => 'UAH',
             'payable_type' => TestUser::class,
             'payable_id' => $user->id,
             'billable_type' => TestUser::class,

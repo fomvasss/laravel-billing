@@ -52,8 +52,8 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             ...$options->raw,
             'mode' => 'payment',
             'line_items' => $this->lineItems($payment, $options),
-            'success_url' => $this->successUrl($options),
-            'cancel_url' => $this->failUrl($options),
+            'success_url' => $this->successUrl($payment, $options),
+            'cancel_url' => $this->failUrl($payment, $options),
             'customer_email' => $options->customerEmail,
             'client_reference_id' => (string) $payment->id,
             'metadata' => ['payment_id' => (string) $payment->id],
@@ -210,7 +210,7 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
         // attempt at all is a bad idea without an idempotency key, which this call doesn't send).
         $response = $this->http()->retry(1)->asForm()->post('/payment_intents', array_filter([
             'amount' => $payment->amount,
-            'currency' => strtolower($payment->currency_code),
+            'currency' => strtolower($payment->currency),
             'customer' => $method->external_customer_id,
             'payment_method' => $method->external_id,
             'off_session' => true,
@@ -338,7 +338,7 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             return [[
                 'quantity' => 1,
                 'price_data' => [
-                    'currency' => strtolower($payment->currency_code),
+                    'currency' => strtolower($payment->currency),
                     'unit_amount' => $payment->amount,
                     'product_data' => ['name' => $options->description ?? "Payment #{$payment->id}"],
                 ],
@@ -348,7 +348,7 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
         return array_map(fn (array $item) => [
             'quantity' => $item['qty'],
             'price_data' => [
-                'currency' => strtolower($payment->currency_code),
+                'currency' => strtolower($payment->currency),
                 'unit_amount' => $item['unitAmount'],
                 'product_data' => ['name' => $item['name']],
             ],

@@ -74,12 +74,12 @@ class WayForPayGateway extends AbstractGateway implements ChecksPaymentStatus, T
             'orderReference' => (string) $payment->id,
             'orderDate' => $orderDate,
             'amount' => $this->formatAmount($payment->amount),
-            'currency' => $payment->currency_code,
+            'currency' => $payment->currency,
             'productName' => $products['name'],
             'productCount' => $products['count'],
             'productPrice' => $products['price'],
             'clientEmail' => $options->customerEmail,
-            'returnUrl' => $this->successUrl($options),
+            'returnUrl' => $this->successUrl($payment, $options),
             'serviceUrl' => $this->webhookUrl($options),
         ], static fn ($value) => $value !== null && $value !== '');
 
@@ -204,7 +204,7 @@ class WayForPayGateway extends AbstractGateway implements ChecksPaymentStatus, T
             'orderReference' => (string) $payment->id,
             'orderDate' => $orderDate,
             'amount' => $amount,
-            'currency' => $payment->currency_code,
+            'currency' => $payment->currency,
             'productName' => $products['name'],
             'productCount' => $products['count'],
             'productPrice' => $products['price'],

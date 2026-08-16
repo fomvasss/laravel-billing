@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-16
+
+### Changed
+- The first successful payment stamps its gateway onto a gateway-less subscription — a trial can be created with `gateway: null` (nobody knows yet how it will be paid) and auto-renewal still works after conversion, no manual field update needed.
+- A successful renewal resets `current_usage` for any price with a quota (`included_units` set), not only `metered` ones — a flat "N units included per period" subscription gets its fresh allowance automatically, no consumer-side reset listener needed. Quota-less usage is still left untouched.
+- The `currency_code` column is renamed to `currency` on `billing_payments` and `billing_prices` — consistent with `Money::$currency`, `converted_from_currency` and what the gateways themselves call it. Re-publish the migrations and update your `Payment`/`Price` create/read calls.
+
+### Added
+- A package-owned browser-return route: gateways now send the customer back through `billing/return/{payment}/{outcome}` by default, which fires the new `CheckoutReturned` event and 303-redirects to `config('billing.return_urls.*')` with `?payment={id}` appended. Handles WayForPay/Hutko's POST-style returns without CSRF exceptions on your side and lets `return_urls` point at a frontend/SPA origin. An explicit `ChargeOptions` successUrl/failUrl still goes to the gateway as-is. `ChargeOptions::$returnParams` forwards your own query params (an order number, say) onto the final page. See README "Return pages".
+- The `Concerns\Billable` trait now carries the consumer-side accessors: `payments()`/`subscriptions()`/`paymentMethods()` morph relations, `defaultPaymentMethod` (relation; per-gateway pick via `defaultPaymentMethodFor()`), and `activeSubscription(?$planCode)`/`hasActiveSubscription(?$planCode)` with the same "entitled right now" definition as `Subscription::isActive()`. See README "`Payable` and `Billable`".
+
 ## [0.2.0] - 2026-08-16
 
 ### Security
@@ -35,6 +46,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `Billing::refund()` — the missing orchestration over `RefundsPayments`: makes the gateway call, creates the child `Payment` row (`type=refund`, `parent_payment_id`) and dispatches `PaymentRefunded`. Full refund by default, partial via `Money`; cumulative refunds can't exceed the original charge. See README "Refunds".
 - `TrialWillEnd` actually fires now — from `billing:expire-trials`, `trial_ending_notice_days` (default 3) before `trial_ends_at`, once per subscription (new `trial_ends_notified_at` column on `billing_subscriptions`).
 - Stored webhook calls are pruned after `config('billing.webhook.prune_after_days')` (default 30) — `model:prune` is scheduled daily alongside the other commands.
+- `config('billing.queue.connection'/'queue')` (`BILLING_QUEUE_CONNECTION`/`BILLING_QUEUE`) — run webhook processing on a dedicated connection/queue instead of the app defaults. See README "Horizon / Queue".
 - Saved cards and off-session charges work on all five built-in gateways — `billing:process-recurring-charges` can now renew a subscription whichever gateway it's on. Stripe needs an explicit `attachPaymentMethod()`; the rest attach the card themselves after a charge (`saveCard: true` for Monobank and LiqPay, nothing to pass for WayForPay and Hutko). See README "Tokenization / saved cards".
 - `Payment::$payment_url` is always a plain redirectable link, on every gateway — no more branching on `PaymentResult::$url` vs `$form` to work out where to send the customer.
 - `Payment::$meta` — a `json` column for your own data, so a one-off charge can say what it was for without a dedicated `Payable` model. See README "Recipes".

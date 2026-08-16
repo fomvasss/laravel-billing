@@ -25,6 +25,7 @@ use Fomvasss\Billing\Gateways\WayForPay\WayForPayGateway;
 use Fomvasss\Billing\Gateways\WayForPay\WayForPaySignatureValidator;
 use Fomvasss\Billing\Gateways\WayForPay\WayForPayWebhookResponder;
 use Fomvasss\Billing\Http\Controllers\CheckoutFormController;
+use Fomvasss\Billing\Http\Controllers\CheckoutReturnController;
 use Fomvasss\Billing\Http\Controllers\WebhookController;
 use Fomvasss\Billing\Listeners\HandleSubscriptionPaymentOutcome;
 use Fomvasss\Billing\Support\DefaultCredentialResolver;
@@ -57,6 +58,7 @@ class BillingServiceProvider extends ServiceProvider
 
         $this->registerWebhookRoute();
         $this->registerCheckoutFormRoute();
+        $this->registerReturnRoute();
         $this->registerFakeGateway();
         $this->registerBuiltInGateways();
         $this->registerListeners();
@@ -136,6 +138,21 @@ class BillingServiceProvider extends ServiceProvider
         // genuinely missing route param, which is the wrong kind of 404 for the wrong reason.
         Route::middleware('web')->get('billing/checkout/{payment}', [CheckoutFormController::class, 'show'])
             ->name('billing.checkout-form');
+    }
+
+    /**
+     * The default browser-return target the drivers hand every gateway (see
+     * AbstractGateway::successUrl()) — fires CheckoutReturned, then 303-redirects to
+     * config('billing.return_urls.*'). GET+POST because WayForPay/Hutko return the customer via an
+     * auto-submitted POST form — hence no `web` group (a gateway's POST can't carry a CSRF token),
+     * only SubstituteBindings for {payment}.
+     */
+    protected function registerReturnRoute(): void
+    {
+        Route::match(['get', 'post'], 'billing/return/{payment}/{outcome}', CheckoutReturnController::class)
+            ->whereIn('outcome', ['success', 'failed'])
+            ->middleware(\Illuminate\Routing\Middleware\SubstituteBindings::class)
+            ->name('billing.return');
     }
 
     protected function registerListeners(): void

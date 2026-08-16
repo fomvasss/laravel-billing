@@ -99,7 +99,7 @@ class ModelHelpersTest extends TestCase
     {
         $user ??= TestUser::create(['name' => 'Buyer']);
         $plan = Plan::create(['code' => 'pro-' . uniqid(), 'name' => 'Pro']);
-        $price = Price::create(['plan_id' => $plan->id, 'currency_code' => 'UAH', 'amount' => 10000, 'pricing_type' => 'flat', 'interval' => 'month', 'interval_count' => 1]);
+        $price = Price::create(['plan_id' => $plan->id, 'currency' => 'UAH', 'amount' => 10000, 'pricing_type' => 'flat', 'interval' => 'month', 'interval_count' => 1]);
 
         return Subscription::create([
             'gateway' => 'fake',
@@ -119,7 +119,7 @@ class ModelHelpersTest extends TestCase
             'type' => 'charge',
             'gateway' => 'fake',
             'amount' => 10000,
-            'currency_code' => 'UAH',
+            'currency' => 'UAH',
             'payable_type' => TestUser::class,
             'payable_id' => $user->id,
             'billable_type' => TestUser::class,

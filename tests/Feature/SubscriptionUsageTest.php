@@ -56,6 +56,56 @@ class SubscriptionUsageTest extends TestCase
         Event::assertDispatchedTimes(UsageLimitReached::class, 1);
     }
 
+    public function test_a_successful_renewal_resets_usage_on_a_flat_price_with_a_quota(): void
+    {
+        $subscription = $this->subscription(includedUnits: 100.0);
+        $subscription->reportUsage(80);
+
+        $this->renew($subscription);
+
+        // fresh paid period = fresh allowance, even though the price is flat (quota is orthogonal
+        // to pricing_type — the "4000 tokens included per month at a fixed price" case)
+        $this->assertSame(0.0, $subscription->fresh()->current_usage);
+    }
+
+    public function test_the_first_payment_stamps_its_gateway_onto_a_gateway_less_subscription(): void
+    {
+        $subscription = $this->subscription(includedUnits: null);
+        $subscription->update(['gateway' => null]); // trial created before the payment method is known
+
+        $this->renew($subscription); // the renew() helper pays via the fake gateway
+
+        $this->assertSame('fake', $subscription->fresh()->gateway);
+    }
+
+    public function test_a_renewal_keeps_usage_on_a_quota_less_flat_price(): void
+    {
+        $subscription = $this->subscription(includedUnits: null);
+        $subscription->reportUsage(80);
+
+        $this->renew($subscription);
+
+        $this->assertSame(80.0, $subscription->fresh()->current_usage);
+    }
+
+    private function renew(Subscription $subscription): void
+    {
+        $payment = \Fomvasss\Billing\Models\Payment::create([
+            'status' => 'pending',
+            'type' => 'charge',
+            'gateway' => 'fake',
+            'amount' => 10000,
+            'currency' => 'UAH',
+            'payable_type' => $subscription->getMorphClass(),
+            'payable_id' => $subscription->id,
+            'billable_type' => $subscription->billable_type,
+            'billable_id' => $subscription->billable_id,
+        ]);
+
+        $payment->update(['status' => 'paid']);
+        \Fomvasss\Billing\Events\PaymentSucceeded::dispatch($payment);
+    }
+
     public function test_pause_and_resume_toggle_status_and_fire_events(): void
     {
         Event::fake([SubscriptionPaused::class, SubscriptionResumed::class]);
@@ -75,7 +125,7 @@ class SubscriptionUsageTest extends TestCase
     private function subscription(?float $includedUnits): Subscription
     {
         $plan = Plan::create(['code' => 'pro-' . uniqid(), 'name' => 'Pro']);
-        $price = Price::create(['plan_id' => $plan->id, 'currency_code' => 'UAH', 'amount' => 10000, 'pricing_type' => 'flat', 'included_units' => $includedUnits]);
+        $price = Price::create(['plan_id' => $plan->id, 'currency' => 'UAH', 'amount' => 10000, 'pricing_type' => 'flat', 'included_units' => $includedUnits]);
         $user = TestUser::create(['name' => 'Buyer']);
 
         return Subscription::create([

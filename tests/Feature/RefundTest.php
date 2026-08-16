@@ -89,7 +89,7 @@ class RefundTest extends TestCase
             'type' => 'charge',
             'gateway' => 'stripe',
             'amount' => 10000,
-            'currency_code' => 'USD',
+            'currency' => 'USD',
             'external_id' => 'pi_1',
             'payable_type' => TestUser::class,
             'payable_id' => $user->id,

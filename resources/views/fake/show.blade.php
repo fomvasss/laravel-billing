@@ -14,7 +14,7 @@
 </head>
 <body>
     <h1>Fake gateway</h1>
-    <p>Payment #{{ $payment->id }} — {{ $payment->amount }} {{ $payment->currency_code }} (local/testing only)</p>
+    <p>Payment #{{ $payment->id }} — {{ $payment->amount }} {{ $payment->currency }} (local/testing only)</p>
 
     {{-- No @csrf — this posts straight to the webhook endpoint, which deliberately has no CSRF
          protection (real bank webhooks can't carry a Laravel session token either). --}}

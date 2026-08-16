@@ -44,18 +44,31 @@ abstract class AbstractGateway implements PaymentGatewayContract
         return route('billing.webhook', ['gateway' => $this->gatewayName, ...$options->webhookUrlParams]);
     }
 
-    protected function successUrl(ChargeOptions $options): string
+    /**
+     * Where the gateway sends the browser after checkout. An explicit ChargeOptions URL is used
+     * as-is; otherwise the gateway gets the package's return route (billing.return), which fires
+     * CheckoutReturned and forwards to config('billing.return_urls.*') with ?payment={id} — that
+     * hop is what absorbs WayForPay/Hutko's POST-style returns and serves frontend/SPA pages.
+     */
+    protected function successUrl(Payment $payment, ChargeOptions $options): string
     {
-        return $options->successUrl
-            ?? config('billing.return_urls.success')
-            ?? throw BillingException::missingReturnUrl('success');
+        return $options->successUrl ?? $this->returnUrl($payment, 'success', $options);
     }
 
-    protected function failUrl(ChargeOptions $options): string
+    protected function failUrl(Payment $payment, ChargeOptions $options): string
     {
-        return $options->failUrl
-            ?? config('billing.return_urls.failed')
-            ?? throw BillingException::missingReturnUrl('failed');
+        return $options->failUrl ?? $this->returnUrl($payment, 'failed', $options);
+    }
+
+    private function returnUrl(Payment $payment, string $outcome, ChargeOptions $options): string
+    {
+        if (config("billing.return_urls.{$outcome}") === null) {
+            throw BillingException::missingReturnUrl($outcome);
+        }
+
+        // returnParams ride as query on the proxy URL; CheckoutReturnController forwards them onto
+        // the final return_urls.* redirect, so the frontend page gets them alongside ?payment=.
+        return route('billing.return', ['payment' => $payment, 'outcome' => $outcome, ...$options->returnParams]);
     }
 
     /**
@@ -67,12 +80,12 @@ abstract class AbstractGateway implements PaymentGatewayContract
     protected function paidAmountMismatch(Payment $payment, ?int $amountMinor, ?string $currency): bool
     {
         $mismatch = ($amountMinor !== null && $amountMinor !== $payment->amount)
-            || ($currency !== null && strcasecmp($currency, $payment->currency_code) !== 0);
+            || ($currency !== null && strcasecmp($currency, $payment->currency) !== 0);
 
         if ($mismatch) {
             Log::warning("Billing [{$this->gatewayName}]: paid webhook amount/currency mismatch — leaving payment pending", [
                 'payment_id' => $payment->id,
-                'expected' => [$payment->amount, $payment->currency_code],
+                'expected' => [$payment->amount, $payment->currency],
                 'received' => [$amountMinor, $currency],
             ]);
         }

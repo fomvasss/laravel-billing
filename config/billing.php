@@ -23,9 +23,14 @@ return [
     | Return URLs
     |--------------------------------------------------------------------------
     |
-    | Fallback success/fail redirect URLs, used by AbstractGateway::successUrl()/
-    | failUrl() when a charge's ChargeOptions doesn't override them. Leaving
-    | both null and never passing an override throws BillingException on charge.
+    | The final success/fail pages the customer lands on after checkout — your
+    | own routes or a frontend/SPA URL on another origin. The gateway itself is
+    | pointed at the package's return route (GET+POST, so WayForPay/Hutko's
+    | POST-style returns work without CSRF exceptions on your side), which
+    | fires the CheckoutReturned event and 303-redirects here with ?payment={id}
+    | appended. A per-charge ChargeOptions successUrl/failUrl bypasses all of
+    | that and goes to the gateway as-is. Leaving these null and never passing
+    | an override throws BillingException on charge.
     |
     */
 
@@ -113,6 +118,24 @@ return [
 
     'schedule' => [
         'enabled' => env('BILLING_SCHEDULE_ENABLED', false),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Queue
+    |--------------------------------------------------------------------------
+    |
+    | Connection/queue for the package's queued work (ProcessWebhookJob —
+    | currently the only queued job). Both null by default = the app's own
+    | defaults. Set a dedicated queue (e.g. 'billing') to give payment
+    | webhooks their own worker/priority, so a busy default queue can't delay
+    | marking payments paid.
+    |
+    */
+
+    'queue' => [
+        'connection' => env('BILLING_QUEUE_CONNECTION'),
+        'queue' => env('BILLING_QUEUE'),
     ],
 
     /*

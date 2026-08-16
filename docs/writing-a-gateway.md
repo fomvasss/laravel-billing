@@ -49,7 +49,7 @@ public function charge(Payment $payment, ChargeOptions $options = new ChargeOpti
 {
     $data = $this->http()->post('/checkout', [
         'amount' => $payment->amount,              // ALWAYS minor units — see "Money" below
-        'currency' => $payment->currency_code,
+        'currency' => $payment->currency,
         'reference' => (string) $payment->id,      // so the webhook can find this row again
         'callback_url' => $this->webhookUrl($options),
         'return_url' => $this->successUrl($options),

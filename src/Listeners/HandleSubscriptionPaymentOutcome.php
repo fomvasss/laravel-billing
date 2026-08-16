@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Fomvasss\Billing\Listeners;
 
 use Fomvasss\Billing\Enums\Interval;
+use Fomvasss\Billing\Enums\PricingType;
 use Fomvasss\Billing\Enums\SubscriptionStatus;
 use Fomvasss\Billing\Events\PaymentFailed;
 use Fomvasss\Billing\Events\PaymentSucceeded;
@@ -35,12 +36,21 @@ class HandleSubscriptionPaymentOutcome
 
         $subscription->update([
             'status' => SubscriptionStatus::Active,
+            // A trial subscription is created before anyone knows how it will be paid
+            // (gateway=null) — the first successful payment is what decides it, and without this
+            // stamp process-recurring-charges (whereNotNull gateway) would never renew it.
+            'gateway' => $subscription->gateway ?? $event->payment->gateway,
             'current_period_ends_at' => $this->nextPeriodEnd($subscription, $price),
             'recurring_attempts' => 0,
             'grace_ends_at' => null,
             'next_retry_at' => null,
-            // metered usage resets on a successful renewal — see "Ліміти/квоти" in the plan
-            'current_usage' => $price?->pricing_type?->value === 'metered' ? 0 : $subscription->current_usage,
+            // usage resets on a successful renewal when it drove the bill (metered) OR when the
+            // price carries a period quota (included_units) — a fresh paid period means a fresh
+            // allowance either way. Quota-less flat/licensed usage is left alone: there it's just
+            // a counter the consumer owns.
+            'current_usage' => $price !== null && ($price->pricing_type === PricingType::Metered || $price->included_units !== null)
+                ? 0
+                : $subscription->current_usage,
         ]);
 
         SubscriptionRenewed::dispatch($subscription);

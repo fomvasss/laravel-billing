@@ -45,7 +45,7 @@ class ExpireTrialsTest extends TestCase
     private function trialSubscription(\DateTimeInterface $trialEndsAt): Subscription
     {
         $plan = Plan::create(['code' => 'pro-' . uniqid(), 'name' => 'Pro']);
-        $price = Price::create(['plan_id' => $plan->id, 'currency_code' => 'UAH', 'amount' => 0, 'pricing_type' => 'flat']);
+        $price = Price::create(['plan_id' => $plan->id, 'currency' => 'UAH', 'amount' => 0, 'pricing_type' => 'flat']);
         $user = TestUser::create(['name' => 'Buyer']);
 
         return Subscription::create([

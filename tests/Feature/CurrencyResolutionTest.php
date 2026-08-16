@@ -21,7 +21,7 @@ class CurrencyResolutionTest extends TestCase
 {
     public function test_step_one_uses_the_price_own_currency_when_the_gateway_supports_it(): void
     {
-        $price = $this->plan()->prices()->create(['currency_code' => 'UAH', 'amount' => 10000, 'pricing_type' => 'flat']);
+        $price = $this->plan()->prices()->create(['currency' => 'UAH', 'amount' => 10000, 'pricing_type' => 'flat']);
 
         $resolved = app(BillingManager::class)->resolveChargeAmount($price, 'fake');
 
@@ -33,8 +33,8 @@ class CurrencyResolutionTest extends TestCase
     {
         $plan = $this->plan();
         // GBP isn't in the fake driver's supportedCurrencies() — the sibling UAH price should win.
-        $unsupported = $plan->prices()->create(['currency_code' => 'GBP', 'amount' => 3000, 'gateway' => 'fake', 'pricing_type' => 'flat']);
-        $sibling = $plan->prices()->create(['currency_code' => 'UAH', 'amount' => 12000, 'gateway' => 'fake', 'pricing_type' => 'flat']);
+        $unsupported = $plan->prices()->create(['currency' => 'GBP', 'amount' => 3000, 'gateway' => 'fake', 'pricing_type' => 'flat']);
+        $sibling = $plan->prices()->create(['currency' => 'UAH', 'amount' => 12000, 'gateway' => 'fake', 'pricing_type' => 'flat']);
 
         $resolved = app(BillingManager::class)->resolveChargeAmount($unsupported, 'fake');
 
@@ -51,7 +51,7 @@ class CurrencyResolutionTest extends TestCase
             }
         });
 
-        $price = $this->plan()->prices()->create(['currency_code' => 'GBP', 'amount' => 100, 'pricing_type' => 'flat']);
+        $price = $this->plan()->prices()->create(['currency' => 'GBP', 'amount' => 100, 'pricing_type' => 'flat']);
 
         $resolved = app(BillingManager::class)->resolveChargeAmount($price, 'fake');
 
@@ -62,7 +62,7 @@ class CurrencyResolutionTest extends TestCase
 
     public function test_step_four_throws_when_nothing_matches_and_no_converter_is_bound(): void
     {
-        $price = $this->plan()->prices()->create(['currency_code' => 'GBP', 'amount' => 100, 'pricing_type' => 'flat']);
+        $price = $this->plan()->prices()->create(['currency' => 'GBP', 'amount' => 100, 'pricing_type' => 'flat']);
 
         $this->expectException(BillingException::class);
 

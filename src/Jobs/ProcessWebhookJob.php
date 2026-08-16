@@ -27,7 +27,13 @@ class ProcessWebhookJob implements ShouldQueue
     use Queueable;
     use SerializesModels;
 
-    public function __construct(public BillingWebhookCall $webhookCall) {}
+    public function __construct(public BillingWebhookCall $webhookCall)
+    {
+        // null = the app's defaults; billing.queue.* lets payment webhooks run on their own
+        // connection/queue so a busy default queue can't delay marking payments paid.
+        $this->onConnection(config('billing.queue.connection'));
+        $this->onQueue(config('billing.queue.queue'));
+    }
 
     public function handle(): void
     {

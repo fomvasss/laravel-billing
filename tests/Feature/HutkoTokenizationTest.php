@@ -131,7 +131,7 @@ class HutkoTokenizationTest extends TestCase
             'type' => 'charge',
             'gateway' => 'hutko',
             'amount' => 10000,
-            'currency_code' => 'UAH',
+            'currency' => 'UAH',
             'payable_type' => TestUser::class,
             'payable_id' => $user->id,
             'billable_type' => TestUser::class,

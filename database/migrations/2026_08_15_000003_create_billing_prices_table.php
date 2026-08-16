@@ -14,7 +14,7 @@ return new class extends Migration
             $table->uuid('id')->primary();
             $table->string('pricing_type', 20)->default('flat');
             $table->string('gateway', 50)->nullable();
-            $table->string('currency_code', 3);
+            $table->string('currency', 3);
             $table->unsignedBigInteger('amount');
             $table->string('interval', 20)->nullable();
             $table->unsignedInteger('interval_count')->default(1);
@@ -26,7 +26,7 @@ return new class extends Migration
             $table->timestamps();
             $table->foreignUuid('plan_id')->constrained('billing_plans')->cascadeOnDelete();
 
-            $table->index(['plan_id', 'gateway', 'currency_code']);
+            $table->index(['plan_id', 'gateway', 'currency']);
         });
     }
 

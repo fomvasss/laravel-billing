@@ -126,7 +126,7 @@ class ProcessRecurringChargesCommand extends Command
             'type' => PaymentType::Charge,
             'gateway' => $subscription->gateway,
             'amount' => $amount->amount,
-            'currency_code' => $amount->currency,
+            'currency' => $amount->currency,
             'converted_from_currency' => $resolved->convertedFromCurrency,
             'exchange_rate' => $resolved->exchangeRate,
             'exchange_rate_at' => $resolved->exchangeRateAt,

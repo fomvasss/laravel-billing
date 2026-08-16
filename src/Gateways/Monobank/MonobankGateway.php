@@ -55,14 +55,14 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
             // the driver's own fields below always win — raw adds, never overrides amount/reference.
             ...$options->raw,
             'amount' => $payment->amount,
-            'ccy' => $this->currencyCode($payment->currency_code),
+            'ccy' => $this->currencyCode($payment->currency),
             'merchantPaymInfo' => array_filter([
                 'reference' => (string) $payment->id,
                 'destination' => $options->description,
                 'customerEmails' => $options->customerEmail ? [$options->customerEmail] : null,
                 'basketOrder' => $this->basketOrder($options->receiptItems),
             ]),
-            'redirectUrl' => $this->successUrl($options),
+            'redirectUrl' => $this->successUrl($payment, $options),
             'webHookUrl' => $this->webhookUrl($options),
             'validity' => (int) ($this->credentials['link_ttl_minutes'] ?? 60) * 60,
             'saveCardData' => $options->saveCard
@@ -187,7 +187,7 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
         $response = $this->http()->post('/api/merchant/wallet/payment', array_filter([
             'cardToken' => $method->external_id,
             'amount' => $payment->amount,
-            'ccy' => $this->currencyCode($payment->currency_code),
+            'ccy' => $this->currencyCode($payment->currency),
             'initiationKind' => 'merchant',
             'merchantPaymInfo' => array_filter(['reference' => (string) $payment->id]),
             'webHookUrl' => route('billing.webhook', ['gateway' => $this->gatewayName]),

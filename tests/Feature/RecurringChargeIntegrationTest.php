@@ -47,7 +47,7 @@ class RecurringChargeIntegrationTest extends TestCase
         $price = Price::create([
             'plan_id' => $plan->id,
             'gateway' => 'stripe',
-            'currency_code' => 'USD',
+            'currency' => 'USD',
             'amount' => 2900,
             'pricing_type' => 'flat',
             'interval' => 'month',
@@ -94,7 +94,7 @@ class RecurringChargeIntegrationTest extends TestCase
         $price = Price::create([
             'plan_id' => $plan->id,
             'gateway' => 'monobank',
-            'currency_code' => 'UAH',
+            'currency' => 'UAH',
             'amount' => 10000,
             'pricing_type' => 'flat',
             'interval' => 'month',
@@ -141,7 +141,7 @@ class RecurringChargeIntegrationTest extends TestCase
         $price = Price::create([
             'plan_id' => $plan->id,
             'gateway' => 'liqpay',
-            'currency_code' => 'UAH',
+            'currency' => 'UAH',
             'amount' => 10000,
             'pricing_type' => 'flat',
             'interval' => 'month',
@@ -190,7 +190,7 @@ class RecurringChargeIntegrationTest extends TestCase
         $price = Price::create([
             'plan_id' => $plan->id,
             'gateway' => 'wayforpay',
-            'currency_code' => 'UAH',
+            'currency' => 'UAH',
             'amount' => 10000,
             'pricing_type' => 'flat',
             'interval' => 'month',
@@ -237,7 +237,7 @@ class RecurringChargeIntegrationTest extends TestCase
         $price = Price::create([
             'plan_id' => $plan->id,
             'gateway' => 'hutko',
-            'currency_code' => 'UAH',
+            'currency' => 'UAH',
             'amount' => 10000,
             'pricing_type' => 'flat',
             'interval' => 'month',

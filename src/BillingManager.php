@@ -208,10 +208,10 @@ class BillingManager
             throw new BillingException("Only a paid charge can be refunded (payment {$payment->id} is {$payment->type->value}/{$payment->status->value}).");
         }
 
-        $money = $amount ?? new Money($payment->amount - $payment->refundedAmount(), $payment->currency_code);
+        $money = $amount ?? new Money($payment->amount - $payment->refundedAmount(), $payment->currency);
 
-        if ($money->currency !== $payment->currency_code) {
-            throw new BillingException("Refund currency \"{$money->currency}\" does not match the charge's \"{$payment->currency_code}\".");
+        if ($money->currency !== $payment->currency) {
+            throw new BillingException("Refund currency \"{$money->currency}\" does not match the charge's \"{$payment->currency}\".");
         }
 
         if ($money->amount <= 0 || $money->amount + $payment->refundedAmount() > $payment->amount) {
@@ -227,7 +227,7 @@ class BillingManager
             'type' => PaymentType::Refund,
             'gateway' => $payment->gateway,
             'amount' => $money->amount,
-            'currency_code' => $money->currency,
+            'currency' => $money->currency,
             'external_id' => $result->externalId,
             'raw_response' => $result->raw,
             'tenant_id' => $payment->tenant_id,
@@ -256,8 +256,8 @@ class BillingManager
         $class = $this->drivers[$gateway] ?? throw BillingException::unknownGateway($gateway);
         $supported = $class::supportedCurrencies();
 
-        if (in_array($price->currency_code, $supported, true)) {
-            return new ResolvedAmount(new Money($price->amount, $price->currency_code));
+        if (in_array($price->currency, $supported, true)) {
+            return new ResolvedAmount(new Money($price->amount, $price->currency));
         }
 
         // A gateway-specific sibling wins; a generic (gateway=null) price in an accepted currency
@@ -265,32 +265,32 @@ class BillingManager
         $sibling = $price->plan
             ->prices()
             ->where('gateway', $gateway)
-            ->whereIn('currency_code', $supported)
+            ->whereIn('currency', $supported)
             ->first()
             ?? $price->plan
                 ->prices()
                 ->whereNull('gateway')
-                ->whereIn('currency_code', $supported)
+                ->whereIn('currency', $supported)
                 ->first();
 
         if ($sibling !== null) {
-            return new ResolvedAmount(new Money($sibling->amount, $sibling->currency_code));
+            return new ResolvedAmount(new Money($sibling->amount, $sibling->currency));
         }
 
         if (app()->bound(CurrencyConverterContract::class)) {
-            $toCurrency = $supported[0] ?? throw BillingException::unsupportedCurrency($price->currency_code, $gateway);
+            $toCurrency = $supported[0] ?? throw BillingException::unsupportedCurrency($price->currency, $gateway);
 
-            $original = new Money($price->amount, $price->currency_code);
+            $original = new Money($price->amount, $price->currency);
             $converted = app(CurrencyConverterContract::class)->convert($original, $toCurrency);
 
             return new ResolvedAmount(
                 money: $converted,
-                convertedFromCurrency: $price->currency_code,
+                convertedFromCurrency: $price->currency,
                 exchangeRate: $original->amount > 0 ? $converted->amount / $original->amount : null,
                 exchangeRateAt: now(),
             );
         }
 
-        throw BillingException::unsupportedCurrency($price->currency_code, $gateway);
+        throw BillingException::unsupportedCurrency($price->currency, $gateway);
     }
 }

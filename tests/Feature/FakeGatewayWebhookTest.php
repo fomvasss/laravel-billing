@@ -86,7 +86,7 @@ class FakeGatewayWebhookTest extends TestCase
             'type' => 'charge',
             'gateway' => 'fake',
             'amount' => 5000,
-            'currency_code' => 'UAH',
+            'currency' => 'UAH',
             'payable_type' => TestOrder::class,
             'payable_id' => $order->id,
             'billable_type' => TestUser::class,

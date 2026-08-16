@@ -47,7 +47,7 @@ $payment = Payment::create([
     'type' => 'charge',
     'gateway' => 'fake',
     'amount' => 10000, // мінорні одиниці — 100.00
-    'currency_code' => 'UAH',
+    'currency' => 'UAH',
     'payable_type' => Order::class,
     'payable_id' => $order->id,
     'billable_type' => $order->user::class,
@@ -132,6 +132,23 @@ class Organization extends Model implements Billable
 }
 ```
 
+Трейт також дає моделі акцесори з боку консьюмера — скоупи `forBillable()` на моделях пакета напряму майже не знадобляться:
+
+```php
+$organization->payments;                     // morphMany — скоупи ланцюжком: ->payments()->paid()
+$organization->subscriptions;
+$organization->paymentMethods;
+
+$organization->defaultPaymentMethod;         // збережена картка, з якої йдуть продовження (per gateway — нижче)
+$organization->defaultPaymentMethodFor('monobank');
+
+$organization->activeSubscription();         // те саме визначення "активна", що isActive()
+$organization->activeSubscription('pro');    // звужено кодом Plan
+$organization->hasActiveSubscription('pro'); // one-liner для gate/middleware
+```
+
+Нюанс: `is_default` ведеться окремо на кожен гейтвей, тож клієнт із картками на двох гейтвеях має два дефолти — `defaultPaymentMethod` (властивість) поверне один із них, `defaultPaymentMethodFor()` — точний вибір.
+
 ## Оплата
 
 ```php
@@ -148,6 +165,35 @@ return redirect($payment->payment_url);
 
 Якщо потрібен сирий результат драйвера напряму (власна API-відповідь для SPA, наприклад): `$result->url` заповнений для будь-якого гейтвея, крім LiqPay, де замість нього `$result->form` (`['action' => ..., 'fields' => [...]]`) — ці поля треба самим відправити POST-ом на вказаний `action`.
 
+### Сторінки повернення
+
+Куди потрапляє браузер клієнта після каси. Фінальні сторінки конфігуруються один раз — звичайні роути застосунку або frontend/SPA-URL на іншому домені:
+
+```php
+// config/billing.php
+'return_urls' => [
+    'success' => 'https://app.example.com/checkout/success',
+    'failed' => 'https://app.example.com/checkout/failed',
+],
+```
+
+Сам гейтвей отримує власний return-роут пакета, який далі робить 303-редірект на твою сторінку з дописаним `?payment={id}` — сторінка знає, який платіж показувати. Проміжний хоп існує з двох практичних причин: WayForPay і Hutko повертають клієнта авто-сабмітним **POST**-ом (пакетний роут приймає його без жодних CSRF-виключень на твоєму боці, а 303 перетворює на звичайний GET до твоєї сторінки), і SPA-фронтенд взагалі не може бути POST-ціллю.
+
+Потрібно на фінальному URL щось понад id платежу — наприклад, номер замовлення? `ChargeOptions::$returnParams` проїжджає через хоп і приземляється на твоїй сторінці GET-параметрами:
+
+```php
+Billing::charge($payment, new ChargeOptions(
+    returnParams: ['order' => $order->number],
+));
+// → https://app.example.com/checkout/success?order=1042&payment={id}
+```
+
+Лише підказки для відображення — як і все на цій сторінці, ніколи не довіряй їм як стану оплати.
+
+Він також диспатчить `CheckoutReturned($payment, $outcome, $data)` — хук лише для аналітики/UX. Повернення браузера нічого не доводить (і може взагалі не статись): стан платежу читай з БД (`$payment->isPaid()`), показуй "обробляється", поки вебхук не долетів, і ніколи не виконуй замовлення з цієї події.
+
+Per-charge `ChargeOptions(successUrl: ..., failUrl: ...)` обходить весь механізм — URL (з будь-якими власними GET-параметрами, наприклад номером замовлення) йде гейтвею як є. Якщо робиш так з WayForPay/Hutko — їхнє POST-повернення тепер твоя турбота.
+
 ### Ручні/офлайн платежі
 
 Для оплати готівкою чи по реквізитам драйвер не потрібен — просто створити рядок напряму:
@@ -158,7 +204,7 @@ Payment::create([
     'type' => 'charge',
     'gateway' => null, // або вільний рядок на кшталт 'cash' — не зареєстрований через extend()
     'amount' => 10000,
-    'currency_code' => 'UAH',
+    'currency' => 'UAH',
     'payable_type' => Order::class,
     'payable_id' => $order->id,
     'billable_type' => $order->user::class,
@@ -183,7 +229,11 @@ $payment->refundedAmount(); // мінорні одиниці, сума всіх 
 
 Підтримується там, де в гейтвея є refund-API: Monobank, LiqPay, Stripe (`RefundsPayments` — перевіряйте `Billing::gateways()[$name]['capabilities']['refunds']`). Повернення WayForPay/Hutko робляться в кабінеті банку; якщо потрібні у вашому обліку — створіть рядок повернення вручну.
 
-## Схема послідовності
+## Схеми флоу
+
+Три флоу покривають усе, що пакет робить із грошима. Скрізь діє одне правило: **лише вебхук (або його polling-фолбек) змінює `Payment.status`** — усе, що робить браузер, це UX.
+
+### 1. Разова оплата (клієнт присутній, редірект)
 
 ```mermaid
 sequenceDiagram
@@ -199,21 +249,73 @@ sequenceDiagram
     Bank-->>Driver: URL чекауту / форма
     Driver-->>Billing: PaymentResult
     Billing-->>App: external_id/payment_url записано в $payment
-    App-->>Customer: редірект на чекаут
+    App-->>Customer: редірект на $payment->payment_url
 
     Customer->>Bank: оплачує
-    Bank-->>Customer: редірект на successUrl (лише UX — ніколи не джерело підтвердження)
 
-    Bank->>App: webhook POST (сервер-сервер)
-    Note over App: SignatureValidator перевіряє підпис,<br/>WebhookCall збережено, ProcessWebhookJob у черзі
-    App->>Driver: handleWebhook($webhookCall)
-    Driver-->>App: WebhookResult
-    Note over App: Payment.status оновлено,<br/>дедуп-клейм на webhook_calls
-    App->>App: подія PaymentSucceeded
-    App-->>App: ваш лістенер реагує (фулфілмент замовлення тощо)
+    par Повернення браузера — лише UX
+        Bank-->>Customer: браузер на billing/return/{payment}/{outcome} (GET або POST)
+        Customer->>App: return-роут пакета
+        Note over App: диспатчиться подія CheckoutReturned
+        App-->>Customer: 303 → return_urls.* + ?payment={id} (+ returnParams)
+    and Вебхук — джерело правди
+        Bank->>App: POST /billing/webhooks/{gateway}
+        Note over App: SignatureValidator перевіряє,<br/>WebhookCall збережено, ProcessWebhookJob у черзі
+        App->>Driver: handleWebhook($webhookCall)
+        Driver-->>App: WebhookResult (Payment.status оновлено, сума звірена)
+        Note over App: дедуп-клейм на webhook_calls
+        App->>App: PaymentSucceeded / PaymentFailed
+        App-->>App: ваш лістенер реагує (фулфілмент замовлення тощо)
+    end
 ```
 
-Два незалежні шляхи, навмисно: редірект браузера (верхня половина) — лише UX, вебхук (нижня половина) — єдине, що коли-небудь змінює `Payment.status` — деталі нижче.
+Дві половини `par`-блоку незалежні й неупорядковані — вебхук часто прилітає раніше, ніж браузер клієнта повернувся. Сторінка повернення має читати стан платежу з БД і показувати "обробляється", поки вебхук не прийшов.
+
+### 2. Рекурентне списання (клієнта немає, збережена картка)
+
+Що робить `billing:process-recurring-charges` щогодини — і рівно те саме відбувається при твоєму власному виклику `chargeWithMethod()` (овербюджет, конвертація тріалу зі збереженою карткою):
+
+```mermaid
+sequenceDiagram
+    participant Cron as Планувальник (щогодини)
+    participant Cmd as process-recurring-charges
+    participant Driver as Драйвер гейтвея
+    participant Bank as Платіжний гейтвей
+    participant Listener as Вбудований лістенер
+
+    Cron->>Cmd: запуск
+    Note over Cmd: 1. настав cancels_at → canceled, SubscriptionCancelled<br/>2. пропуск, якщо renewal-Payment ще pending (без подвійного списання)<br/>3. пропуск до next_retry_at (пейсинг dunning'у)
+    Cmd->>Cmd: створює pending Payment (payable = Subscription)
+    Cmd->>Driver: chargePaymentMethod($payment, $method)
+    Driver->>Bank: off-session списання збереженим токеном
+    Bank-->>Driver: ініційовано
+
+    Bank->>Listener: вебхук → PaymentSucceeded / PaymentFailed (той самий пайплайн, що у флоу 1)
+    alt оплачено
+        Note over Listener: status=active, період +1 інтервал,<br/>attempts/grace скинуто → SubscriptionRenewed
+    else невдача
+        Note over Listener: status=past_due, attempts+1,<br/>next_retry_at +retry_interval_hours → SubscriptionPaymentFailed<br/>після max_recurring_attempts → canceled + SubscriptionCancelled
+    end
+```
+
+### 3. Загублений вебхук (реконсиляція)
+
+```mermaid
+sequenceDiagram
+    participant Cron as Планувальник (кожні 15 хв)
+    participant Cmd as reconcile-pending-payments
+    participant Driver as Драйвер гейтвея
+    participant Bank as Платіжний гейтвей
+
+    Note over Cmd: Payment висить pending довше за reconcile_after_minutes —<br/>вебхук загубився, або статус (expired), для якого вебхука не буває
+    Cron->>Cmd: запуск
+    Cmd->>Driver: checkStatus($payment)
+    Driver->>Bank: опитування статусу
+    Bank-->>Driver: paid / failed / expired
+    Note over Cmd: Payment оновлено, ТІ САМІ події через спільний дедуп —<br/>пізній реальний вебхук потім не продублює диспатч
+```
+
+Гейтвеї без ендпоінта статусу пропускають опитування: pending-платіж зі спливлим TTL помічається `canceled` як мертвий чекаут.
 
 ## Вебхуки
 
@@ -227,6 +329,7 @@ sequenceDiagram
 | `SubscriptionCreated` | Лише гейтвеї з нативними підписками — жоден вбудований драйвер поки її не диспатчить |
 | `TrialWillEnd` | З `billing:expire-trials`, за `trial_ending_notice_days` (дефолт 3) до `trial_ends_at`, один раз на підписку |
 | `SubscriptionPaused` / `SubscriptionResumed` | Лише локально, через `$subscription->pause()`/`resume()` — гейтвей не бере участі |
+| `CheckoutReturned` | Браузер клієнта повернувся з каси (див. "Сторінки повернення") — лише UX/аналітика, ніколи не доказ оплати |
 | `PaymentMethodAttached` / `PaymentMethodDetached` | Збережена картка/токен прив'язана або відв'язана |
 | `UsageLimitReached` | `Subscription::reportUsage()` перетнув `price.included_units` |
 
@@ -245,6 +348,31 @@ Event::listen(PaymentSucceeded::class, function (PaymentSucceeded $event) {
 - **Події дедуплікуються за результатом, не за референсом.** Повторно доставлений "оплачено" ніколи не викличе `PaymentSucceeded` двічі — але "відхилено, потім клієнт повторив оплату того ж чекауту і заплатив" диспатчить і `PaymentFailed`, і `PaymentSucceeded`, навіть на гейтвеях, що використовують один референс на всі спроби. Команда реконсиляції ділить той самий дедуп, тож гонка "poll проти пізнього вебхука" теж не подвоїть подію.
 - **Колбек про платіж, якого пакет не знає** (інша інтеграція на тому ж мерчант-акаунті, рядки до встановлення пакета), ігнорується — без failed jobs.
 - **Збережені webhook-виклики чистяться** через `config('billing.webhook.prune_after_days')` (дефолт 30) щоденним `model:prune`, зареєстрованим разом з іншими команди розкладу.
+
+### Horizon / Черга
+
+Вхідні вебхуки обробляє один queued job (`ProcessWebhookJob`). За замовчуванням він іде на дефолтні connection/чергу застосунку; виділи йому окрему чергу, щоб завантажена дефолтна черга не відкладала помітку платежів оплаченими:
+
+```env
+BILLING_QUEUE_CONNECTION=redis
+BILLING_QUEUE=billing
+```
+
+Приклад Horizon-supervisor — job швидкий (без HTTP-викликів усередині; робота з API гейтвея відбулась до постановки в чергу), тож кількох процесів з коротким timeout достатньо:
+
+```php
+'supervisor-billing' => [
+    'connection' => 'redis',
+    'queue' => ['billing'],
+    'balance' => 'simple',
+    'minProcesses' => 1,
+    'maxProcesses' => 4,
+    'tries' => 3,
+    'timeout' => 60,
+],
+```
+
+Якщо задаєш `BILLING_QUEUE` — переконайся, що *якийсь* воркер/supervisor реально споживає цю чергу, інакше вебхуки зберігатимуться, але ніколи не оброблятимуться.
 
 ### Кастомізація webhook-маршруту
 
@@ -283,7 +411,7 @@ $plan = Plan::create(['code' => 'pro', 'name' => 'Pro']);
 
 $price = $plan->prices()->create([
     'gateway' => 'stripe',
-    'currency_code' => 'USD',
+    'currency' => 'USD',
     'amount' => 2900, // $29.00
     'pricing_type' => 'flat',
     'interval' => 'month',
@@ -318,6 +446,8 @@ $subscription->remainingUsage(); // null, якщо в ціни взагалі н
 
 `UsageLimitReached` спрацьовує рівно раз, коли кумулятивне використання перетинає `included_units` — реакція повністю на боці консьюмера (заблокувати, сповістити, або списати овербюджет через `TokenizesPaymentMethod::chargePaymentMethod()`).
 
+При успішному продовженні `current_usage` скидається в 0, якщо ціна має квоту (`included_units` задано) або вона `metered` — свіжий оплачений період означає свіжий ліміт, нічого скидати самому. Використання на `flat`/`licensed` без квоти не чіпається: там це просто лічильник, яким володіє твій застосунок.
+
 ### Пауза / відновлення / скасування
 
 ```php
@@ -347,6 +477,67 @@ $subscription->swapPlan($newPrice);
 | `model:prune` (BillingWebhookCall) | щодня | Видаляє збережені webhook-виклики, старші за `webhook.prune_after_days` (дефолт 30). |
 
 Ніщо з цього не запускається саме собою — `Schedule::command()`/`->hourly()` тощо лише реєструються у власному Laravel-планувальнику застосунку, якому все одно потрібен стандартний системний cron-запис `php artisan schedule:run` щохвилини (звичайна вимога деплою Laravel, не специфіка пакета).
+
+### Статуси та історія
+
+`Subscription` — **один рядок на все життя**: перша оплата переводить `trialing` в `active`, продовження посувають `current_period_ends_at`, dunning проводить через `past_due` і назад; новий рядок з'являється лише якщо клієнт оформлюється заново після `canceled`/`ended`.
+
+```mermaid
+stateDiagram-v2
+    [*] --> trialing: реєстрація, безкоштовний період
+    [*] --> active: одразу платне оформлення
+    trialing --> active: перша оплата (PaymentSucceeded)
+    trialing --> ended: тріал сплив без конвертації
+    active --> active: продовження оплачено — період +1 інтервал
+    active --> past_due: продовження не вдалось (старт dunning)
+    past_due --> active: ретрай оплачено
+    past_due --> canceled: вичерпано max_recurring_attempts
+    active --> canceled: cancel() — негайно або в cancels_at
+    active --> paused: pause()
+    paused --> active: resume()
+```
+
+| Статус | Значення |
+|---|---|
+| `trialing` | Безкоштовний період, картка не потрібна — для перевірок доступу рахується активною |
+| `active` | Оплачена й актуальна |
+| `past_due` | Продовження не вдалось; ретраїться кожні `retry_interval_hours` у межах grace-вікна — `isActive()` лишається true до `grace_ends_at` |
+| `paused` | Локальна пауза через `pause()`/`resume()` — гейтвей не бере участі |
+| `canceled` | Скасована (негайно, в кінці періоду, або dunning'ом після `max_recurring_attempts`) |
+| `ended` | Тріал сплив без конвертації |
+
+**Продовження чи оформлення заново** — пакет це не вирішує, вирішує те, *на який рядок вказує платіж*. `Payment` з `payable` = існуючий рядок підписки — це продовження/реанімація: вбудований лістенер переводить будь-який знайдений статус (`trialing`, `past_due`, навіть `canceled`) в `active` і посуває період. Рядки `canceled`/`ended` ніколи не чіпаються автоматично — жодних автосписань по них — тож "повернення" завжди ініціює твій код, і правило таке: в межах grace-вікна (`past_due`) — оплата по **тому самому рядку**; після `canceled`/`ended` — створюй **новий рядок**. Дві причини: історія чистіша (старий рядок лишається завершеним епізодом), і пастка з якорем періоду — лістенер посуває період від `current_period_ends_at`, який у давно мертвого рядка на місяці в минулому, тож оплата по ньому дасть "новий" період, що вже закінчився (лікується обнуленням `current_period_ends_at`, але свіжий рядок просто не має цієї проблеми).
+
+Що фіксується з коробки: кожне списання — незмінний рядок `Payment` (повна фінансова історія, назавжди), сирі вебхуки — у `billing_webhook_calls` (чистяться через `prune_after_days`), а сам рядок підписки тримає ключові мітки (`trial_ends_at`, `cancels_at`, `grace_ends_at`, `recurring_attempts`). Що **не** фіксується: журнал переходів статусу — `status` перезаписується на місці.
+
+Якщо потрібна саме хронологія — кожен перехід уже супроводжується подією, і журнал збирається одним лістенером у твоєму проєкті (`SubscriptionLog` нижче — твоя власна модель; або направ той самий лістенер у `spatie/laravel-activitylog`):
+
+```php
+use Fomvasss\Billing\Events\{SubscriptionRenewed, SubscriptionPaymentFailed,
+    SubscriptionCancelled, SubscriptionPaused, SubscriptionResumed, TrialWillEnd};
+
+class LogSubscriptionTransition
+{
+    public function handle(SubscriptionRenewed|SubscriptionPaymentFailed|SubscriptionCancelled|SubscriptionPaused|SubscriptionResumed|TrialWillEnd $event): void
+    {
+        SubscriptionLog::create([
+            'subscription_id' => $event->subscription->id,
+            'status' => $event->subscription->status->value,
+            'event' => class_basename($event), // SubscriptionRenewed, TrialWillEnd, ...
+        ]);
+    }
+}
+
+// AppServiceProvider::boot()
+Event::listen([
+    SubscriptionRenewed::class,
+    SubscriptionPaymentFailed::class,
+    SubscriptionCancelled::class,
+    SubscriptionPaused::class,
+    SubscriptionResumed::class,
+    TrialWillEnd::class,
+], LogSubscriptionTransition::class);
+```
 
 ### Токенізація / збережені картки
 
@@ -407,7 +598,7 @@ $payment = Payment::create([
     'type' => 'charge',
     'gateway' => 'monobank',
     'amount' => $order->total, // мінорні одиниці
-    'currency_code' => 'UAH',
+    'currency' => 'UAH',
     'payable_type' => Order::class,
     'payable_id' => $order->id,
     'billable_type' => $order->user::class,
@@ -459,7 +650,7 @@ $plan = Plan::create(['code' => 'storage-15gb', 'name' => '15 ГБ сховищ�
 
 $price = $plan->prices()->create([
     'gateway' => 'stripe',
-    'currency_code' => 'USD',
+    'currency' => 'USD',
     'amount' => 500, // $5.00/міс
     'pricing_type' => 'flat',
     'interval' => 'month',
@@ -492,7 +683,7 @@ $payment = Payment::create([
     'type' => 'charge',
     'gateway' => 'stripe',
     'amount' => 200, // $2.00 за 5 ГБ
-    'currency_code' => 'USD',
+    'currency' => 'USD',
     'payable_type' => $organization::class,
     'payable_id' => $organization->id,
     'billable_type' => $organization::class,
@@ -552,7 +743,7 @@ Event::listen(PaymentSucceeded::class, function (PaymentSucceeded $event) {
 ```php
 $subscription = Subscription::create([
     'status' => 'trialing',
-    'gateway' => 'stripe',
+    'gateway' => null, // ще ніхто не знає, чим платитимуть — перша успішна оплата проставить свій гейтвей сюди автоматично
     'price_id' => $price->id,
     'billable_type' => $organization::class,
     'billable_id' => $organization->id,
@@ -560,7 +751,22 @@ $subscription = Subscription::create([
 ]);
 ```
 
-`TrialWillEnd` спрацьовує за `trial_ending_notice_days` (дефолт 3) до `trial_ends_at` — зі щоденного запуску `billing:expire-trials`, тож потребує увімкненого розкладу — і дає хук запросити картку до кінця trial. Якщо ніхто не конвертувався — та сама команда переводить `trialing`-підписки з простроченим `trial_ends_at` у `ended`. Відхилена картка *під час* trial нічого не скасовує — dunning стосується лише реальних продовжень, trial живе далі до конвертації або спливання. Конвертація в середині trial чи прямо в кінці — той самий виклик: `chargeWithMethod()` на `Payment` цієї підписки одразу переводить її в `active` при `PaymentSucceeded` (лістенеру байдуже, що вона починалась як `trialing`) — окремого методу "конвертувати trial" викликати не треба.
+`TrialWillEnd` спрацьовує за `trial_ending_notice_days` (дефолт 3) до `trial_ends_at` — зі щоденного запуску `billing:expire-trials`, тож потребує увімкненого розкладу. Це твій хук **запропонувати клієнту оформити підписку** (лист/пуш із посиланням на твою сторінку оплати). Якщо ніхто не конвертувався — та сама команда переводить `trialing`-підписки з простроченим `trial_ends_at` у `ended`.
+
+Конвертація — це просто оплата по цій підписці, окремого методу "конвертувати trial" немає. Створюєш `Payment` з `payable = $subscription` і відправляєш клієнта на касу; `PaymentSucceeded` одразу переводить рядок в `active` (лістенеру байдуже, що він починався як `trialing`):
+
+```php
+// порада для конвертації посеред trial: заякори платний період на кінці тріалу,
+// щоб залишок безкоштовних днів не згорів — лістенер посуває період від current_period_ends_at, якщо той заданий
+$subscription->update(['current_period_ends_at' => $subscription->trial_ends_at]);
+
+Billing::charge($payment, new ChargeOptions(saveCard: true));
+return redirect($payment->payment_url);
+```
+
+**Звідки береться збережена картка.** На Monobank/LiqPay/WayForPay/Hutko "прив'язати картку без списання" неможливо — картка зберігається як побічний ефект цієї першої реальної оплати (`saveCard: true`; WayForPay/Hutko зберігають і без прапорця), і саме це робить усі наступні продовження автоматичними. Лише **Stripe** вміє зібрати картку під час trial без списання (SetupIntent на фронтенді + `attachPaymentMethod()`, див. "Токенізація") — але й тоді списання при конвертації робиш ти сам через `chargeWithMethod()`: `billing:expire-trials` свідомо ніколи не бере гроші, він лише закриває неконвертовані тріали.
+
+Відхилена картка *під час* trial нічого не скасовує — dunning стосується лише реальних продовжень, trial живе далі до конвертації або спливання.
 
 ### 5. Кілька незалежних підписок на одного клієнта одночасно
 
@@ -581,6 +787,31 @@ foreach (['base' => 'stripe', 'ai-addon' => 'stripe', 'channel-viber' => 'wayfor
 
 Скасування чи спливання однієї не зачіпає решту — кожен рядок має власний незалежний життєвий цикл.
 
+### 6. У клієнта змінилась / перестала працювати картка
+
+Коли чергове списання падає, нічого спеціального робити не треба — для цього і є dunning: підписка стає `past_due`, але `isActive()` лишається true упродовж grace-вікна, диспатчиться `SubscriptionPaymentFailed` (твій сигнал надіслати "не вдалось списати — онови картку" з посиланням на оплату), а ретраї йдуть кожні `retry_interval_hours`. Перевипущена тим самим банком картка інколи "оживає" сама (оновлення мережевих токенів) — тоді ретрай просто проходить. Після `max_recurring_attempts` підписка стає `canceled`.
+
+Оновлення картки — той самий рух, що й збереження першої: реальна оплата з `saveCard`:
+
+```php
+// свіжий Payment по тій самій підписці + редірект-каса
+$payment = Payment::create([
+    'status' => 'pending', 'type' => 'charge',
+    'gateway' => $subscription->gateway,
+    'amount' => $subscription->price->amount,
+    'currency' => $subscription->price->currency,
+    'payable_type' => $subscription->getMorphClass(), 'payable_id' => $subscription->id,
+    'billable_type' => $subscription->billable_type, 'billable_id' => $subscription->billable_id,
+]);
+
+Billing::charge($payment, new ChargeOptions(saveCard: true));
+return redirect($payment->payment_url);
+```
+
+Клієнт платить новою карткою → `PaymentSucceeded` реактивує підписку (період посунуто, лічильники dunning скинуто), а новий `PaymentMethod` **автоматично стає дефолтним** — `is_default` зі старої картки знімається, тож усі наступні продовження списуються з нової. Стару за бажання прибери: `Billing::driver($gateway)->detachPaymentMethod($old)` (Monobank ще й відкличе токен у банку; решта забувають локально). На Stripe картку можна замінити взагалі без списання — `attachPaymentMethod()` з новим `pm_...` так само стає дефолтом.
+
+Проактивно, до того як зламалось: `PaymentMethod::$expires_at` заповнюється там, де гейтвей віддає термін дії картки (Stripe віддає; колбеки українських гейтвеїв — ні), тож щомісячний скан `paymentMethods()->where('expires_at', '<', now()->addMonth())` працює для Stripe. Для решти перша невдала спроба продовження — *і є* сигнал, а grace тримає доступ клієнта живим, поки він розбирається.
+
 ## Гроші
 
 Будь-яка сума в цьому пакеті — `payments.amount`, `prices.amount`, `Money`, позиції чека — це **ціле число в мінорних одиницях** валюти (копійки/центи): `10000` це 100.00. Та сама конвенція, що у Stripe, Monobank і більшості PSP, і вона за побудовою не лишає місця для помилок округлення.
@@ -590,19 +821,32 @@ foreach (['base' => 'stripe', 'ai-addon' => 'stripe', 'channel-viber' => 'wayfor
 ```php
 use Fomvasss\Billing\Support\Money;
 
-$amount = Money::fromDecimal($product->price, 'UAH'); // '19.99' або 19.99 → 1999
-$amount->toDecimal();                                  // назад у '19.99' для рахунку/UI
+$amount = Money::fromDecimal($product->price, 'UAH'); // '19.99' або 19.99 → 1999 (статична фабрика)
+$amount->toDecimal();                                  // назад у '19.99' для рахунку/UI (метод інстанса, завжди рядок)
 
 Payment::create([
     'amount' => $amount->amount,
-    'currency_code' => $amount->currency,
+    'currency' => $amount->currency,
     // ...
 ]);
+
+// зворотний напрямок — показати існуючий рядок Payment/Price:
+(new Money($payment->amount, $payment->currency))->toDecimal(); // '100.00'
 ```
 
 Пастка, заради якої це існує: `(int) (19.99 * 100)` дає **1998**, не 1999 — у `19.99` немає точного двійкового представлення, тож добуток це `1998.9999999999998`, а каст обрізає. `Money::fromDecimal()` округляє. Eloquent-каст `decimal:2` повертає *рядок*, що саме по собі обходить проблему на вході — але лише доти, доки щось не приведе його до float, тож проганяйте через `fromDecimal()` у будь-якому разі.
 
+`toDecimal()` завжди повертає рівно два знаки після коми (`'5.00'`, ніколи `'5'`), роздільник — крапка, без групування тисяч — далі форматуй для відображення як завгодно.
+
+Відоме обмеження: весь пакет розрахований на **валюти з 2 десятковими знаками** (`fromDecimal()` множить на 100, `toDecimal()` ділить на 100, драйвери роблять те саме на дроті). Валюти з 0 знаків (JPY) і 3 знаками (BHD) не підтримуються; усі валюти в `supportedCurrencies()` вбудованих гейтвеїв — 2-знакові навмисно.
+
 Гейтвеї, які хочуть десяткові одиниці в запиті (LiqPay, WayForPay), конвертують усередині свого драйвера — вас це не стосується.
+
+### У чому зберігати у власних таблицях
+
+- **Усе, що живить білінг напряму** — власні таблиці тарифів/планів, баланси, журнали транзакцій — теж **ціле число в мінорних одиницях**. Кожна конвертація, якої немає — це `fromDecimal()`, який ніхто не може забути. (`billing_prices.amount` уже такий — там вибору немає.) Адмін-форма — не привід зберігати decimal: показуй/приймай у формі `299.00`, зберігай `Money::fromDecimal($request->input('price'), 'UAH')->amount`.
+- **Каталожні ціни, які редагує людина і які не йдуть у білінг напряму** (товари магазину, ціни для відображення) — `decimal(12,2)` ок; MySQL `DECIMAL` — точний тип, не float. Конвертація — в єдиній точці, де сума замовлення стає `Payment`.
+- **Ніколи** — колонки `float`/`double` і float-арифметика над грошима в PHP: саме звідти береться `1998.9999...`. Суми рахуй у цілих копійках (або bcmath для відсотків), і завжди зберігай `currency` поруч із сумою — навіть у "суто гривневому" проєкті, до першої USD-ціни.
 
 ## Хелпери моделей
 

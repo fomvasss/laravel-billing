@@ -51,7 +51,7 @@ $payment = Payment::create([
     'type' => 'charge',
     'gateway' => 'fake',
     'amount' => 10000, // minor units — 100.00
-    'currency_code' => 'UAH',
+    'currency' => 'UAH',
     'payable_type' => Order::class,
     'payable_id' => $order->id,
     'billable_type' => $order->user::class,
@@ -136,6 +136,23 @@ class Organization extends Model implements Billable
 }
 ```
 
+The trait also gives the model the consumer-side accessors, so you rarely need the package models' `forBillable()` scopes directly:
+
+```php
+$organization->payments;                     // morphMany — chain scopes: ->payments()->paid()
+$organization->subscriptions;
+$organization->paymentMethods;
+
+$organization->defaultPaymentMethod;         // the saved card renewals charge (per gateway — see below)
+$organization->defaultPaymentMethodFor('monobank');
+
+$organization->activeSubscription();         // same "entitled right now" definition as isActive()
+$organization->activeSubscription('pro');    // narrowed by Plan code
+$organization->hasActiveSubscription('pro'); // the gate/middleware one-liner
+```
+
+One nuance: `is_default` is tracked per gateway, so a customer with cards on two gateways has two defaults — `defaultPaymentMethod` (the property) returns one of them, `defaultPaymentMethodFor()` is the precise pick.
+
 ## Charging
 
 ```php
@@ -152,6 +169,35 @@ return redirect($payment->payment_url);
 
 If you need the raw driver result instead (building your own API response for a SPA, say): `$result->url` is set for every gateway except LiqPay, which sets `$result->form` (`['action' => ..., 'fields' => [...]]`) instead — POST those fields to that action yourself.
 
+### Return pages
+
+Where the customer's browser lands after checkout. Configure your final pages once — plain app routes or a frontend/SPA URL on another origin:
+
+```php
+// config/billing.php
+'return_urls' => [
+    'success' => 'https://app.example.com/checkout/success',
+    'failed' => 'https://app.example.com/checkout/failed',
+],
+```
+
+The gateway itself is pointed at the package's own return route, which then 303-redirects to your page with `?payment={id}` appended — so the page knows which payment to look up. That intermediate hop exists for two practical reasons: WayForPay and Hutko return the customer via an auto-submitted **POST** (the package route accepts it without any CSRF exceptions on your side, and the 303 turns it into a plain GET on your page), and a SPA frontend can't be a POST target at all.
+
+Need more than the payment id on the final URL — an order number, say? `ChargeOptions::$returnParams` travels through the hop and lands on your page as query params:
+
+```php
+Billing::charge($payment, new ChargeOptions(
+    returnParams: ['order' => $order->number],
+));
+// → https://app.example.com/checkout/success?order=1042&payment={id}
+```
+
+Display hints only — like everything else on this page, never trust them as payment state.
+
+It also fires `CheckoutReturned($payment, $outcome, $data)` — an analytics/UX hook only. The browser coming back proves nothing (and may never happen): read the payment state from your DB (`$payment->isPaid()`), show "processing" while the webhook hasn't landed yet, and never fulfil an order from this event.
+
+A per-charge `ChargeOptions(successUrl: ..., failUrl: ...)` bypasses the whole mechanism — the URL (with any query params of your own, e.g. an order number) goes to the gateway as-is. If you do that with WayForPay/Hutko, remember their POST-style return is now yours to handle.
+
 ### Manual/offline payments
 
 No driver is required for cash or bank-transfer payments — just create the row directly:
@@ -162,7 +208,7 @@ Payment::create([
     'type' => 'charge',
     'gateway' => null, // or a free-text label like 'cash' — not registered via extend()
     'amount' => 10000,
-    'currency_code' => 'UAH',
+    'currency' => 'UAH',
     'payable_type' => Order::class,
     'payable_id' => $order->id,
     'billable_type' => $order->user::class,
@@ -189,6 +235,10 @@ Supported where the gateway has a refund API: Monobank, LiqPay, Stripe (`Refunds
 
 ## Flow
 
+Three flows cover everything the package does with money. In all of them the same rule holds: **the webhook (or its polling fallback) is the only thing that ever changes `Payment.status`** — anything the browser does is UX.
+
+### 1. One-off checkout (customer present, redirect)
+
 ```mermaid
 sequenceDiagram
     actor Customer
@@ -203,21 +253,73 @@ sequenceDiagram
     Bank-->>Driver: checkout URL / form
     Driver-->>Billing: PaymentResult
     Billing-->>App: external_id/payment_url written onto $payment
-    App-->>Customer: redirect to checkout
+    App-->>Customer: redirect to $payment->payment_url
 
     Customer->>Bank: pays
-    Bank-->>Customer: redirect to successUrl (UX only — never trusted as confirmation)
 
-    Bank->>App: webhook POST (server-to-server)
-    Note over App: SignatureValidator verifies,<br/>WebhookCall stored, ProcessWebhookJob queued
-    App->>Driver: handleWebhook($webhookCall)
-    Driver-->>App: WebhookResult
-    Note over App: Payment.status updated,<br/>dedup claimed on webhook_calls
-    App->>App: PaymentSucceeded event
-    App-->>App: your listener reacts (fulfil order, etc.)
+    par Browser return — UX only
+        Bank-->>Customer: send browser to billing/return/{payment}/{outcome} (GET or POST)
+        Customer->>App: package return route
+        Note over App: CheckoutReturned event fires
+        App-->>Customer: 303 → return_urls.* + ?payment={id} (+ returnParams)
+    and Webhook — the source of truth
+        Bank->>App: POST /billing/webhooks/{gateway}
+        Note over App: SignatureValidator verifies,<br/>WebhookCall stored, ProcessWebhookJob queued
+        App->>Driver: handleWebhook($webhookCall)
+        Driver-->>App: WebhookResult (Payment.status updated, amount verified)
+        Note over App: dedup claimed on webhook_calls
+        App->>App: PaymentSucceeded / PaymentFailed
+        App-->>App: your listener reacts (fulfil order, etc.)
+    end
 ```
 
-Two independent paths, on purpose: the browser redirect (top half) is UX only, the webhook (bottom half) is the only thing that ever changes `Payment.status` — details below.
+The two halves of the `par` block are independent and unordered — the webhook often lands before the customer's browser is even back. The return page should read the payment state from the DB and show "processing" until the webhook arrives.
+
+### 2. Recurring charge (no customer present, saved card)
+
+What `billing:process-recurring-charges` does every hour — also exactly what happens when you call `chargeWithMethod()` yourself (overage, trial conversion with a saved card):
+
+```mermaid
+sequenceDiagram
+    participant Cron as Scheduler (hourly)
+    participant Cmd as process-recurring-charges
+    participant Driver as Gateway driver
+    participant Bank as Payment gateway
+    participant Listener as Built-in listener
+
+    Cron->>Cmd: run
+    Note over Cmd: 1. cancels_at reached → canceled, SubscriptionCancelled<br/>2. skip if a renewal Payment is still pending (no double charge)<br/>3. skip until next_retry_at (dunning pacing)
+    Cmd->>Cmd: create pending Payment (payable = Subscription)
+    Cmd->>Driver: chargePaymentMethod($payment, $method)
+    Driver->>Bank: off-session charge with the saved token
+    Bank-->>Driver: initiated
+
+    Bank->>Listener: webhook → PaymentSucceeded / PaymentFailed (same pipeline as flow 1)
+    alt paid
+        Note over Listener: status=active, period +1 interval,<br/>attempts/grace reset → SubscriptionRenewed
+    else failed
+        Note over Listener: status=past_due, attempts+1,<br/>next_retry_at +retry_interval_hours → SubscriptionPaymentFailed<br/>after max_recurring_attempts → canceled + SubscriptionCancelled
+    end
+```
+
+### 3. Lost webhook (reconciliation fallback)
+
+```mermaid
+sequenceDiagram
+    participant Cron as Scheduler (every 15 min)
+    participant Cmd as reconcile-pending-payments
+    participant Driver as Gateway driver
+    participant Bank as Payment gateway
+
+    Note over Cmd: Payment pending longer than reconcile_after_minutes —<br/>webhook lost, or a status (expired) that never gets one
+    Cron->>Cmd: run
+    Cmd->>Driver: checkStatus($payment)
+    Driver->>Bank: poll payment status
+    Bank-->>Driver: paid / failed / expired
+    Note over Cmd: Payment updated, the SAME events fire through the shared<br/>dedup — a late real webhook can't double-dispatch afterwards
+```
+
+Gateways without a status endpoint skip the poll: a TTL-expired pending payment is marked `canceled` as a dead checkout.
 
 ## Webhooks
 
@@ -231,6 +333,7 @@ One route (`POST /billing/webhooks/{gateway}`) handles every gateway, resolved a
 | `SubscriptionCreated` | Native-subscription gateways only — no built-in driver dispatches it yet |
 | `TrialWillEnd` | From `billing:expire-trials`, `trial_ending_notice_days` (default 3) before `trial_ends_at`, once per subscription |
 | `SubscriptionPaused` / `SubscriptionResumed` | Local-only, via `$subscription->pause()`/`resume()` — never gateway-driven |
+| `CheckoutReturned` | The customer's browser came back from checkout (see "Return pages") — UX/analytics only, never proof of payment |
 | `PaymentMethodAttached` / `PaymentMethodDetached` | A saved card/token is attached or removed |
 | `UsageLimitReached` | `Subscription::reportUsage()` crosses `price.included_units` |
 
@@ -249,6 +352,31 @@ Event::listen(PaymentSucceeded::class, function (PaymentSucceeded $event) {
 - **Events are deduplicated per outcome, not per reference.** A re-delivered "paid" callback never fires `PaymentSucceeded` twice — but "declined, then the customer retries the same checkout and pays" dispatches both `PaymentFailed` and `PaymentSucceeded`, even on gateways that reuse one reference across attempts. The reconciliation command shares the same dedup, so a poll racing a late webhook can't double-dispatch either.
 - **A callback for a payment the package doesn't know** (another integration on the same merchant account, rows predating the install) is ignored — no failed jobs.
 - **Stored webhook calls are pruned** after `config('billing.webhook.prune_after_days')` (default 30) by a daily `model:prune` run, registered together with the other scheduled commands.
+
+### Horizon / Queue
+
+Incoming webhooks are processed by one queued job (`ProcessWebhookJob`). By default it runs on the app's default connection/queue; give it a dedicated queue so a busy default queue can't delay marking payments paid:
+
+```env
+BILLING_QUEUE_CONNECTION=redis
+BILLING_QUEUE=billing
+```
+
+Example Horizon supervisor — the job is fast (no HTTP calls inside; the gateway API work happened before queueing), so a couple of processes with a short timeout are enough:
+
+```php
+'supervisor-billing' => [
+    'connection' => 'redis',
+    'queue' => ['billing'],
+    'balance' => 'simple',
+    'minProcesses' => 1,
+    'maxProcesses' => 4,
+    'tries' => 3,
+    'timeout' => 60,
+],
+```
+
+If you set `BILLING_QUEUE`, make sure *some* worker/supervisor actually consumes that queue — otherwise webhooks are stored but never processed.
 
 ### Customizing the webhook route
 
@@ -287,7 +415,7 @@ $plan = Plan::create(['code' => 'pro', 'name' => 'Pro']);
 
 $price = $plan->prices()->create([
     'gateway' => 'stripe',
-    'currency_code' => 'USD',
+    'currency' => 'USD',
     'amount' => 2900, // $29.00
     'pricing_type' => 'flat',
     'interval' => 'month',
@@ -322,6 +450,8 @@ $subscription->remainingUsage(); // null if the price has no quota at all
 
 `UsageLimitReached` fires once when cumulative usage crosses `included_units` — react to it however fits (block further use, notify, or charge an overage via `TokenizesPaymentMethod::chargePaymentMethod()`).
 
+On a successful renewal, `current_usage` resets to 0 whenever the price has a quota (`included_units` set) or is `metered` — a fresh paid period means a fresh allowance, nothing to reset yourself. Quota-less `flat`/`licensed` usage is left untouched: there it's just a counter your app owns.
+
 ### Pause / resume / cancel
 
 ```php
@@ -351,6 +481,67 @@ Three artisan commands, off by default (`billing.schedule.enabled`, since they t
 | `model:prune` (BillingWebhookCall) | daily | Deletes stored webhook calls older than `webhook.prune_after_days` (default 30). |
 
 None of this fires on its own — `Schedule::command()`/`->hourly()` etc. just register with Laravel's own scheduler, which still needs the standard system cron entry running `php artisan schedule:run` every minute (the usual Laravel deployment requirement, nothing package-specific).
+
+### Statuses and history
+
+A `Subscription` is **one row for its whole life** — the first payment flips a `trialing` row to `active`, renewals move `current_period_ends_at` forward, dunning takes it through `past_due` and back; a new row only appears if the customer signs up again after `canceled`/`ended`.
+
+```mermaid
+stateDiagram-v2
+    [*] --> trialing: registration, free period
+    [*] --> active: direct paid signup
+    trialing --> active: first payment (PaymentSucceeded)
+    trialing --> ended: trial expired without converting
+    active --> active: renewal paid — period +1 interval
+    active --> past_due: renewal failed (dunning starts)
+    past_due --> active: retry paid
+    past_due --> canceled: max_recurring_attempts exhausted
+    active --> canceled: cancel() — immediately or at cancels_at
+    active --> paused: pause()
+    paused --> active: resume()
+```
+
+| Status | Meaning |
+|---|---|
+| `trialing` | Free period, no card needed — still counts as active for access checks |
+| `active` | Paid and current |
+| `past_due` | A renewal failed; retried every `retry_interval_hours` while inside the grace window — `isActive()` stays true until `grace_ends_at` |
+| `paused` | Local pause via `pause()`/`resume()` — never gateway-driven |
+| `canceled` | Cancelled (immediately, at period end, or by dunning exhausting `max_recurring_attempts`) |
+| `ended` | Trial expired without converting |
+
+**Renewing vs re-subscribing** — the package doesn't decide this, *which row the payment points to* does. A `Payment` with `payable` = an existing subscription row is a renewal/reactivation: the built-in listener flips whatever status it finds (`trialing`, `past_due`, even `canceled`) to `active` and advances the period. `canceled`/`ended` rows are never touched automatically — no auto-charges against them — so "coming back" is always your code's move, and the rule of thumb is: within the grace window (`past_due`) pay against the **same row**; after `canceled`/`ended` create a **new row**. Two reasons: history stays clean (the old row remains a finished episode), and a period-anchor gotcha — the listener advances the period from `current_period_ends_at`, which on a long-dead row is months in the past, so a payment against it would produce a "new" period that has already ended (fixable by nulling `current_period_ends_at` first, but a fresh row simply doesn't have the problem).
+
+What's recorded out of the box: every charge is an immutable `Payment` row (the full financial history, forever), raw webhooks live in `billing_webhook_calls` (pruned after `prune_after_days`), and the subscription row itself keeps the key timestamps (`trial_ends_at`, `cancels_at`, `grace_ends_at`, `recurring_attempts`). What's **not** recorded: a status-transition log — `status` is overwritten in place.
+
+If you want that chronology, every transition already fires an event — one listener in your app writes the journal (`SubscriptionLog` below is your own model, or point the same listener at `spatie/laravel-activitylog`):
+
+```php
+use Fomvasss\Billing\Events\{SubscriptionRenewed, SubscriptionPaymentFailed,
+    SubscriptionCancelled, SubscriptionPaused, SubscriptionResumed, TrialWillEnd};
+
+class LogSubscriptionTransition
+{
+    public function handle(SubscriptionRenewed|SubscriptionPaymentFailed|SubscriptionCancelled|SubscriptionPaused|SubscriptionResumed|TrialWillEnd $event): void
+    {
+        SubscriptionLog::create([
+            'subscription_id' => $event->subscription->id,
+            'status' => $event->subscription->status->value,
+            'event' => class_basename($event), // SubscriptionRenewed, TrialWillEnd, ...
+        ]);
+    }
+}
+
+// AppServiceProvider::boot()
+Event::listen([
+    SubscriptionRenewed::class,
+    SubscriptionPaymentFailed::class,
+    SubscriptionCancelled::class,
+    SubscriptionPaused::class,
+    SubscriptionResumed::class,
+    TrialWillEnd::class,
+], LogSubscriptionTransition::class);
+```
 
 ### Tokenization / saved cards
 
@@ -411,7 +602,7 @@ $payment = Payment::create([
     'type' => 'charge',
     'gateway' => 'monobank',
     'amount' => $order->total, // minor units
-    'currency_code' => 'UAH',
+    'currency' => 'UAH',
     'payable_type' => Order::class,
     'payable_id' => $order->id,
     'billable_type' => $order->user::class,
@@ -463,7 +654,7 @@ $plan = Plan::create(['code' => 'storage-15gb', 'name' => '15 GB storage']);
 
 $price = $plan->prices()->create([
     'gateway' => 'stripe',
-    'currency_code' => 'USD',
+    'currency' => 'USD',
     'amount' => 500, // $5.00/month
     'pricing_type' => 'flat',
     'interval' => 'month',
@@ -496,7 +687,7 @@ $payment = Payment::create([
     'type' => 'charge',
     'gateway' => 'stripe',
     'amount' => 200, // $2.00 for 5 GB
-    'currency_code' => 'USD',
+    'currency' => 'USD',
     'payable_type' => $organization::class,
     'payable_id' => $organization->id,
     'billable_type' => $organization::class,
@@ -556,7 +747,7 @@ No gateway call, no `PaymentMethod` needed — just a `Subscription` row:
 ```php
 $subscription = Subscription::create([
     'status' => 'trialing',
-    'gateway' => 'stripe',
+    'gateway' => null, // nobody knows yet how it will be paid — the first successful payment stamps its gateway here automatically
     'price_id' => $price->id,
     'billable_type' => $organization::class,
     'billable_id' => $organization->id,
@@ -564,7 +755,22 @@ $subscription = Subscription::create([
 ]);
 ```
 
-`TrialWillEnd` fires `trial_ending_notice_days` (default 3) before `trial_ends_at` — from the daily `billing:expire-trials` run, so it needs the schedule enabled — giving you the hook to prompt for a card before the trial ends. If nobody converts, the same command moves `trialing` subscriptions past `trial_ends_at` to `ended`. A declined card *during* the trial doesn't cancel anything — dunning only applies to real renewals, the trial keeps running until it converts or expires. Converting mid-trial or right at the end is the same call either way — a `chargeWithMethod()` against this subscription's `Payment` flips it straight to `active` on `PaymentSucceeded` (the listener doesn't care that it started as `trialing`), no separate "convert trial" method to call.
+`TrialWillEnd` fires `trial_ending_notice_days` (default 3) before `trial_ends_at` — from the daily `billing:expire-trials` run, so it needs the schedule enabled. It's your hook to **prompt the customer to subscribe** (an email/push with a link to your payment page). If nobody converts, the same command moves `trialing` subscriptions past `trial_ends_at` to `ended`.
+
+Converting is just a payment against this subscription — no separate "convert trial" method. Create a `Payment` with `payable = $subscription` and send the customer to checkout; `PaymentSucceeded` flips the row straight to `active` (the listener doesn't care it started as `trialing`):
+
+```php
+// mid-trial tip: anchor the paid period on the trial's end so the remaining free days
+// aren't swallowed — the listener advances the period from current_period_ends_at when set
+$subscription->update(['current_period_ends_at' => $subscription->trial_ends_at]);
+
+Billing::charge($payment, new ChargeOptions(saveCard: true));
+return redirect($payment->payment_url);
+```
+
+**Where the saved card comes from.** On Monobank/LiqPay/WayForPay/Hutko there is no "attach a card without charging" — the card is saved as a side effect of that first real charge (`saveCard: true`; WayForPay/Hutko save it even without the flag), and that's what makes every later renewal automatic. Only **Stripe** can collect a card during the trial without charging (a SetupIntent on your frontend + `attachPaymentMethod()`, see "Tokenization") — but even then the conversion charge is yours to make with `chargeWithMethod()`: `billing:expire-trials` deliberately never takes money, it only closes unconverted trials.
+
+A declined card *during* the trial doesn't cancel anything — dunning only applies to real renewals, the trial keeps running until it converts or expires.
 
 ### 5. Several independent subscriptions on the same customer at once
 
@@ -585,6 +791,31 @@ foreach (['base' => 'stripe', 'ai-addon' => 'stripe', 'channel-viber' => 'wayfor
 
 Cancelling or lapsing one doesn't touch the others — each row is its own independent lifecycle.
 
+### 6. The customer's card changed / stopped working
+
+When a renewal charge fails, nothing special is required — that's what dunning is for: the subscription goes `past_due` but `isActive()` stays true through the grace window, `SubscriptionPaymentFailed` fires (your cue to email "we couldn't charge your card — update it" with a payment link), and retries run every `retry_interval_hours`. A card reissued by the same bank sometimes starts working again on its own (network token updates), in which case a retry simply succeeds. After `max_recurring_attempts` the subscription is `canceled`.
+
+Updating the card is the same move as saving the first one — a real charge with `saveCard`:
+
+```php
+// a fresh Payment against the same subscription + redirect checkout
+$payment = Payment::create([
+    'status' => 'pending', 'type' => 'charge',
+    'gateway' => $subscription->gateway,
+    'amount' => $subscription->price->amount,
+    'currency' => $subscription->price->currency,
+    'payable_type' => $subscription->getMorphClass(), 'payable_id' => $subscription->id,
+    'billable_type' => $subscription->billable_type, 'billable_id' => $subscription->billable_id,
+]);
+
+Billing::charge($payment, new ChargeOptions(saveCard: true));
+return redirect($payment->payment_url);
+```
+
+The customer pays with the new card → `PaymentSucceeded` reactivates the subscription (period advanced, dunning counters reset), and the new `PaymentMethod` **automatically becomes the default** — the previous card's `is_default` is demoted, so every later renewal charges the new one. Clean up the old card if you like: `Billing::driver($gateway)->detachPaymentMethod($old)` (Monobank also revokes the token at the bank; the others forget it locally). On Stripe the card can also be replaced without charging at all — `attachPaymentMethod()` with a new `pm_...` becomes the default the same way.
+
+Proactively, before it breaks: `PaymentMethod::$expires_at` is filled where the gateway reports card expiry (Stripe does; the Ukrainian gateways' callbacks don't), so a monthly scan of `paymentMethods()->where('expires_at', '<', now()->addMonth())` works for Stripe. For the rest, the first failed renewal *is* the signal — and grace keeps the customer's access alive while they fix it.
+
 ## Money
 
 Every amount in this package — `payments.amount`, `prices.amount`, `Money`, receipt items — is an **integer in the currency's minor units** (kopiykas/cents): `10000` is 100.00. Same convention Stripe, Monobank and most PSPs use, and it keeps rounding errors out of money by construction.
@@ -594,19 +825,32 @@ Your own app storing prices as `decimal(10,2)` is perfectly compatible — you c
 ```php
 use Fomvasss\Billing\Support\Money;
 
-$amount = Money::fromDecimal($product->price, 'UAH'); // '19.99' or 19.99 → 1999
-$amount->toDecimal();                                  // back to '19.99' for your invoice/UI
+$amount = Money::fromDecimal($product->price, 'UAH'); // '19.99' or 19.99 → 1999 (static factory)
+$amount->toDecimal();                                  // back to '19.99' for your invoice/UI (instance method, always a string)
 
 Payment::create([
     'amount' => $amount->amount,
-    'currency_code' => $amount->currency,
+    'currency' => $amount->currency,
     // ...
 ]);
+
+// the other direction — display an existing Payment/Price row:
+(new Money($payment->amount, $payment->currency))->toDecimal(); // '100.00'
 ```
 
 The trap it exists for: `(int) (19.99 * 100)` is **1998**, not 1999 — `19.99` has no exact binary representation, so the product is `1998.9999999999998` and the cast truncates. `Money::fromDecimal()` rounds. Eloquent's `decimal:2` cast returns a *string*, which sidesteps the issue on the way in — but only until something casts it to float, so route it through `fromDecimal()` anyway.
 
+`toDecimal()` always returns exactly two decimal places (`'5.00'`, never `'5'`), dot separator, no thousands grouping — format for display however you like on top of that.
+
+Known limitation: the whole package assumes **two-decimal currencies** (`fromDecimal()` multiplies by 100, `toDecimal()` divides by 100, and the drivers do the same on the wire). Zero-decimal (JPY) and three-decimal (BHD) currencies are not supported; every currency in the built-in gateways' `supportedCurrencies()` lists is two-decimal on purpose.
+
 Gateways that want decimal major units on the wire (LiqPay, WayForPay) convert inside their own driver — never something you deal with.
+
+### What to store in your own tables
+
+- **Anything that feeds billing directly** — your own tariff/plan tables, wallet balances, transaction ledgers — store as **integer minor units** too. Every conversion you don't have is a `fromDecimal()` call nobody can forget. (`billing_prices.amount` already is one — no choice there.) An admin form is not a reason to store decimals: show/accept `299.00` in the form, save `Money::fromDecimal($request->input('price'), 'UAH')->amount`.
+- **Catalog prices humans edit and that don't reach billing directly** (shop products, display prices) — `decimal(12,2)` is fine; MySQL `DECIMAL` is exact, not a float. Convert at the single boundary where an order total becomes a `Payment`.
+- **Never** `float`/`double` columns, and never float arithmetic over money in PHP — that's exactly where `1998.9999...` comes from. Keep sums in integer kopiykas (or bcmath for percentages), and always store the `currency` next to the amount, even in a "UAH-only" project — until the first USD price shows up.
 
 ## Model helpers
 

@@ -61,7 +61,7 @@ class ChargeWithMethodGuardsTest extends TestCase
             'type' => 'charge',
             'gateway' => 'stripe',
             'amount' => 10000,
-            'currency_code' => 'USD',
+            'currency' => 'USD',
             'payable_type' => TestUser::class,
             'payable_id' => $user->id,
             'billable_type' => TestUser::class,

@@ -81,7 +81,7 @@ class SubscriptionRenewalTest extends TestCase
     private function activeMonthlySubscription(): Subscription
     {
         $plan = Plan::create(['code' => 'pro', 'name' => 'Pro']);
-        $price = Price::create(['plan_id' => $plan->id, 'currency_code' => 'UAH', 'amount' => 10000, 'pricing_type' => 'flat', 'interval' => 'month', 'interval_count' => 1]);
+        $price = Price::create(['plan_id' => $plan->id, 'currency' => 'UAH', 'amount' => 10000, 'pricing_type' => 'flat', 'interval' => 'month', 'interval_count' => 1]);
         $user = TestUser::create(['name' => 'Buyer']);
 
         return Subscription::create([
@@ -101,7 +101,7 @@ class SubscriptionRenewalTest extends TestCase
             'type' => 'charge',
             'gateway' => $subscription->gateway,
             'amount' => 10000,
-            'currency_code' => 'UAH',
+            'currency' => 'UAH',
             'payable_type' => Subscription::class,
             'payable_id' => $subscription->id,
             'billable_type' => $subscription->billable_type,

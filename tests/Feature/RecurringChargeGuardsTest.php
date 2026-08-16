@@ -119,7 +119,7 @@ class RecurringChargeGuardsTest extends TestCase
         $price = Price::create([
             'plan_id' => $plan->id,
             'gateway' => $gateway,
-            'currency_code' => $currency,
+            'currency' => $currency,
             'amount' => 2900,
             'pricing_type' => 'flat',
             'interval' => 'month',

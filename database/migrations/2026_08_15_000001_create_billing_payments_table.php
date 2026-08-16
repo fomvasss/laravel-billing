@@ -16,7 +16,7 @@ return new class extends Migration
             $table->string('type', 20)->default('charge');
             $table->string('gateway', 50)->nullable();
             $table->unsignedBigInteger('amount');
-            $table->string('currency_code', 3);
+            $table->string('currency', 3);
             $table->string('converted_from_currency', 3)->nullable();
             $table->decimal('exchange_rate', 18, 8)->nullable();
             $table->timestamp('exchange_rate_at')->nullable();

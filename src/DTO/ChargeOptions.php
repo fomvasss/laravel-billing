@@ -19,6 +19,8 @@ final readonly class ChargeOptions
         public ?string $failUrl = null,
         /** Extra query params on webhookUrl() specifically — a routing hint only, never trusted as-is. */
         public array $webhookUrlParams = [],
+        /** Extra query params forwarded onto the final return_urls.* redirect (e.g. ['order' => 1042]) — display hints for the frontend page, never trusted as-is. */
+        public array $returnParams = [],
         /** Driver-specific: Monobank x_cms/validity, LiqPay rro_info, etc. — read only by the matching driver. */
         public array $raw = [],
     ) {}

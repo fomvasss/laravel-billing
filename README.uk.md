@@ -40,11 +40,12 @@ php artisan vendor:publish --tag=billing-config
 
 ```php
 use Fomvasss\Billing\BillingManager;
+use Fomvasss\Billing\Enums\{PaymentStatus, PaymentType};
 use Fomvasss\Billing\Models\Payment;
 
 $payment = Payment::create([
-    'status' => 'pending',
-    'type' => 'charge',
+    'status' => PaymentStatus::Pending,
+    'type' => PaymentType::Charge,
     'gateway' => 'fake',
     'amount' => 10000, // мінорні одиниці — 100.00
     'currency' => 'UAH',
@@ -200,8 +201,8 @@ Per-charge `ChargeOptions(successUrl: ..., failUrl: ...)` обходить ве�
 
 ```php
 Payment::create([
-    'status' => 'paid',
-    'type' => 'charge',
+    'status' => PaymentStatus::Paid,
+    'type' => PaymentType::Charge,
     'gateway' => null, // або вільний рядок на кшталт 'cash' — не зареєстрований через extend()
     'amount' => 10000,
     'currency' => 'UAH',
@@ -429,14 +430,14 @@ $price = $plan->prices()->create([
     'gateway' => 'stripe',
     'currency' => 'USD',
     'amount' => 2900, // $29.00
-    'pricing_type' => 'flat',
-    'interval' => 'month',
+    'pricing_type' => PricingType::Flat,
+    'interval' => Interval::Month,
     'interval_count' => 1,
     'trial_days' => 14,
 ]);
 
 $subscription = Subscription::create([
-    'status' => 'trialing',
+    'status' => SubscriptionStatus::Trialing,
     'gateway' => 'stripe',
     'price_id' => $price->id,
     'billable_type' => $organization::class,
@@ -610,8 +611,8 @@ class Order extends Model implements Payable, HasReceiptItems
 
 ```php
 $payment = Payment::create([
-    'status' => 'pending',
-    'type' => 'charge',
+    'status' => PaymentStatus::Pending,
+    'type' => PaymentType::Charge,
     'gateway' => 'monobank',
     'amount' => $order->total, // мінорні одиниці
     'currency' => 'UAH',
@@ -668,13 +669,13 @@ $price = $plan->prices()->create([
     'gateway' => 'stripe',
     'currency' => 'USD',
     'amount' => 500, // $5.00/міс
-    'pricing_type' => 'flat',
-    'interval' => 'month',
+    'pricing_type' => PricingType::Flat,
+    'interval' => Interval::Month,
     'interval_count' => 1,
 ]);
 
 $subscription = Subscription::create([
-    'status' => 'active',
+    'status' => SubscriptionStatus::Active,
     'gateway' => 'stripe',
     'price_id' => $price->id,
     'billable_type' => $organization::class,
@@ -695,8 +696,8 @@ $subscription = Subscription::create([
 
 ```php
 $payment = Payment::create([
-    'status' => 'pending',
-    'type' => 'charge',
+    'status' => PaymentStatus::Pending,
+    'type' => PaymentType::Charge,
     'gateway' => 'stripe',
     'amount' => 200, // $2.00 за 5 ГБ
     'currency' => 'USD',
@@ -758,7 +759,7 @@ Event::listen(PaymentSucceeded::class, function (PaymentSucceeded $event) {
 
 ```php
 $subscription = Subscription::create([
-    'status' => 'trialing',
+    'status' => SubscriptionStatus::Trialing,
     'gateway' => null, // ще ніхто не знає, чим платитимуть — перша успішна оплата проставить свій гейтвей сюди автоматично
     'price_id' => $price->id,
     'billable_type' => $organization::class,
@@ -791,7 +792,7 @@ return redirect($payment->payment_url);
 ```php
 foreach (['base' => 'stripe', 'ai-addon' => 'stripe', 'channel-viber' => 'wayforpay'] as $planCode => $gateway) {
     Subscription::create([
-        'status' => 'active',
+        'status' => SubscriptionStatus::Active,
         'gateway' => $gateway,
         'price_id' => Plan::where('code', $planCode)->firstOrFail()->prices()->firstOrFail()->id,
         'billable_type' => $organization::class,
@@ -812,7 +813,7 @@ foreach (['base' => 'stripe', 'ai-addon' => 'stripe', 'channel-viber' => 'wayfor
 ```php
 // свіжий Payment по тій самій підписці + редірект-каса
 $payment = Payment::create([
-    'status' => 'pending', 'type' => 'charge',
+    'status' => PaymentStatus::Pending, 'type' => PaymentType::Charge,
     'gateway' => $subscription->gateway,
     'amount' => $subscription->price->amount,
     'currency' => $subscription->price->currency,
@@ -898,6 +899,31 @@ Payment::forBillable($organization)->latest()->get();
 
 `isActive()` — саме те, що варто використовувати в gate/middleware: він навмисно лишає доступ увімкненим на час grace-вікна, щоб клієнта не відрізало посеред ретраїв через картку, яка один раз не пройшла.
 
+## Enum'и
+
+Кожна колонка статусу/типу має string-enum у `Fomvasss\Billing\Enums`, закастований на моделі:
+
+| Enum | Колонка | Значення |
+|---|---|---|
+| `PaymentStatus` | `payments.status` | `pending`, `paid`, `failed`, `canceled` |
+| `PaymentType` | `payments.type` | `charge`, `refund` |
+| `SubscriptionStatus` | `subscriptions.status` | `trialing`, `active`, `paused`, `past_due`, `canceled`, `ended` |
+| `PricingType` | `prices.pricing_type` | `flat`, `licensed`, `metered` |
+| `Interval` | `prices.interval` | `minute`, `hour`, `day`, `week`, `month`, `year` (nullable — `null` = разова/lifetime-ціна без циклу) |
+
+Приклади в цьому README використовують enum-кейси — і реальний код має теж: одруківка стає помилкою, а не мовчазно-кривим рядком у БД, і порівняння читаються краще. (Касти приймають і рядкові значення, напр. `'status' => 'pending'` — зручно для сидерів/фікстур.)
+
+```php
+use Fomvasss\Billing\Enums\{PaymentStatus, PaymentType, Interval, SubscriptionStatus};
+
+Payment::create(['status' => PaymentStatus::Pending, 'type' => PaymentType::Charge, ...]);
+$plan->prices()->create(['interval' => Interval::Month, ...]);
+
+if ($subscription->status === SubscriptionStatus::PastDue) { ... } // читання закастованої колонки дає enum-інстанс
+```
+
+У кожного enum'а є `label()` для UI (`'Past due'`) і звичайний `cases()` для побудови селектів. (`Interval::Minute`/`Hour` існують переважно для тестування циклів продовження.)
+
 ## Конвертація валют
 
 Якщо валюта `Price` не приймається обраним гейтвеєм, `BillingManager::resolveChargeAmount()` пробує по черзі: (1) власну валюту ціни, якщо приймається; (2) сіблінг-`Price` того ж `Plan` у прийнятній валюті — спершу прив'язаний до цього гейтвея, потім generic (`gateway = null`); (3) забінджений `CurrencyConverterContract`; (4) кидає `BillingException`. Забіндити конвертер (напр. адаптер над [`fomvasss/laravel-currency`](https://github.com/fomvasss/laravel-currency), не жорстка залежність цього пакета):
@@ -909,6 +935,32 @@ $this->app->bind(\Fomvasss\Billing\Contracts\CurrencyConverterContract::class, M
 ## Тестування
 
 Використовуйте гейтвей `fake` (див. "Швидкий старт") у feature-тестах власного застосунку — він проганяє точнісінько той самий пайплайн, що й реальний гейтвей, тому нічого специфічного для пакета мокати не потрібно.
+
+### Ручні тести вебхуків (Postman/curl)
+
+Гейтвей `fake` не потребує підпису взагалі:
+
+```
+POST /billing/webhooks/fake
+{"payment_id": "<uuid платежу>", "result": "success"}
+```
+
+Реальні HMAC-гейтвеї (LiqPay, WayForPay, Hutko, Stripe) теж працюють — підпис рахуєш власним секретом. Stripe у Pre-request Script Постмена, наприклад:
+
+```javascript
+const t = Math.floor(Date.now() / 1000); // свіжий — діє 5-хвилинне replay-вікно
+const sig = CryptoJS.HmacSHA256(`${t}.${pm.request.body.raw}`, 'whsec_...').toString();
+pm.request.headers.add({key: 'Stripe-Signature', value: `t=${t},v1=${sig}`});
+```
+
+Готові рецепти підписів для кожного гейтвея — у власному тесті пакета `tests/Feature/WebhookSignatureValidationTest.php`, копіюй звідти. Пам'ятай форму доставки WayForPay: raw JSON у тілі під content type `application/x-www-form-urlencoded`. **Monobank підробити не вийде** — його вебхуки підписані ECDSA приватним ключем банку; тестується лише шлях відмови (403).
+
+Пастки, через які ручний тест виглядає "зламаним", хоч усе працює:
+
+- `Payment` має існувати (pending), а сума/валюта в payload — збігатися з ним; інакше буде 200, але результат `Ignored`, і статус не зміниться.
+- 200 означає "прийнято і поставлено в чергу": локально став `QUEUE_CONNECTION=sync`, бо redis-черга без воркера виглядає як "нічого не сталось".
+- Повтор того самого запиту нічого не змінює і другу подію не фаєрить — це дедуп, не баг.
+- Рядок у `billing_webhook_calls` = підпис пройшов; 403 = ні.
 
 ## Ліцензія
 

@@ -44,11 +44,12 @@ No bank account needed to try the full flow locally. `fake` is registered automa
 
 ```php
 use Fomvasss\Billing\BillingManager;
+use Fomvasss\Billing\Enums\{PaymentStatus, PaymentType};
 use Fomvasss\Billing\Models\Payment;
 
 $payment = Payment::create([
-    'status' => 'pending',
-    'type' => 'charge',
+    'status' => PaymentStatus::Pending,
+    'type' => PaymentType::Charge,
     'gateway' => 'fake',
     'amount' => 10000, // minor units — 100.00
     'currency' => 'UAH',
@@ -204,8 +205,8 @@ No driver is required for cash or bank-transfer payments — just create the row
 
 ```php
 Payment::create([
-    'status' => 'paid',
-    'type' => 'charge',
+    'status' => PaymentStatus::Paid,
+    'type' => PaymentType::Charge,
     'gateway' => null, // or a free-text label like 'cash' — not registered via extend()
     'amount' => 10000,
     'currency' => 'UAH',
@@ -433,14 +434,14 @@ $price = $plan->prices()->create([
     'gateway' => 'stripe',
     'currency' => 'USD',
     'amount' => 2900, // $29.00
-    'pricing_type' => 'flat',
-    'interval' => 'month',
+    'pricing_type' => PricingType::Flat,
+    'interval' => Interval::Month,
     'interval_count' => 1,
     'trial_days' => 14,
 ]);
 
 $subscription = Subscription::create([
-    'status' => 'trialing',
+    'status' => SubscriptionStatus::Trialing,
     'gateway' => 'stripe',
     'price_id' => $price->id,
     'billable_type' => $organization::class,
@@ -614,8 +615,8 @@ What each gateway does with it differs — **Monobank** (`basketOrder`), **WayFo
 
 ```php
 $payment = Payment::create([
-    'status' => 'pending',
-    'type' => 'charge',
+    'status' => PaymentStatus::Pending,
+    'type' => PaymentType::Charge,
     'gateway' => 'monobank',
     'amount' => $order->total, // minor units
     'currency' => 'UAH',
@@ -672,13 +673,13 @@ $price = $plan->prices()->create([
     'gateway' => 'stripe',
     'currency' => 'USD',
     'amount' => 500, // $5.00/month
-    'pricing_type' => 'flat',
-    'interval' => 'month',
+    'pricing_type' => PricingType::Flat,
+    'interval' => Interval::Month,
     'interval_count' => 1,
 ]);
 
 $subscription = Subscription::create([
-    'status' => 'active',
+    'status' => SubscriptionStatus::Active,
     'gateway' => 'stripe',
     'price_id' => $price->id,
     'billable_type' => $organization::class,
@@ -699,8 +700,8 @@ Not a subscription line item — the package has no "wallet"/addon-balance conce
 
 ```php
 $payment = Payment::create([
-    'status' => 'pending',
-    'type' => 'charge',
+    'status' => PaymentStatus::Pending,
+    'type' => PaymentType::Charge,
     'gateway' => 'stripe',
     'amount' => 200, // $2.00 for 5 GB
     'currency' => 'USD',
@@ -762,7 +763,7 @@ No gateway call, no `PaymentMethod` needed — just a `Subscription` row:
 
 ```php
 $subscription = Subscription::create([
-    'status' => 'trialing',
+    'status' => SubscriptionStatus::Trialing,
     'gateway' => null, // nobody knows yet how it will be paid — the first successful payment stamps its gateway here automatically
     'price_id' => $price->id,
     'billable_type' => $organization::class,
@@ -795,7 +796,7 @@ A declined card *during* the trial doesn't cancel anything — dunning only appl
 ```php
 foreach (['base' => 'stripe', 'ai-addon' => 'stripe', 'channel-viber' => 'wayforpay'] as $planCode => $gateway) {
     Subscription::create([
-        'status' => 'active',
+        'status' => SubscriptionStatus::Active,
         'gateway' => $gateway,
         'price_id' => Plan::where('code', $planCode)->firstOrFail()->prices()->firstOrFail()->id,
         'billable_type' => $organization::class,
@@ -816,7 +817,7 @@ Updating the card is the same move as saving the first one — a real charge wit
 ```php
 // a fresh Payment against the same subscription + redirect checkout
 $payment = Payment::create([
-    'status' => 'pending', 'type' => 'charge',
+    'status' => PaymentStatus::Pending, 'type' => PaymentType::Charge,
     'gateway' => $subscription->gateway,
     'amount' => $subscription->price->amount,
     'currency' => $subscription->price->currency,
@@ -902,6 +903,31 @@ Payment::forBillable($organization)->latest()->get();
 
 `isActive()` is the one to reach for in a gate/middleware — it deliberately keeps access on during the dunning grace window, so a customer isn't locked out mid-retry over a card that failed once.
 
+## Enums
+
+Every status/type column is backed by a string enum in `Fomvasss\Billing\Enums`, cast on the model:
+
+| Enum | Column | Cases |
+|---|---|---|
+| `PaymentStatus` | `payments.status` | `pending`, `paid`, `failed`, `canceled` |
+| `PaymentType` | `payments.type` | `charge`, `refund` |
+| `SubscriptionStatus` | `subscriptions.status` | `trialing`, `active`, `paused`, `past_due`, `canceled`, `ended` |
+| `PricingType` | `prices.pricing_type` | `flat`, `licensed`, `metered` |
+| `Interval` | `prices.interval` | `minute`, `hour`, `day`, `week`, `month`, `year` (nullable — `null` = one-off/lifetime price, no cycle) |
+
+The examples in this README use the enum cases, and so should real code: typos become errors instead of silently-wrong rows, and comparisons read better. (The casts also accept the plain string values, e.g. `'status' => 'pending'` — useful for seeders/fixtures.)
+
+```php
+use Fomvasss\Billing\Enums\{PaymentStatus, PaymentType, Interval, SubscriptionStatus};
+
+Payment::create(['status' => PaymentStatus::Pending, 'type' => PaymentType::Charge, ...]);
+$plan->prices()->create(['interval' => Interval::Month, ...]);
+
+if ($subscription->status === SubscriptionStatus::PastDue) { ... } // reading a cast column gives the enum instance
+```
+
+Each enum also has `label()` for UI (`'Past due'`) and the usual `cases()` for building selects. (`Interval::Minute`/`Hour` exist mostly for testing renewal cycles.)
+
 ## Currency conversion
 
 If a `Price`'s currency isn't accepted by the chosen gateway, `BillingManager::resolveChargeAmount()` tries, in order: (1) the price's own currency, if accepted; (2) a sibling `Price` of the same `Plan` in an accepted currency — one pinned to this gateway first, a generic one (`gateway = null`) as fallback; (3) a bound `CurrencyConverterContract`; (4) throws `BillingException`. Bind a converter (e.g. an adapter over [`fomvasss/laravel-currency`](https://github.com/fomvasss/laravel-currency), not a hard dependency of this package):
@@ -913,6 +939,32 @@ $this->app->bind(\Fomvasss\Billing\Contracts\CurrencyConverterContract::class, M
 ## Testing
 
 Use the `fake` gateway (see Quickstart) in your own app's feature tests — it runs the exact same pipeline a real gateway would, so there's nothing package-specific to mock.
+
+### Poking webhooks by hand (Postman/curl)
+
+The `fake` gateway needs no signature at all:
+
+```
+POST /billing/webhooks/fake
+{"payment_id": "<payment uuid>", "result": "success"}
+```
+
+The real HMAC gateways (LiqPay, WayForPay, Hutko, Stripe) work too — compute the signature with your own secret. Stripe in a Postman pre-request script, for example:
+
+```javascript
+const t = Math.floor(Date.now() / 1000); // fresh — there's a 5-minute replay window
+const sig = CryptoJS.HmacSHA256(`${t}.${pm.request.body.raw}`, 'whsec_...').toString();
+pm.request.headers.add({key: 'Stripe-Signature', value: `t=${t},v1=${sig}`});
+```
+
+Ready-made signature recipes for every gateway live in the package's own `tests/Feature/WebhookSignatureValidationTest.php` — copy from there. Remember WayForPay's delivery shape: raw JSON body under a `application/x-www-form-urlencoded` content type. **Monobank can't be faked** — its webhooks are ECDSA-signed with the bank's private key; you can only test the rejection path (403).
+
+Gotchas that make a manual test look "broken" when it isn't:
+
+- The `Payment` must exist (pending) and the payload's amount/currency must match it — otherwise you get a 200 but the result is `Ignored` and the status doesn't change.
+- A 200 means "accepted and queued": set `QUEUE_CONNECTION=sync` locally, or a redis queue without a worker will look like nothing happened.
+- Repeating the same request changes nothing and fires no second event — that's dedup, not a bug.
+- A row in `billing_webhook_calls` = the signature passed; a 403 = it didn't.
 
 ## License
 

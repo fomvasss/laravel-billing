@@ -36,6 +36,18 @@ abstract class AbstractGateway implements PaymentGatewayContract
         return false;
     }
 
+    /**
+     * Checkout-link TTL each driver passes to its gateway (Monobank `validity`, WayForPay
+     * `orderLifetime`, Hutko `lifetime`, LiqPay's cached form) and mirrors into
+     * PaymentResult::$expiresAt → payments.payment_url_expires_at. One config key everywhere
+     * (`link_ttl_minutes`), per-driver default. Stripe is the exception: its session TTL comes
+     * back from the API response instead.
+     */
+    protected function linkTtlMinutes(int $default = 1440): int
+    {
+        return (int) ($this->credentials['link_ttl_minutes'] ?? $default);
+    }
+
     protected function log(string $method, array $context = []): void
     {
         if (config('billing.debug')) {

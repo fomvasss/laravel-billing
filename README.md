@@ -197,7 +197,19 @@ Display hints only — like everything else on this page, never trust them as pa
 
 It also fires `CheckoutReturned($payment, $outcome, $data)` — an analytics/UX hook only. The browser coming back proves nothing (and may never happen): read the payment state from your DB (`$payment->isPaid()`), show "processing" while the webhook hasn't landed yet, and never fulfil an order from this event.
 
+One more reason the success page must check the DB: `success`/`failed` name the return **slot**, not the verdict — and only Stripe actually has two slots (`success_url`/`cancel_url`). Monobank, LiqPay, WayForPay and Hutko have a single return URL, so their customers come back through the `success` slot **whatever happened** — a declined card lands on your success page too. Show the real state (`isPaid()`/`isFailed()`/pending) there, or a declined customer reads "thank you for your purchase".
+
 A per-charge `ChargeOptions(successUrl: ..., failUrl: ...)` bypasses the whole mechanism — the URL (with any query params of your own, e.g. an order number) goes to the gateway as-is. If you do that with WayForPay/Hutko, remember their POST-style return is now yours to handle.
+
+### Permanent payment link
+
+`route('billing.pay', $payment)` is the URL safe to put in an email or invoice — unlike `payment_url`, it never goes stale:
+
+- pending with a live checkout link → redirects straight to the gateway;
+- expired, `failed` or `canceled` → a **fresh** checkout is issued via `charge()` on the fly, then redirected to (the old gateway-side invoice is simply left to expire);
+- already `paid` → lands on your `return_urls.success` page with `?payment={id}`.
+
+Every visit fires `PaymentLinkOpened($payment)` — an analytics/sales signal ("opened the invoice twice, never paid"), nothing more. Re-issuing uses default `ChargeOptions` (receipt items still auto-fill from a `HasReceiptItems` payable); per-charge extras from the original call (`saveCard`, `raw`, ...) are not remembered.
 
 ### Manual/offline payments
 
@@ -335,6 +347,7 @@ One route (`POST /billing/webhooks/{gateway}`) handles every gateway, resolved a
 | `TrialWillEnd` | From `billing:expire-trials`, `trial_ending_notice_days` (default 3) before `trial_ends_at`, once per subscription |
 | `SubscriptionPaused` / `SubscriptionResumed` | Local-only, via `$subscription->pause()`/`resume()` — never gateway-driven |
 | `CheckoutReturned` | The customer's browser came back from checkout (see "Return pages") — UX/analytics only, never proof of payment |
+| `PaymentLinkOpened` | Someone opened the permanent pay link (`billing.pay`, see "Permanent payment link") — analytics only |
 | `PaymentMethodAttached` / `PaymentMethodDetached` | A saved card/token is attached or removed |
 | `UsageLimitReached` | `Subscription::reportUsage()` crosses `price.included_units` |
 
@@ -579,7 +592,7 @@ Billing::chargeWithMethod($payment, $method);
 **Monobank, LiqPay, WayForPay, Hutko** attach themselves — no separate step, the `PaymentMethod` just shows up once the customer pays:
 
 ```php
-// Monobank/LiqPay need the flag to save the card; WayForPay/Hutko save it regardless (flag is a no-op there)
+// Monobank/LiqPay/Hutko need the flag to save the card; only WayForPay saves it regardless
 Billing::charge($payment, new ChargeOptions(saveCard: true));
 // ... customer pays, the PaymentMethod attaches on its own and PaymentMethodAttached fires — nothing else to call
 ```
@@ -785,7 +798,7 @@ Billing::charge($payment, new ChargeOptions(saveCard: true));
 return redirect($payment->payment_url);
 ```
 
-**Where the saved card comes from.** On Monobank/LiqPay/WayForPay/Hutko there is no "attach a card without charging" — the card is saved as a side effect of that first real charge (`saveCard: true`; WayForPay/Hutko save it even without the flag), and that's what makes every later renewal automatic. Only **Stripe** can collect a card during the trial without charging (a SetupIntent on your frontend + `attachPaymentMethod()`, see "Tokenization") — but even then the conversion charge is yours to make with `chargeWithMethod()`: `billing:expire-trials` deliberately never takes money, it only closes unconverted trials.
+**Where the saved card comes from.** On Monobank/LiqPay/WayForPay/Hutko there is no "attach a card without charging" — the card is saved as a side effect of that first real charge (`saveCard: true`; only WayForPay saves it even without the flag), and that's what makes every later renewal automatic. Only **Stripe** can collect a card during the trial without charging (a SetupIntent on your frontend + `attachPaymentMethod()`, see "Tokenization") — but even then the conversion charge is yours to make with `chargeWithMethod()`: `billing:expire-trials` deliberately never takes money, it only closes unconverted trials.
 
 A declined card *during* the trial doesn't cancel anything — dunning only applies to real renewals, the trial keeps running until it converts or expires.
 

@@ -77,6 +77,9 @@ class LiqPayGateway extends AbstractGateway implements RefundsPayments, ChecksPa
                 'action' => self::CHECKOUT_URL,
                 'fields' => ['data' => $data, 'signature' => $this->sign($data)],
             ],
+            // LiqPay's signed form itself doesn't expire — this bounds OUR cached checkout-form
+            // page (payment_url), same link_ttl_minutes convention as the other drivers.
+            expiresAt: now()->addMinutes($this->linkTtlMinutes(60)),
         );
     }
 
@@ -248,6 +251,7 @@ class LiqPayGateway extends AbstractGateway implements RefundsPayments, ChecksPa
         return [
             ['name' => 'public_key', 'type' => 'text', 'secret' => false, 'help' => 'Публічний ключ з кабінету LiqPay'],
             ['name' => 'private_key', 'type' => 'text', 'secret' => true, 'help' => 'Приватний ключ з кабінету LiqPay'],
+            ['name' => 'link_ttl_minutes', 'type' => 'number', 'secret' => false, 'help' => 'TTL нашої checkout-form сторінки (payment_url), хв, дефолт 60'],
         ];
     }
 

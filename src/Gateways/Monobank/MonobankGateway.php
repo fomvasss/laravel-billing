@@ -64,9 +64,9 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
             ]),
             'redirectUrl' => $this->successUrl($payment, $options),
             'webHookUrl' => $this->webhookUrl($options),
-            'validity' => (int) ($this->credentials['link_ttl_minutes'] ?? 60) * 60,
+            'validity' => $this->linkTtlMinutes(60) * 60,
             'saveCardData' => $options->saveCard
-                ? ['saveCard' => true, 'walletId' => $this->walletId($payment->billable_type, $payment->billable_id)]
+                ? ['saveCard' => true, 'walletId' => $this->walletId($payment->billable_type, (string) $payment->billable_id)]
                 : null,
         ]))->throw();
 
@@ -74,7 +74,7 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
 
         return new PaymentResult(
             url: $data['pageUrl'],
-            expiresAt: now()->addSeconds((int) ($this->credentials['link_ttl_minutes'] ?? 60) * 60),
+            expiresAt: now()->addMinutes($this->linkTtlMinutes(60)),
             externalId: $data['invoiceId'],
         );
     }

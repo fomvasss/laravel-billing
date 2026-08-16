@@ -193,7 +193,19 @@ Billing::charge($payment, new ChargeOptions(
 
 Він також диспатчить `CheckoutReturned($payment, $outcome, $data)` — хук лише для аналітики/UX. Повернення браузера нічого не доводить (і може взагалі не статись): стан платежу читай з БД (`$payment->isPaid()`), показуй "обробляється", поки вебхук не долетів, і ніколи не виконуй замовлення з цієї події.
 
+Ще одна причина, чому success-сторінка мусить дивитись у БД: `success`/`failed` називають **слот** повернення, а не вердикт — і два слоти реально є лише у Stripe (`success_url`/`cancel_url`). У Monobank, LiqPay, WayForPay і Hutko return-URL один, тож їхні клієнти повертаються через `success`-слот **що б не сталося** — відхилена картка теж приземлиться на твою success-сторінку. Показуй там реальний стан (`isPaid()`/`isFailed()`/pending), інакше клієнт із декрайном прочитає "дякуємо за покупку".
+
 Per-charge `ChargeOptions(successUrl: ..., failUrl: ...)` обходить весь механізм — URL (з будь-якими власними GET-параметрами, наприклад номером замовлення) йде гейтвею як є. Якщо робиш так з WayForPay/Hutko — їхнє POST-повернення тепер твоя турбота.
+
+### Постійне посилання на оплату
+
+`route('billing.pay', $payment)` — URL, який безпечно класти в лист чи рахунок: на відміну від `payment_url`, він ніколи не протухає:
+
+- pending із живим лінком каси → редірект одразу на гейтвей;
+- спливлий, `failed` чи `canceled` → на льоту випускається **свіжа** каса через `charge()`, редірект на неї (старий інвойс на боці гейтвея просто сам спливе);
+- уже `paid` → приземлення на твою `return_urls.success`-сторінку з `?payment={id}`.
+
+Кожен візит диспатчить `PaymentLinkOpened($payment)` — сигнал для аналітики/продажів ("відкривав рахунок двічі, не оплатив"), не більше. Перевипуск іде з дефолтними `ChargeOptions` (позиції чека все одно автозаповняться з `HasReceiptItems`-payable); per-charge опції оригінального виклику (`saveCard`, `raw`, ...) не запам'ятовуються.
 
 ### Ручні/офлайн платежі
 
@@ -331,6 +343,7 @@ sequenceDiagram
 | `TrialWillEnd` | З `billing:expire-trials`, за `trial_ending_notice_days` (дефолт 3) до `trial_ends_at`, один раз на підписку |
 | `SubscriptionPaused` / `SubscriptionResumed` | Лише локально, через `$subscription->pause()`/`resume()` — гейтвей не бере участі |
 | `CheckoutReturned` | Браузер клієнта повернувся з каси (див. "Сторінки повернення") — лише UX/аналітика, ніколи не доказ оплати |
+| `PaymentLinkOpened` | Хтось відкрив постійне посилання на оплату (`billing.pay`, див. "Постійне посилання") — лише аналітика |
 | `PaymentMethodAttached` / `PaymentMethodDetached` | Збережена картка/токен прив'язана або відв'язана |
 | `UsageLimitReached` | `Subscription::reportUsage()` перетнув `price.included_units` |
 
@@ -575,7 +588,7 @@ Billing::chargeWithMethod($payment, $method);
 **Monobank, LiqPay, WayForPay, Hutko** прив'язуються самі — без окремого кроку, `PaymentMethod` просто з'являється, щойно клієнт оплатив:
 
 ```php
-// Monobank/LiqPay потребують прапорця, щоб зберегти картку; WayForPay/Hutko зберігають і без нього
+// Monobank/LiqPay/Hutko потребують прапорця, щоб зберегти картку; лише WayForPay зберігає і без нього
 Billing::charge($payment, new ChargeOptions(saveCard: true));
 // ... клієнт платить, PaymentMethod прив'язується сам, диспатчиться PaymentMethodAttached — більше нічого викликати не треба
 ```
@@ -781,7 +794,7 @@ Billing::charge($payment, new ChargeOptions(saveCard: true));
 return redirect($payment->payment_url);
 ```
 
-**Звідки береться збережена картка.** На Monobank/LiqPay/WayForPay/Hutko "прив'язати картку без списання" неможливо — картка зберігається як побічний ефект цієї першої реальної оплати (`saveCard: true`; WayForPay/Hutko зберігають і без прапорця), і саме це робить усі наступні продовження автоматичними. Лише **Stripe** вміє зібрати картку під час trial без списання (SetupIntent на фронтенді + `attachPaymentMethod()`, див. "Токенізація") — але й тоді списання при конвертації робиш ти сам через `chargeWithMethod()`: `billing:expire-trials` свідомо ніколи не бере гроші, він лише закриває неконвертовані тріали.
+**Звідки береться збережена картка.** На Monobank/LiqPay/WayForPay/Hutko "прив'язати картку без списання" неможливо — картка зберігається як побічний ефект цієї першої реальної оплати (`saveCard: true`; лише WayForPay зберігає і без прапорця), і саме це робить усі наступні продовження автоматичними. Лише **Stripe** вміє зібрати картку під час trial без списання (SetupIntent на фронтенді + `attachPaymentMethod()`, див. "Токенізація") — але й тоді списання при конвертації робиш ти сам через `chargeWithMethod()`: `billing:expire-trials` свідомо ніколи не бере гроші, він лише закриває неконвертовані тріали.
 
 Відхилена картка *під час* trial нічого не скасовує — dunning стосується лише реальних продовжень, trial живе далі до конвертації або спливання.
 

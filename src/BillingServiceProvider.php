@@ -59,6 +59,7 @@ class BillingServiceProvider extends ServiceProvider
         $this->registerWebhookRoute();
         $this->registerCheckoutFormRoute();
         $this->registerReturnRoute();
+        $this->registerPayLinkRoute();
         $this->registerFakeGateway();
         $this->registerBuiltInGateways();
         $this->registerListeners();
@@ -153,6 +154,17 @@ class BillingServiceProvider extends ServiceProvider
             ->whereIn('outcome', ['success', 'failed'])
             ->middleware(\Illuminate\Routing\Middleware\SubstituteBindings::class)
             ->name('billing.return');
+    }
+
+    /**
+     * The permanent pay link for emails/invoices — redirects to a live checkout, re-issuing an
+     * expired one via charge() on the fly. See PaymentLinkController.
+     */
+    protected function registerPayLinkRoute(): void
+    {
+        Route::get('billing/pay/{payment}', \Fomvasss\Billing\Http\Controllers\PaymentLinkController::class)
+            ->middleware(\Illuminate\Routing\Middleware\SubstituteBindings::class)
+            ->name('billing.pay');
     }
 
     protected function registerListeners(): void

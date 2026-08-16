@@ -54,6 +54,11 @@ class WayForPayChargeTest extends TestCase
 
         Http::assertSent(fn ($request) => $request->url() === 'https://secure.wayforpay.com/pay?behavior=offline'
             && $request['merchantAccount'] === 'test_merchant'
-            && $request['orderReference'] === (string) $payment->id);
+            && $request['orderReference'] === (string) $payment->id
+            // explicit TTL (default 1440 min) — payment_url_expires_at must be a real number here
+            && $request['orderLifetime'] === 1440 * 60);
+
+        $this->assertNotNull($result->expiresAt);
+        $this->assertTrue($result->expiresAt > now()->addMinutes(1400));
     }
 }

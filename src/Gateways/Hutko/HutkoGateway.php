@@ -35,11 +35,12 @@ use Fomvasss\Billing\Webhooks\BillingWebhookCall;
  *
  * `amount` — minor units, confirmed from the plugin (`(int) round($order->get_total() * 100)`).
  *
- * TokenizesPaymentMethod: like WayForPay, no opt-in flag — `rectoken` is part of the SAME shared
- * response schema every approved payment already returns (`docs.hutko.org/docs/page/3`'s
- * "Параметри фінальної відповіді"), so handleWebhook() persists it unconditionally whenever
- * present. No gateway-side token-revocation endpoint is documented — detachPaymentMethod() is
- * local-only, same reasoning as LiqPay/WayForPay.
+ * TokenizesPaymentMethod: OPT-IN like Monobank/LiqPay, not automatic like WayForPay —
+ * `required_rectoken: 'Y'` must be sent on charge() (ChargeOptions::$saveCard) or the callback's
+ * `rectoken` field arrives empty. The response schema lists the field on every approved payment,
+ * which misled the original research; the live test merchant settled it. handleWebhook() persists
+ * it whenever non-empty. No gateway-side token-revocation endpoint is documented —
+ * detachPaymentMethod() is local-only, same reasoning as LiqPay/WayForPay.
  */
 class HutkoGateway extends AbstractGateway implements TokenizesPaymentMethod
 {
@@ -60,9 +61,16 @@ class HutkoGateway extends AbstractGateway implements TokenizesPaymentMethod
             'response_url' => $this->successUrl($payment, $options),
             'server_callback_url' => $this->webhookUrl($options),
             'reservation_data' => $this->reservationData($options->receiptItems),
+            // Without this the callback's rectoken field arrives EMPTY — confirmed on the live
+            // test merchant and in the official plugin (required_rectoken='Y'). The response
+            // schema always lists the field, which misled the original research.
+            'required_rectoken' => $options->saveCard ? 'Y' : null,
+            // Explicit checkout TTL (seconds) — the docs' `expired` order_status is defined by this
+            // very parameter, so payment_url_expires_at below mirrors the real gateway-side limit.
+            'lifetime' => $this->linkTtlMinutes() * 60,
         ]));
 
-        return new PaymentResult(url: $data['checkout_url']);
+        return new PaymentResult(url: $data['checkout_url'], expiresAt: now()->addMinutes($this->linkTtlMinutes()));
     }
 
     public function handleWebhook(BillingWebhookCall $webhookCall): WebhookResult
@@ -112,7 +120,12 @@ class HutkoGateway extends AbstractGateway implements TokenizesPaymentMethod
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
         }
 
-        $payment->update(['status' => $status]);
+        // payment_id — Hutko's own transaction id; persisted so the row is findable by the
+        // gateway reference (support lookups), and used as the dedup identity: a declined-then-
+        // retried checkout gets a fresh payment_id, so both outcomes dispatch.
+        $externalId = isset($payload['payment_id']) ? (string) $payload['payment_id'] : null;
+
+        $payment->update(array_filter(['status' => $status, 'external_id' => $externalId]));
 
         return new WebhookResult(
             type: WebhookEventType::Payment,
@@ -122,7 +135,7 @@ class HutkoGateway extends AbstractGateway implements TokenizesPaymentMethod
                 default => 'canceled',
             },
             payment: $payment,
-            externalId: (string) $payload['order_id'],
+            externalId: $externalId ?? (string) $payload['order_id'],
             raw: $payload,
         );
     }
@@ -205,6 +218,7 @@ class HutkoGateway extends AbstractGateway implements TokenizesPaymentMethod
         return [
             ['name' => 'merchant_id', 'type' => 'text', 'secret' => false, 'help' => 'merchant_id з мерчант-порталу Hutko'],
             ['name' => 'secret_key', 'type' => 'text', 'secret' => true, 'help' => 'Секретний ключ для підпису запитів'],
+            ['name' => 'link_ttl_minutes', 'type' => 'number', 'secret' => false, 'help' => 'TTL посилання на оплату, хв (lifetime), дефолт 1440 (доба)'],
         ];
     }
 

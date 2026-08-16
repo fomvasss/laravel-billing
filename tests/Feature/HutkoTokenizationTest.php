@@ -16,7 +16,9 @@ use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
 
 /**
- * Like WayForPay, no opt-in flag — rectoken is part of the same shared response schema every
+ * Opt-in via saveCard (required_rectoken='Y'), NOT automatic like WayForPay — confirmed on the
+ * live test merchant: without the flag the callback's rectoken arrives empty, although it is
+ * part of the same shared response schema every
  * approved payment already returns. See "Токенізація" in the package plan.
  */
 class HutkoTokenizationTest extends TestCase
@@ -68,6 +70,22 @@ class HutkoTokenizationTest extends TestCase
         $this->assertSame('rec_tok_2', $method->external_id);
         Event::assertDispatchedTimes(PaymentMethodAttached::class, 1);
         Http::assertNothingSent();
+    }
+
+    public function test_save_card_sends_required_rectoken_and_plain_charge_does_not(): void
+    {
+        Http::fake([
+            'https://pay.hutko.org/api/checkout/url' => Http::response(['response' => ['response_status' => 'success', 'checkout_url' => 'https://pay.hutko.org/x']]),
+        ]);
+
+        $user = $this->makeUser();
+
+        Billing::charge($this->pendingPayment($user), new \Fomvasss\Billing\DTO\ChargeOptions(saveCard: true));
+        Billing::charge($this->pendingPayment($user), new \Fomvasss\Billing\DTO\ChargeOptions());
+
+        // Without required_rectoken='Y' the callback's rectoken arrives EMPTY — live-confirmed.
+        Http::assertSent(fn ($request) => ($request['request']['required_rectoken'] ?? null) === 'Y');
+        Http::assertSent(fn ($request) => ! isset($request['request']['required_rectoken']));
     }
 
     public function test_charging_a_payment_method_calls_api_recurring_with_the_stored_rectoken(): void

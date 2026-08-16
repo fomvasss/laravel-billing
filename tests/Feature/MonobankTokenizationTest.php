@@ -145,6 +145,22 @@ class MonobankTokenizationTest extends TestCase
             && str_contains($request->url(), 'cardToken=card_tok_1'));
     }
 
+    public function test_charge_with_save_card_handles_an_int_billable_id_attribute(): void
+    {
+        Http::fake([
+            'https://api.monobank.ua/api/merchant/invoice/create' => Http::response(['invoiceId' => 'inv_1', 'pageUrl' => 'https://pay.mbnk.biz/x']),
+        ]);
+
+        $user = TestUser::create(['name' => 'Buyer']);
+        // Freshly created, not refetched — billable_id is still an int attribute in memory (the
+        // way a real controller passes it); strict-typed walletId(string, string) crashed on this.
+        $payment = $this->pendingMonobankPayment($user);
+
+        \Fomvasss\Billing\Facades\Billing::charge($payment, new \Fomvasss\Billing\DTO\ChargeOptions(saveCard: true));
+
+        Http::assertSent(fn ($request) => isset($request['saveCardData']['walletId']));
+    }
+
     private function pendingMonobankPayment(TestUser $user): Payment
     {
         return Payment::create([

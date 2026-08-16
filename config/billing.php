@@ -190,12 +190,14 @@ return [
         'liqpay' => [
             'public_key' => env('LIQPAY_PUBLIC_KEY'),
             'private_key' => env('LIQPAY_PRIVATE_KEY'),
+            'link_ttl_minutes' => env('LIQPAY_LINK_TTL_MINUTES', 60),
         ],
 
         'wayforpay' => [
             'merchant_account' => env('WAYFORPAY_MERCHANT_ACCOUNT'),
             'merchant_domain' => env('WAYFORPAY_MERCHANT_DOMAIN'),
             'secret_key' => env('WAYFORPAY_SECRET_KEY'),
+            'link_ttl_minutes' => env('WAYFORPAY_LINK_TTL_MINUTES', 1440),
         ],
 
         'stripe' => [
@@ -206,6 +208,7 @@ return [
         'hutko' => [
             'merchant_id' => env('HUTKO_MERCHANT_ID'),
             'secret_key' => env('HUTKO_SECRET_KEY'),
+            'link_ttl_minutes' => env('HUTKO_LINK_TTL_MINUTES', 1440),
         ],
 
     ],

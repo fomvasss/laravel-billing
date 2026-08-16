@@ -81,6 +81,9 @@ class WayForPayGateway extends AbstractGateway implements ChecksPaymentStatus, T
             'clientEmail' => $options->customerEmail,
             'returnUrl' => $this->successUrl($payment, $options),
             'serviceUrl' => $this->webhookUrl($options),
+            // Explicit checkout TTL (seconds; docs allow 60..1728000) — so payment_url_expires_at
+            // below is a real number instead of "unknown, hope for the best".
+            'orderLifetime' => $this->linkTtlMinutes() * 60,
         ], static fn ($value) => $value !== null && $value !== '');
 
         $fields['merchantSignature'] = $this->sign([
@@ -98,7 +101,7 @@ class WayForPayGateway extends AbstractGateway implements ChecksPaymentStatus, T
             throw new BillingException('WayForPay: purchase request did not return a url: ' . json_encode($data));
         }
 
-        return new PaymentResult(url: $data['url']);
+        return new PaymentResult(url: $data['url'], expiresAt: now()->addMinutes($this->linkTtlMinutes()));
     }
 
     public function handleWebhook(BillingWebhookCall $webhookCall): WebhookResult
@@ -274,6 +277,7 @@ class WayForPayGateway extends AbstractGateway implements ChecksPaymentStatus, T
             ['name' => 'merchant_account', 'type' => 'text', 'secret' => false, 'help' => 'merchantAccount з кабінету WayForPay'],
             ['name' => 'merchant_domain', 'type' => 'text', 'secret' => false, 'help' => 'Домен сайту, зареєстрований у мерчант-акаунті'],
             ['name' => 'secret_key', 'type' => 'text', 'secret' => true, 'help' => 'Секретний ключ для HMAC-підпису'],
+            ['name' => 'link_ttl_minutes', 'type' => 'number', 'secret' => false, 'help' => 'TTL посилання на оплату, хв (orderLifetime), дефолт 1440 (доба)'],
         ];
     }
 

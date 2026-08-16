@@ -6,7 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-16
+
+### Fixed
+- Hutko tokenization actually works: the card token must be requested (`required_rectoken`, sent when `ChargeOptions::$saveCard` is set) — previously the callback's `rectoken` always arrived empty and no card was ever saved. Found on the live test merchant. Hutko now needs `saveCard: true` like Monobank/LiqPay; WayForPay remains the only gateway saving the card without a flag.
+- Hutko webhooks persist the gateway's transaction id onto `Payment::$external_id` (previously left empty for checkout payments) and use it for dedup.
+- Monobank `charge()` with `saveCard: true` crashed with a TypeError when the `Payment` was freshly created in the same request (int `billable_id` attribute) — found on the first live sandbox run.
+
 ### Added
+- One checkout-TTL convention across gateways: every driver takes `link_ttl_minutes` from its config block and stamps `payment_url_expires_at`. WayForPay (`orderLifetime`) and Hutko (`lifetime`) now send an explicit TTL (default 1440 min) instead of leaving expiry unknown; LiqPay's cached form-page TTL is configurable (default 60 min, was a hardcoded hour); Monobank keeps its existing `validity` (default 60 min); Stripe still reports its own session expiry. `hasActivePaymentUrl()` and the pay link's re-issue logic now rest on real numbers everywhere.
+- Permanent payment link: `route('billing.pay', $payment)` — safe for emails/invoices, never goes stale (redirects to the live checkout, re-issues an expired/failed one via `charge()` on the fly, sends an already-paid one to the success page). Fires the new `PaymentLinkOpened` event on every visit. See README "Permanent payment link".
 - `Billing::gateways()` entries carry `webhook_requires_dashboard_setup` (new required static `requiresDashboardWebhook()` on the gateway contract, default `false` via `AbstractGateway`) — lets a settings UI show the "paste this webhook URL into the gateway's dashboard" hint only where it's actually needed (Stripe, of the built-ins). README got a per-gateway webhook setup table.
 
 ## [0.3.0] - 2026-08-16

@@ -39,7 +39,7 @@ class AcmePayGateway implements PaymentGatewayContract
 }
 ```
 
-Extend `AbstractGateway` instead of implementing the interface directly and you get a constructor (`$credentials`, `$gatewayName`), a debug logger, a `requiresDashboardWebhook()` default (`false` — most gateways take the callback URL per charge request), and the `webhookUrl()`/`successUrl()`/`failUrl()`/`persistPaymentMethod()` helpers. Both paths are equally supported — the base class just saves boilerplate.
+Extend `AbstractGateway` instead of implementing the interface directly and you get a constructor (`$credentials`, `$gatewayName`), a debug logger, a `requiresDashboardWebhook()` default (`false` — most gateways take the callback URL per charge request), and the `webhookUrl()`/`successUrl()`/`failUrl()`/`linkTtlMinutes()`/`persistPaymentMethod()`/`paidAmountMismatch()` helpers. Both paths are equally supported — the base class just saves boilerplate.
 
 ### `charge()`
 
@@ -59,11 +59,17 @@ public function charge(Payment $payment, ChargeOptions $options = new ChargeOpti
 
     return new PaymentResult(
         url: $data['checkout_url'],
-        expiresAt: now()->addMinutes(60),   // whatever TTL this gateway gives the link
+        expiresAt: now()->addMinutes($this->linkTtlMinutes(60)), // see "Checkout-link TTL" below
         externalId: $data['id'],            // written back onto $payment->external_id
     );
 }
 ```
+
+**Checkout-link TTL.** Fill `expiresAt` with a real value whenever you possibly can — `hasActivePaymentUrl()` and the permanent pay link's re-issue logic (`billing.pay`) rest on it; a `null` means "unknown", which the package has to treat as "still alive", so a customer can be redirected to a checkout the gateway already killed. The convention the built-in drivers follow:
+
+- If the gateway accepts a lifetime parameter in the request (Monobank `validity`, WayForPay `orderLifetime`, Hutko `lifetime`) — send it, sourced from `AbstractGateway::linkTtlMinutes($default)` (reads `link_ttl_minutes` from the driver's credentials), and mirror the same value into `expiresAt`. Add `link_ttl_minutes` to your `credentialFields()` so it's configurable.
+- If the gateway reports the expiry itself (Stripe's session `expires_at`) — pass that through.
+- Only fall back to `expiresAt: null` when the gateway genuinely gives you no way to set *or* learn the lifetime.
 
 `$payment` is passed rather than a bare amount because the driver needs `$payment->id` as the merchant reference it hands the gateway — that's what makes the later webhook resolvable back to this row.
 
@@ -298,6 +304,7 @@ Add a tamper case (flip a byte in the body, expect rejection) and, if the gatewa
 - [ ] Signature formula verified against the official SDK, not just docs prose
 - [ ] `amount` converted if the gateway wants major units
 - [ ] `charge()` puts `$payment->id` where the webhook will echo it back
+- [ ] `expiresAt` filled from a real TTL (`linkTtlMinutes()` + the gateway's lifetime param, or the gateway's own reported expiry) — `null` only when there's truly no way to know
 - [ ] `handleWebhook()` updates the `Payment` and returns a real `externalId`
 - [ ] Non-terminal gateway statuses and unknown references return `Ignored`, not an error
 - [ ] Paid callbacks checked against the payment's amount/currency (`paidAmountMismatch()`)

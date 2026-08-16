@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\Facade;
  * @method static \Fomvasss\Billing\Contracts\PaymentGatewayContract driver(string $name, ?string $tenantId = null)
  * @method static array gateways()
  * @method static array supportedCurrencies(string $gateway)
+ * @method static \Fomvasss\Billing\DTO\GatewayHealth health(string $gateway, ?string $tenantId = null)
  * @method static array|null gateway(string $name)
  * @method static \Fomvasss\Billing\DTO\PaymentResult charge(\Fomvasss\Billing\Models\Payment $payment, \Fomvasss\Billing\DTO\ChargeOptions $options = new \Fomvasss\Billing\DTO\ChargeOptions())
  * @method static \Fomvasss\Billing\DTO\PaymentResult chargeWithMethod(\Fomvasss\Billing\Models\Payment $payment, \Fomvasss\Billing\Models\PaymentMethod $method, array $options = [])

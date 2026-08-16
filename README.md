@@ -112,6 +112,18 @@ Billing::gateway('monobank'); // just that one gateway's entry, or null if not r
 
 `webhook_url` is that gateway's exact callback URL, and `webhook_requires_dashboard_setup` tells a settings UI whether to show it with a "paste this into the gateway's dashboard" hint — most gateways don't need any manual setup at all (see "Setting up webhooks" below).
 
+**Test the connection** — a live, side-effect-free probe of credentials + API reachability, for a settings-UI "test connection" button or a monitoring cron (non-zero exit when anything is down):
+
+```php
+Billing::health('monobank'); // GatewayHealth { ok: true, message: 'My Shop LLC', latencyMs: 179.2 }
+```
+```bash
+php artisan billing:health            # table of all health-capable gateways, exit 1 if any is down
+php artisan billing:health monobank   # a single one
+```
+
+All built-in gateways support it (`capabilities.health` in `gateways()`). It validates *credentials and reachability right now* — never a guarantee about the next charge.
+
 Dynamic per-tenant credentials (instead of one static config array) — bind your own resolver:
 
 ```php
@@ -369,9 +381,29 @@ Every gateway's callback URL is `https://your-domain/billing/webhooks/{gateway}`
 | LiqPay | `server_url` in every payment | none |
 | WayForPay | `serviceUrl` in every Purchase/Charge | none |
 | Hutko | `server_callback_url` in every request | none |
-| **Stripe** | Dashboard-registered endpoints only | **required** |
+| **Stripe** | Pre-registered endpoints only (Dashboard **or** one API call) | **required** |
 
-Stripe: Dashboard → Developers → Webhooks → Add endpoint with `https://your-domain/billing/webhooks/stripe`, subscribe to `checkout.session.completed`, `checkout.session.expired`, `payment_intent.succeeded`, `payment_intent.payment_failed`, then copy the **Signing secret** (`whsec_...`) into `STRIPE_WEBHOOK_SECRET` — without it the validator rejects everything (fail-closed).
+Stripe — the package can register the endpoint for you:
+
+```bash
+php artisan billing:stripe-register-webhook          # creates the endpoint, prints STRIPE_WEBHOOK_SECRET
+php artisan billing:stripe-register-webhook --fresh  # domain/tunnel changed — delete & re-create (new secret)
+```
+
+The secret is shown **only at creation** (Stripe never returns it again) — paste it into `.env` right away. Equivalent manual ways, if you prefer:
+
+- **Dashboard**: Developers → Webhooks → Add endpoint with `https://your-domain/billing/webhooks/stripe`, subscribe to `checkout.session.completed`, `checkout.session.expired`, `payment_intent.succeeded`, `payment_intent.payment_failed`, copy the **Signing secret** (`whsec_...`).
+- **One API call** — no Dashboard visit at all, the signing secret comes back in the response:
+
+```bash
+curl https://api.stripe.com/v1/webhook_endpoints -u "sk_test_...:" \
+  -d url="https://your-domain/billing/webhooks/stripe" \
+  -d "enabled_events[]=checkout.session.completed" -d "enabled_events[]=checkout.session.expired" \
+  -d "enabled_events[]=payment_intent.succeeded" -d "enabled_events[]=payment_intent.payment_failed"
+# → response contains "secret": "whsec_..."
+```
+
+Either way the secret goes into `STRIPE_WEBHOOK_SECRET` — without it the validator rejects everything (fail-closed). Note the registered URL is fixed on Stripe's side: changing your domain/tunnel means re-creating the endpoint.
 
 Applies to all of them: `APP_URL` must be your real public URL (`route()` builds the callback from it), the path must be reachable over HTTPS without basic auth/IP blocks (CSRF is already not an issue — the route lives outside the `web` group), and on a local machine a bank can't reach you at all — use a tunnel (ngrok/expose) or just the `fake` gateway, which runs the same pipeline. Every accepted webhook leaves a row in `billing_webhook_calls`; a 403 in the logs means a signature/secret problem.
 

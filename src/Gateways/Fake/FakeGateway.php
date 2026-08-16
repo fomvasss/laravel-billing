@@ -19,8 +19,14 @@ use Fomvasss\Billing\Webhooks\BillingWebhookCall;
  * driver's own registered webhook URL, so the full real pipeline runs (WebhookCall row, queued
  * ProcessWebhookJob, events) instead of a shortcut that only tests half of it.
  */
-class FakeGateway extends AbstractGateway
+class FakeGateway extends AbstractGateway implements \Fomvasss\Billing\Contracts\ChecksGatewayHealth
 {
+    /** No bank behind it — always healthy; lets a settings UI / billing:health be exercised locally. */
+    public function healthCheck(): \Fomvasss\Billing\DTO\GatewayHealth
+    {
+        return \Fomvasss\Billing\DTO\GatewayHealth::up('fake gateway, always up', 0.0);
+    }
+
     public function charge(Payment $payment, ChargeOptions $options = new ChargeOptions()): PaymentResult
     {
         return new PaymentResult(

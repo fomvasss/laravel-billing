@@ -38,7 +38,7 @@ use Fomvasss\Billing\Webhooks\BillingWebhookCall;
  * against `support`'s production `MonobankPaymentService` (`wallet/payment` + `initiationKind:
  * merchant`, the same MIT — merchant-initiated-transaction — pattern used here).
  */
-class MonobankGateway extends AbstractGateway implements RefundsPayments, ChecksPaymentStatus, TokenizesPaymentMethod
+class MonobankGateway extends AbstractGateway implements RefundsPayments, ChecksPaymentStatus, TokenizesPaymentMethod, \Fomvasss\Billing\Contracts\ChecksGatewayHealth
 {
     protected const BASE_URL = 'https://api.monobank.ua';
 
@@ -238,6 +238,16 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
             externalId: $data['invoiceId'],
             raw: $data,
         );
+    }
+
+    /** GET /api/merchant/details — validates the X-Token, returns the merchant identity (live-verified: 403 FORBIDDEN on a bad token). */
+    public function healthCheck(): \Fomvasss\Billing\DTO\GatewayHealth
+    {
+        return $this->probeHealth(function () {
+            $data = $this->http()->retry(1)->get('/api/merchant/details')->throw()->json();
+
+            return $data['merchantName'] ?? $data['merchantId'] ?? null;
+        });
     }
 
     public static function label(): string

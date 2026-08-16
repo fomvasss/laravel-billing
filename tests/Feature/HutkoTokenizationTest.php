@@ -137,6 +137,28 @@ class HutkoTokenizationTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_check_status_polls_the_status_endpoint_and_updates_the_payment(): void
+    {
+        Http::fake([
+            'https://pay.hutko.org/api/status/order_id' => Http::response(['response' => [
+                'response_status' => 'success', 'order_status' => 'approved', 'payment_id' => 987654,
+            ]]),
+        ]);
+
+        $user = $this->makeUser();
+        $payment = $this->pendingPayment($user);
+
+        $result = Billing::driver('hutko')->checkStatus($payment);
+
+        $this->assertSame('succeeded', $result->status);
+        $this->assertSame('paid', $payment->fresh()->status->value);
+        $this->assertSame('987654', $payment->fresh()->external_id);
+
+        Http::assertSent(fn ($request) => str_ends_with($request->url(), '/status/order_id')
+            && $request['request']['order_id'] === (string) $payment->id
+            && isset($request['request']['signature']));
+    }
+
     private function makeUser(): TestUser
     {
         return TestUser::create(['name' => 'Buyer']);

@@ -69,6 +69,8 @@ class BillingServiceProvider extends ServiceProvider
                 ProcessRecurringChargesCommand::class,
                 ReconcilePendingPaymentsCommand::class,
                 ExpireTrialsCommand::class,
+                \Fomvasss\Billing\Console\StripeRegisterWebhookCommand::class,
+                \Fomvasss\Billing\Console\HealthCommand::class,
             ]);
 
             if (config('billing.schedule.enabled', false)) {

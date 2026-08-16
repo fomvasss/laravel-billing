@@ -42,7 +42,7 @@ use Fomvasss\Billing\Webhooks\BillingWebhookCall;
  * it whenever non-empty. No gateway-side token-revocation endpoint is documented —
  * detachPaymentMethod() is local-only, same reasoning as LiqPay/WayForPay.
  */
-class HutkoGateway extends AbstractGateway implements TokenizesPaymentMethod
+class HutkoGateway extends AbstractGateway implements TokenizesPaymentMethod, \Fomvasss\Billing\Contracts\ChecksPaymentStatus, \Fomvasss\Billing\Contracts\ChecksGatewayHealth
 {
     protected const BASE_URL = 'https://pay.hutko.org/api/';
 
@@ -206,6 +206,80 @@ class HutkoGateway extends AbstractGateway implements TokenizesPaymentMethod
         $method->delete();
 
         PaymentMethodDetached::dispatch($method);
+    }
+
+    /**
+     * POST /api/status/order_id (yes, the literal path — live-verified; /api/status/order 404s
+     * into an S3 error page). Same status vocabulary as the callback, so the mapping mirrors
+     * handleWebhook(). Used by billing:reconcile-pending-payments — before this existed, a Hutko
+     * payment with a lost webhook could only be written off as a dead checkout.
+     */
+    public function checkStatus(Payment $payment): WebhookResult
+    {
+        $fields = ['order_id' => (string) $payment->id];
+        $fields['merchant_id'] = $this->merchantId();
+        $fields['signature'] = $this->sign($fields);
+
+        $data = Http::baseUrl(self::BASE_URL)
+            ->timeout(15)
+            ->retry(2, 200)
+            ->post('status/order_id', ['request' => $fields])
+            ->throw()
+            ->json('response');
+
+        $status = match ($data['order_status'] ?? null) {
+            'approved' => PaymentStatus::Paid,
+            'declined' => PaymentStatus::Failed,
+            'expired' => PaymentStatus::Canceled,
+            default => null, // created/processing, or an error response (e.g. 1018 order not found)
+        };
+
+        if ($status === null) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $data ?? []);
+        }
+
+        $externalId = isset($data['payment_id']) ? (string) $data['payment_id'] : null;
+
+        $payment->update(array_filter(['status' => $status, 'external_id' => $externalId]));
+
+        return new WebhookResult(
+            type: WebhookEventType::Payment,
+            status: match ($status) {
+                PaymentStatus::Paid => 'succeeded',
+                PaymentStatus::Failed => 'failed',
+                default => 'canceled',
+            },
+            payment: $payment,
+            externalId: $externalId ?? (string) $payment->id,
+            raw: $data,
+        );
+    }
+
+    /**
+     * No introspection endpoint — probes /api/status/order_id with a nonexistent order.
+     * Live-verified discriminators: error_code 1018 "Order not found" = credentials/signature
+     * fine; 1014 "Invalid signature" (or anything else) = they aren't.
+     */
+    public function healthCheck(): \Fomvasss\Billing\DTO\GatewayHealth
+    {
+        return $this->probeHealth(function () {
+            $fields = ['order_id' => 'billing-health-probe'];
+            $fields['merchant_id'] = $this->merchantId();
+            $fields['signature'] = $this->sign($fields);
+
+            $data = Http::baseUrl(self::BASE_URL)
+                ->timeout(15)
+                ->retry(1)
+                ->post('status/order_id', ['request' => $fields])
+                ->throw()
+                ->json('response');
+
+            if ((int) ($data['error_code'] ?? 0) === 1018) {
+                return 'credentials accepted';
+            }
+
+            throw new BillingException(($data['error_message'] ?? 'unexpected response') . ' (error_code ' . ($data['error_code'] ?? '?') . ')');
+        });
     }
 
     public static function label(): string

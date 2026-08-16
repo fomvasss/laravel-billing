@@ -40,7 +40,7 @@ use Fomvasss\Billing\Webhooks\BillingWebhookCall;
  * chargePaymentMethod()'s own PaymentIntent — checkout.session.*, payment_intent.succeeded and
  * payment_intent.payment_failed all need it to look our Payment row back up.
  */
-class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPaymentStatus, TokenizesPaymentMethod
+class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPaymentStatus, TokenizesPaymentMethod, \Fomvasss\Billing\Contracts\ChecksGatewayHealth
 {
     protected const BASE_URL = 'https://api.stripe.com/v1';
 
@@ -326,12 +326,27 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
         );
     }
 
+    /** GET /v1/balance — the canonical "is this key valid" probe, no side effects. */
+    public function healthCheck(): \Fomvasss\Billing\DTO\GatewayHealth
+    {
+        return $this->probeHealth(function () {
+            $data = $this->http()->retry(1)->get('/balance')->throw()->json();
+
+            return 'livemode: ' . (($data['livemode'] ?? false) ? 'yes' : 'no (test)');
+        });
+    }
+
     public static function label(): string
     {
         return 'Stripe';
     }
 
-    /** Stripe only delivers events to endpoints registered in the Dashboard (Developers → Webhooks) — no per-request callback URL. */
+    /**
+     * Stripe only delivers events to PRE-REGISTERED endpoints — no per-request callback URL.
+     * Registration itself works either via the Dashboard or a single POST /v1/webhook_endpoints
+     * API call (which returns the whsec_ signing secret in the response) — "dashboard" in the
+     * flag's name means "configured on the gateway's side ahead of time", not the UI specifically.
+     */
     public static function requiresDashboardWebhook(): bool
     {
         return true;

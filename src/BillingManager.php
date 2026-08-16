@@ -125,6 +125,7 @@ class BillingManager
                 'refunds' => is_subclass_of($class, RefundsPayments::class),
                 'subscriptions' => is_subclass_of($class, SubscriptionGatewayContract::class),
                 'tokenization' => is_subclass_of($class, TokenizesPaymentMethod::class),
+                'health' => is_subclass_of($class, \Fomvasss\Billing\Contracts\ChecksGatewayHealth::class),
             ],
         ]])->all();
     }
@@ -209,6 +210,22 @@ class BillingManager
         ])->save();
 
         return $result;
+    }
+
+    /**
+     * Live "credentials valid + API reachable" probe — for a settings-UI "test connection" button
+     * or a monitoring cron (see the billing:health command). Never a guarantee about the next
+     * charge; never has side effects on the gateway.
+     */
+    public function health(string $gateway, ?string $tenantId = null): \Fomvasss\Billing\DTO\GatewayHealth
+    {
+        $driver = $this->driver($gateway, $tenantId);
+
+        if (! $driver instanceof \Fomvasss\Billing\Contracts\ChecksGatewayHealth) {
+            throw NotSupportedException::forCapability($gateway, \Fomvasss\Billing\Contracts\ChecksGatewayHealth::class);
+        }
+
+        return $driver->healthCheck();
     }
 
     /**

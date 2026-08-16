@@ -90,6 +90,26 @@ abstract class AbstractGateway implements PaymentGatewayContract
     }
 
     /**
+     * Shared shape for ChecksGatewayHealth drivers: run the probe, time it, translate any throw
+     * into a down() result — a health check itself must never explode.
+     *
+     * @param  callable(): ?string  $probe  Performs the gateway call; returns the "up" detail
+     *   message (merchant name etc.) or throws with the failure reason.
+     */
+    protected function probeHealth(callable $probe): \Fomvasss\Billing\DTO\GatewayHealth
+    {
+        $start = microtime(true);
+
+        try {
+            $message = $probe();
+
+            return \Fomvasss\Billing\DTO\GatewayHealth::up($message, round((microtime(true) - $start) * 1000, 1));
+        } catch (\Throwable $exception) {
+            return \Fomvasss\Billing\DTO\GatewayHealth::down($exception->getMessage(), round((microtime(true) - $start) * 1000, 1));
+        }
+    }
+
+    /**
      * A signed "paid" callback whose sum/currency doesn't match this Payment row is NOT proof this
      * row was paid — the classic case is a stale checkout link paid after the amount was edited
      * and charge() re-issued. The driver refuses to mark paid on a mismatch; the row stays pending

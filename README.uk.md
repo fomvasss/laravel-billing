@@ -108,6 +108,18 @@ Billing::gateway('monobank'); // лише запис цього гейтвея, 
 
 `webhook_url` — точний callback URL цього гейтвея, а `webhook_requires_dashboard_setup` каже UI налаштувань, чи показувати його з підказкою "вкажіть у кабінеті гейтвея" — більшості гейтвеїв ручне налаштування не потрібне взагалі (див. "Налаштування вебхуків" нижче).
 
+**Перевірка підключення** — живий проб без сайд-ефектів: креди валідні + API досяжний; для кнопки "перевірити з'єднання" в адмінці або моніторинг-крону (ненульовий exit, якщо щось лежить):
+
+```php
+Billing::health('monobank'); // GatewayHealth { ok: true, message: 'My Shop LLC', latencyMs: 179.2 }
+```
+```bash
+php artisan billing:health            # таблиця по всіх health-capable гейтвеях, exit 1 якщо хтось лежить
+php artisan billing:health monobank   # один конкретний
+```
+
+Підтримують усі вбудовані гейтвеї (`capabilities.health` у `gateways()`). Це перевірка *кредів і досяжності прямо зараз* — ніколи не гарантія наступного списання.
+
 Динамічні креди per-tenant (замість статичного масиву в конфізі) — забіндити власний резолвер:
 
 ```php
@@ -365,9 +377,29 @@ Callback URL кожного гейтвея — `https://твій-домен/bill
 | LiqPay | `server_url` у кожному платежі | не потрібне |
 | WayForPay | `serviceUrl` у кожному Purchase/Charge | не потрібне |
 | Hutko | `server_callback_url` у кожному запиті | не потрібне |
-| **Stripe** | Лише ендпоінти, зареєстровані в Dashboard | **обов'язкове** |
+| **Stripe** | Лише попередньо зареєстровані ендпоінти (Dashboard **або** один API-виклик) | **обов'язкове** |
 
-Stripe: Dashboard → Developers → Webhooks → Add endpoint з `https://твій-домен/billing/webhooks/stripe`, підписка на події `checkout.session.completed`, `checkout.session.expired`, `payment_intent.succeeded`, `payment_intent.payment_failed`, і скопіюй **Signing secret** (`whsec_...`) у `STRIPE_WEBHOOK_SECRET` — без нього валідатор відхиляє все (fail-closed).
+Stripe — пакет може зареєструвати ендпоінт за тебе:
+
+```bash
+php artisan billing:stripe-register-webhook          # створює ендпоінт, друкує STRIPE_WEBHOOK_SECRET
+php artisan billing:stripe-register-webhook --fresh  # змінився домен/тунель — видалити і створити заново (новий секрет)
+```
+
+Секрет показується **лише при створенні** (Stripe ніколи не повертає його повторно) — одразу вставляй у `.env`. Рівнозначні ручні способи, якщо зручніше:
+
+- **Dashboard**: Developers → Webhooks → Add endpoint з `https://твій-домен/billing/webhooks/stripe`, підписка на події `checkout.session.completed`, `checkout.session.expired`, `payment_intent.succeeded`, `payment_intent.payment_failed`, скопіюй **Signing secret** (`whsec_...`).
+- **Один API-виклик** — без відкриття Dashboard узагалі, signing secret приходить у відповіді:
+
+```bash
+curl https://api.stripe.com/v1/webhook_endpoints -u "sk_test_...:" \
+  -d url="https://твій-домен/billing/webhooks/stripe" \
+  -d "enabled_events[]=checkout.session.completed" -d "enabled_events[]=checkout.session.expired" \
+  -d "enabled_events[]=payment_intent.succeeded" -d "enabled_events[]=payment_intent.payment_failed"
+# → у відповіді є "secret": "whsec_..."
+```
+
+У будь-якому разі секрет іде в `STRIPE_WEBHOOK_SECRET` — без нього валідатор відхиляє все (fail-closed). Зареєстрований URL фіксується на боці Stripe: зміна домену/тунеля означає перестворення ендпоінта.
 
 Стосується всіх: `APP_URL` має бути реальним публічним URL (`route()` будує callback з нього), шлях має бути доступний по HTTPS без basic auth/IP-блоків (CSRF уже не заважає — роут поза групою `web`), а до локальної машини банк не достукається — тунель (ngrok/expose) або просто `fake`-гейтвей, який ганяє той самий пайплайн. Кожен прийнятий вебхук лишає рядок у `billing_webhook_calls`; 403 у логах = проблема з підписом/секретом.
 

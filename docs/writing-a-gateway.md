@@ -234,6 +234,7 @@ Implement only what your gateway actually does. `BillingManager` checks with `in
 |---|---|
 | `RefundsPayments` | Refunds via API (many require doing it by hand in the dashboard — then don't implement this). Your `refund()` only makes the gateway call — the child `Payment` row and the `PaymentRefunded` event are `BillingManager::refund()`'s job |
 | `ChecksPaymentStatus` | Polling a payment's current status — used by `billing:reconcile-pending-payments` as the fallback for a lost webhook |
+| `ChecksGatewayHealth` | A live, side-effect-free credentials/reachability probe (`Billing::health()`, `billing:health`). No introspection endpoint? Probe with the status of a nonexistent payment and tell "order not found" (credentials fine) apart from "invalid signature" — verify the discriminating error codes against the live API, the built-in drivers document theirs |
 | `TokenizesPaymentMethod` | Saved cards / off-session recurring charges |
 | `SubscriptionGatewayContract` | Native subscriptions on the gateway's own side (Stripe-style) |
 | `HasReceiptItems` | (on your `Payable`, not the driver) fiscal basket line items |

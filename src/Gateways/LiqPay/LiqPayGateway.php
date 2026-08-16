@@ -44,7 +44,7 @@ use Fomvasss\Billing\Webhooks\BillingWebhookCall;
  * gateway-side token-revocation endpoint is documented for this flow (unlike Monobank's `DELETE
  * /wallet/card`) — detachPaymentMethod() is local-only.
  */
-class LiqPayGateway extends AbstractGateway implements RefundsPayments, ChecksPaymentStatus, TokenizesPaymentMethod
+class LiqPayGateway extends AbstractGateway implements RefundsPayments, ChecksPaymentStatus, TokenizesPaymentMethod, \Fomvasss\Billing\Contracts\ChecksGatewayHealth
 {
     protected const CHECKOUT_URL = 'https://www.liqpay.ua/api/3/checkout';
 
@@ -239,6 +239,24 @@ class LiqPayGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             externalId: $externalId,
             raw: $data,
         );
+    }
+
+    /**
+     * No introspection endpoint — probes with the status of a nonexistent order. Live-verified
+     * discriminators: err_code `payment_not_found` = credentials/signature fine (the request was
+     * accepted and understood); `invalid_signature` (or any other auth-shaped error) = they aren't.
+     */
+    public function healthCheck(): \Fomvasss\Billing\DTO\GatewayHealth
+    {
+        return $this->probeHealth(function () {
+            $data = $this->api(['action' => 'status', 'order_id' => 'billing-health-probe']);
+
+            if (($data['err_code'] ?? null) === 'payment_not_found') {
+                return 'credentials accepted';
+            }
+
+            throw new BillingException($data['err_description'] ?? $data['err_code'] ?? 'unexpected response: ' . json_encode($data));
+        });
     }
 
     public static function label(): string

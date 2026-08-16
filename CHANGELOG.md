@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+- Gateway health checks: the optional `ChecksGatewayHealth` capability (all built-ins implement it), `Billing::health($gateway)` returning `GatewayHealth { ok, message, latencyMs }`, and the `billing:health` command (table of all gateways, non-zero exit when anything is down — monitoring-cron ready). Probes are live, side-effect-free, and validate credentials + reachability: Stripe via `/v1/balance`, Monobank via `/api/merchant/details`, LiqPay/WayForPay/Hutko via the status of a nonexistent payment with live-verified discriminating error codes (`payment_not_found`/1127/1018 = credentials fine vs `invalid_signature`/1113/1014 = they aren't). `capabilities.health` appears in `gateways()`.
+- Hutko implements `ChecksPaymentStatus` — its status endpoint turned out to exist (`POST /api/status/order_id`, found during the health-probe research), so `billing:reconcile-pending-payments` now polls Hutko payments instead of writing stale pendings off as dead checkouts.
+- `billing:stripe-register-webhook` — registers this app's webhook endpoint in Stripe via API (the four handled events) and prints the `whsec_` signing secret; Stripe shows it only at creation, so a re-run against an existing URL refuses unless `--fresh` deletes and re-creates it (the "tunnel domain changed" workflow). No Dashboard visit needed at all.
+
+### Changed
+- Docs: Stripe webhook setup wording corrected — the endpoint must be *pre-registered on Stripe's side*, which works via the Dashboard **or** one API call (now preferably the command above); it's not a Dashboard-UI-only affair.
+
 ## [0.6.0] - 2026-08-16
 
 ### Added

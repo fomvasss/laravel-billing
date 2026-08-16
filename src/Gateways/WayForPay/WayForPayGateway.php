@@ -50,7 +50,7 @@ use Fomvasss\Billing\Webhooks\BillingWebhookCall;
  * token-revocation endpoint is documented — detachPaymentMethod() is local-only, same reasoning as
  * LiqPay's.
  */
-class WayForPayGateway extends AbstractGateway implements ChecksPaymentStatus, TokenizesPaymentMethod
+class WayForPayGateway extends AbstractGateway implements ChecksPaymentStatus, TokenizesPaymentMethod, \Fomvasss\Billing\Contracts\ChecksGatewayHealth
 {
     protected const CHECKOUT_URL = 'https://secure.wayforpay.com/pay';
 
@@ -264,6 +264,32 @@ class WayForPayGateway extends AbstractGateway implements ChecksPaymentStatus, T
             externalId: (string) $payment->id,
             raw: $data,
         );
+    }
+
+    /**
+     * No introspection endpoint — probes with CHECK_STATUS for a nonexistent order. Live-verified
+     * discriminators: reasonCode 1127 "Order Not Found" = credentials/signature fine; 1113
+     * "Invalid signature" (or anything else) = they aren't.
+     */
+    public function healthCheck(): \Fomvasss\Billing\DTO\GatewayHealth
+    {
+        return $this->probeHealth(function () {
+            $reference = 'billing-health-probe';
+
+            $data = Http::timeout(15)->retry(1)->post(self::API_URL, [
+                'transactionType' => 'CHECK_STATUS',
+                'merchantAccount' => $this->merchantAccount(),
+                'orderReference' => $reference,
+                'merchantSignature' => $this->sign([$this->merchantAccount(), $reference]),
+                'apiVersion' => 1,
+            ])->throw()->json();
+
+            if ((int) ($data['reasonCode'] ?? 0) === 1127) {
+                return 'credentials accepted';
+            }
+
+            throw new BillingException(($data['reason'] ?? 'unexpected response') . ' (reasonCode ' . ($data['reasonCode'] ?? '?') . ')');
+        });
     }
 
     public static function label(): string

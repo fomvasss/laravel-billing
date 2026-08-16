@@ -31,7 +31,7 @@ class Subscription extends Model
             'qty' => 'integer',
             'current_usage' => 'float',
             'trial_ends_at' => 'datetime',
-            'trial_ends_notified_at' => 'datetime',
+            'trial_notices_sent' => 'array',
             'current_period_ends_at' => 'datetime',
             'cancels_at' => 'datetime',
             'grace_ends_at' => 'datetime',

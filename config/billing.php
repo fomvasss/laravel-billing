@@ -80,16 +80,21 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Trial ending notice
+    | Trial ending notices
     |--------------------------------------------------------------------------
     |
-    | How many days before trial_ends_at the TrialWillEnd event fires (once per
-    | subscription, from billing:expire-trials) — the hook for "add a card
-    | before your trial runs out" notifications.
+    | When TrialWillEnd fires before trial_ends_at — the hook for "add a card
+    | before your trial runs out" notifications. A list, because the sensible
+    | cadence depends on the period: a yearly plan wants ['7 days', '3 days',
+    | '1 day'], an hourly rental wants ['1 hour', '15 minutes']. Each entry is
+    | a CarbonInterval string (or an int = minutes) and fires at most once per
+    | subscription; the event carries which notice it is ($event->notice).
+    | If several become due at once (e.g. the trial was created mid-window),
+    | only the closest one fires — no notification burst.
     |
     */
 
-    'trial_ending_notice_days' => env('BILLING_TRIAL_ENDING_NOTICE_DAYS', 3),
+    'trial_ending_notices' => ['3 days'],
 
     /*
     |--------------------------------------------------------------------------

@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-16
+
+### Added
+- `docs/architecture.md` — the package's internals for debugging/extending: component map, the webhook pipeline step by step (with the dedup claim point), how reconciliation shares dedup, and a "who writes which columns" table.
+- `docs/webhook-testing.md` — manual webhook testing (Postman/curl signature recipes per gateway, ngrok tunnel setup for real callbacks); moved out of the README, which keeps a pointer.
+- `docs/use-cases.md` — five end-to-end system designs on top of the package: SaaS with a token wallet, a store with expenses kept out of billing, hourly rentals (short-cycle config), a tariff storefront over `Plan.meta`, and the listener-layer patterns. Linked from both READMEs' Recipes sections.
+
+### Changed
+- Trial reminders are a flexible list: `config('billing.trial_ending_notices')` (default `['3 days']`) replaces the single `trial_ending_notice_days` — `['7 days', '3 days', '1 day']` for yearly plans, `['1 hour', '15 minutes']` for hourly rentals (ints are minutes). Each notice fires once per subscription (`trial_notices_sent` json column replaces `trial_ends_notified_at` — re-publish migrations); when several become due at once only the closest fires; `TrialWillEnd::$notice` tells the listener which reminder it is. A `Price` can override the list with its own `trial_ending_notices` json column (`null` = global, `[]` = no reminders for that price) — different cadences per price in one project.
+- `billing:process-recurring-charges` runs **every minute** by default (was hourly) — a renewal lands within a minute of the period end ("paid at 13:23 → charged 13:23 a month later"), and short-cycle billing (hourly rentals) works out of the box. Safe by construction: indexed query, idempotent command, `withoutOverlapping()`.
+
+### Fixed
+- The built-in schedule runs the money-touching commands with `withoutOverlapping()` — a run outliving its interval can't race a parallel one into double-initiating a charge. README shows how to re-register the commands at any cadence (down to every minute) with the schedule disabled.
+- Monthly/yearly renewals no longer overflow short months: Jan 30 + 1 month is now Feb 28, not "Feb 30" spilling into Mar 2 (Carbon's default overflow) — the customer no longer skips a February charge. Known simplification: after one clamp the anchor day stays clamped (Jan 31 → Feb 28 → Mar 28); the original day-of-month is not preserved Stripe-style.
+
 ## [0.5.0] - 2026-08-16
 
 ### Added

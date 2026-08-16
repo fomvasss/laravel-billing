@@ -248,7 +248,7 @@ Supported where the gateway has a refund API: Monobank, LiqPay, Stripe (`Refunds
 
 ## Flow
 
-Three flows cover everything the package does with money. In all of them the same rule holds: **the webhook (or its polling fallback) is the only thing that ever changes `Payment.status`** — anything the browser does is UX.
+Three flows cover everything the package does with money. (The machinery behind them — registries, the exact webhook pipeline order, dedup mechanics, who writes which columns — is in **[docs/architecture.md](docs/architecture.md)**.) In all of them the same rule holds: **the webhook (or its polling fallback) is the only thing that ever changes `Payment.status`** — anything the browser does is UX.
 
 ### 1. One-off checkout (customer present, redirect)
 
@@ -290,11 +290,11 @@ The two halves of the `par` block are independent and unordered — the webhook 
 
 ### 2. Recurring charge (no customer present, saved card)
 
-What `billing:process-recurring-charges` does every hour — also exactly what happens when you call `chargeWithMethod()` yourself (overage, trial conversion with a saved card):
+What `billing:process-recurring-charges` does every minute — also exactly what happens when you call `chargeWithMethod()` yourself (overage, trial conversion with a saved card):
 
 ```mermaid
 sequenceDiagram
-    participant Cron as Scheduler (hourly)
+    participant Cron as Scheduler (every minute)
     participant Cmd as process-recurring-charges
     participant Driver as Gateway driver
     participant Bank as Payment gateway
@@ -344,7 +344,7 @@ One route (`POST /billing/webhooks/{gateway}`) handles every gateway, resolved a
 | `PaymentRefunded` | `Billing::refund()` created a refund row (see "Refunds") |
 | `SubscriptionRenewed` / `SubscriptionPaymentFailed` / `SubscriptionCancelled` | The outcome of a renewal charge, handled by the package's own listener (period advanced / dunning / cancelled after `max_recurring_attempts` or at `cancels_at`) |
 | `SubscriptionCreated` | Native-subscription gateways only — no built-in driver dispatches it yet |
-| `TrialWillEnd` | From `billing:expire-trials`, `trial_ending_notice_days` (default 3) before `trial_ends_at`, once per subscription |
+| `TrialWillEnd` | From `billing:expire-trials`, at each `trial_ending_notices` interval before `trial_ends_at` (default `['3 days']`; e.g. `['7 days', '3 days', '1 day']` for yearly plans, `['1 hour', '15 minutes']` for hourly rentals) — once per subscription per notice, `$event->notice` says which one fired |
 | `SubscriptionPaused` / `SubscriptionResumed` | Local-only, via `$subscription->pause()`/`resume()` — never gateway-driven |
 | `CheckoutReturned` | The customer's browser came back from checkout (see "Return pages") — UX/analytics only, never proof of payment |
 | `PaymentLinkOpened` | Someone opened the permanent pay link (`billing.pay`, see "Permanent payment link") — analytics only |
@@ -505,12 +505,25 @@ Three artisan commands, off by default (`billing.schedule.enabled`, since they t
 
 | Command | Runs | What it does |
 |---|---|---|
-| `billing:process-recurring-charges` | hourly | First finalizes subscriptions whose `cancels_at` has passed (status → `canceled`, `SubscriptionCancelled` fires) so a period-end cancellation is never billed again. Then finds subscriptions where `current_period_ends_at <= now()` and charges the saved `PaymentMethod` via `chargePaymentMethod()` — unless an earlier renewal `Payment` is still `pending` (webhook not yet resolved), which blocks a second charge for the same period. Only *initiates* the charge — the outcome arrives later through the normal webhook pipeline, handled automatically: the period advances on `PaymentSucceeded`; on `PaymentFailed` the subscription goes `past_due` and is retried every `retry_interval_hours` (default 24 — spaced out, *not* every hourly run) until `max_recurring_attempts` is reached, then `SubscriptionCancelled`. With the defaults that's 3 attempts a day apart across the 3-day grace window. |
+| `billing:process-recurring-charges` | every minute | First finalizes subscriptions whose `cancels_at` has passed (status → `canceled`, `SubscriptionCancelled` fires) so a period-end cancellation is never billed again. Then finds subscriptions where `current_period_ends_at <= now()` and charges the saved `PaymentMethod` via `chargePaymentMethod()` — unless an earlier renewal `Payment` is still `pending` (webhook not yet resolved), which blocks a second charge for the same period. Only *initiates* the charge — the outcome arrives later through the normal webhook pipeline, handled automatically: the period advances on `PaymentSucceeded`; on `PaymentFailed` the subscription goes `past_due` and is retried every `retry_interval_hours` (default 24 — spaced out, *not* every scheduler run) until `max_recurring_attempts` is reached, then `SubscriptionCancelled`. With the defaults that's 3 attempts a day apart across the 3-day grace window. |
 | `billing:reconcile-pending-payments` | every 15 min | Fallback for a `Payment` stuck `pending` because a webhook was lost, or a gateway `expired` status that never gets its own webhook. Only looks at payments older than `config('billing.reconcile_after_minutes')` (default 60 min) — that cutoff already delays how soon a stuck payment qualifies, which is why this runs more often than the other two, not hourly like them. A failure on one payment is reported and skipped, never blocks the rest. |
-| `billing:expire-trials` | daily | Dispatches `TrialWillEnd` for trials inside the `trial_ending_notice_days` window (once per subscription), then moves `trialing` subscriptions past `trial_ends_at` to `ended`. Converting a trial to paid is a normal `chargeWithMethod()` call, same as any renewal (see "Free trial period" in Recipes). |
+| `billing:expire-trials` | daily | Dispatches `TrialWillEnd` at each configured `trial_ending_notices` interval (once per subscription per notice; when several become due at once only the closest fires), then moves `trialing` subscriptions past `trial_ends_at` to `ended`. Converting a trial to paid is a normal `chargeWithMethod()` call, same as any renewal (see "Free trial period" in Recipes). |
 | `model:prune` (BillingWebhookCall) | daily | Deletes stored webhook calls older than `webhook.prune_after_days` (default 30). |
 
 None of this fires on its own — `Schedule::command()`/`->hourly()` etc. just register with Laravel's own scheduler, which still needs the standard system cron entry running `php artisan schedule:run` every minute (the usual Laravel deployment requirement, nothing package-specific).
+
+**Want a different cadence?** The built-in schedule is just a sane default — disable it and register the commands yourself at any frequency; they're idempotent by design (pending-renewal guard, `next_retry_at`, webhook-shared dedup), and the built-in entries already run `withoutOverlapping()`:
+
+```php
+// config/billing.php: 'schedule' => ['enabled' => false]
+
+// e.g. slow the charging down to a nightly batch, speed reconciliation up:
+Schedule::command('billing:process-recurring-charges')->dailyAt('03:00')->withoutOverlapping();
+Schedule::command('billing:reconcile-pending-payments')->everyFiveMinutes()->withoutOverlapping();
+Schedule::command('billing:expire-trials')->daily();
+```
+
+Keep `withoutOverlapping()` on the money-touching commands, and add `onOneServer()` if the scheduler runs on several servers.
 
 ### Statuses and history
 
@@ -605,7 +618,7 @@ Either way, `chargeWithMethod()`/`chargePaymentMethod()` only *initiate* the cha
 
 ## Recipes
 
-Everything above is the building blocks; here's how they combine for a few real scenarios.
+Everything above is the building blocks; here's how they combine for a few real scenarios. Wider, end-to-end system designs (a SaaS with a token wallet, a store with expenses, hourly rentals, a tariff storefront) live in **[docs/use-cases.md](docs/use-cases.md)**.
 
 ### 1. Store checkout with fiscal receipt items
 
@@ -787,7 +800,7 @@ $subscription = Subscription::create([
 ]);
 ```
 
-`TrialWillEnd` fires `trial_ending_notice_days` (default 3) before `trial_ends_at` — from the daily `billing:expire-trials` run, so it needs the schedule enabled. It's your hook to **prompt the customer to subscribe** (an email/push with a link to your payment page). If nobody converts, the same command moves `trialing` subscriptions past `trial_ends_at` to `ended`.
+`TrialWillEnd` fires at each `trial_ending_notices` interval before `trial_ends_at` (default `['3 days']`; tune to `['7 days', '3 days', '1 day']` for a yearly plan or `['1 hour', '15 minutes']` for an hourly rental — then run `billing:expire-trials` more often than daily) — from the `billing:expire-trials` run, so it needs the schedule enabled. `$event->notice` tells the listener which reminder to word. A `Price` can also carry its own `trial_ending_notices` (json column): `null` = the global list, `[]` = no reminders for that price, its own array = its own cadence — so a yearly plan and an hourly rental coexist in one project. It's your hook to **prompt the customer to subscribe** (an email/push with a link to your payment page). If nobody converts, the same command moves `trialing` subscriptions past `trial_ends_at` to `ended`.
 
 Converting is just a payment against this subscription — no separate "convert trial" method. Create a `Payment` with `payable = $subscription` and send the customer to checkout; `PaymentSucceeded` flips the row straight to `active` (the listener doesn't care it started as `trialing`):
 
@@ -941,7 +954,7 @@ $plan->prices()->create(['interval' => Interval::Month, ...]);
 if ($subscription->status === SubscriptionStatus::PastDue) { ... } // reading a cast column gives the enum instance
 ```
 
-Each enum also has `label()` for UI (`'Past due'`) and the usual `cases()` for building selects. (`Interval::Minute`/`Hour` exist mostly for testing renewal cycles.)
+Each enum also has `label()` for UI (`'Past due'`) and the usual `cases()` for building selects. `Interval::Minute`/`Hour` work for real short-cycle billing too (hourly parking/equipment rental, not just testing) — the every-minute default schedule covers them out of the box; just rethink the dunning defaults, since a 24-hour retry interval and a 3-day grace make no sense against a one-hour period (e.g. `BILLING_MAX_RECURRING_ATTEMPTS=1`).
 
 ## Currency conversion
 
@@ -976,31 +989,10 @@ $this->app->bind(\Fomvasss\Billing\Contracts\CurrencyConverterContract::class, M
 
 Use the `fake` gateway (see Quickstart) in your own app's feature tests — it runs the exact same pipeline a real gateway would, so there's nothing package-specific to mock.
 
-### Poking webhooks by hand (Postman/curl)
+### Poking webhooks by hand
 
-The `fake` gateway needs no signature at all:
+Manual testing — replaying gateway callbacks from Postman/curl (with per-gateway signature recipes) and receiving real webhooks locally through an ngrok tunnel — has its own guide: **[docs/webhook-testing.md](docs/webhook-testing.md)**.
 
-```
-POST /billing/webhooks/fake
-{"payment_id": "<payment uuid>", "result": "success"}
-```
-
-The real HMAC gateways (LiqPay, WayForPay, Hutko, Stripe) work too — compute the signature with your own secret. Stripe in a Postman pre-request script, for example:
-
-```javascript
-const t = Math.floor(Date.now() / 1000); // fresh — there's a 5-minute replay window
-const sig = CryptoJS.HmacSHA256(`${t}.${pm.request.body.raw}`, 'whsec_...').toString();
-pm.request.headers.add({key: 'Stripe-Signature', value: `t=${t},v1=${sig}`});
-```
-
-Ready-made signature recipes for every gateway live in the package's own `tests/Feature/WebhookSignatureValidationTest.php` — copy from there. Remember WayForPay's delivery shape: raw JSON body under a `application/x-www-form-urlencoded` content type. **Monobank can't be faked** — its webhooks are ECDSA-signed with the bank's private key; you can only test the rejection path (403).
-
-Gotchas that make a manual test look "broken" when it isn't:
-
-- The `Payment` must exist (pending) and the payload's amount/currency must match it — otherwise you get a 200 but the result is `Ignored` and the status doesn't change.
-- A 200 means "accepted and queued": set `QUEUE_CONNECTION=sync` locally, or a redis queue without a worker will look like nothing happened.
-- Repeating the same request changes nothing and fires no second event — that's dedup, not a bug.
-- A row in `billing_webhook_calls` = the signature passed; a 403 = it didn't.
 
 ## License
 

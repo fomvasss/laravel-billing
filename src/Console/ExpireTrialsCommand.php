@@ -11,7 +11,7 @@ use Illuminate\Console\Command;
 
 /**
  * Two passes: TrialWillEnd for trials about to run out (the "prompt for a card" hook — once per
- * subscription, trial_ends_notified_at is the marker), then the expiry itself. No event on expiry
+ * subscription per notice, trial_notices_sent is the marker), then the expiry itself. No event on expiry
  * on purpose — the consumer just reads `status` to decide what to block (see the itschats trial
  * case in "Бізнес-модель itschats" in the package plan).
  */
@@ -36,22 +36,51 @@ class ExpireTrialsCommand extends Command
         return self::SUCCESS;
     }
 
+    /**
+     * A LIST of reminders ('7 days', '1 hour', int = minutes), each fired at most once per
+     * subscription (trial_notices_sent tracks which). The price's own trial_ending_notices
+     * overrides the global config('billing.trial_ending_notices') — null = global list, [] = no
+     * reminders for that price — so a yearly plan (7/3/1 days) and an hourly rental (1h/15m) can
+     * coexist. When several become due at the same run (a trial created mid-window, or the
+     * scheduler was down), only the closest one fires and the rest are marked sent — no burst.
+     */
     protected function dispatchTrialEndingNotices(): void
     {
-        $noticeDays = (int) config('billing.trial_ending_notice_days', 3);
+        $default = (array) config('billing.trial_ending_notices', ['3 days']);
 
         Subscription::query()
+            ->with('price')
             ->where('status', SubscriptionStatus::Trialing)
-            ->whereNull('trial_ends_notified_at')
             ->whereNotNull('trial_ends_at')
             ->where('trial_ends_at', '>', now())
-            ->where('trial_ends_at', '<=', now()->addDays($noticeDays))
-            ->chunkById(200, function ($subscriptions) {
+            ->chunkById(200, function ($subscriptions) use ($default) {
                 foreach ($subscriptions as $subscription) {
-                    $subscription->update(['trial_ends_notified_at' => now()]);
+                    $notices = collect($subscription->price?->trial_ending_notices ?? $default)
+                        ->mapWithKeys(fn ($notice) => [(string) $notice => $this->noticeInterval($notice)])
+                        ->sortBy(fn (\Carbon\CarbonInterval $interval) => $interval->totalSeconds);
 
-                    TrialWillEnd::dispatch($subscription);
+                    $sent = $subscription->trial_notices_sent ?? [];
+
+                    $due = $notices
+                        ->filter(fn (\Carbon\CarbonInterval $interval, string $label) => ! in_array($label, $sent, true)
+                            && $subscription->trial_ends_at->lessThanOrEqualTo(now()->add($interval)));
+
+                    if ($due->isEmpty()) {
+                        continue;
+                    }
+
+                    $subscription->update(['trial_notices_sent' => [...$sent, ...$due->keys()]]);
+
+                    // the closest (smallest interval) reminder is the one worth saying out loud
+                    TrialWillEnd::dispatch($subscription, $due->keys()->first());
                 }
             });
+    }
+
+    protected function noticeInterval(string|int $notice): \Carbon\CarbonInterval
+    {
+        return is_int($notice)
+            ? \Carbon\CarbonInterval::minutes($notice)
+            : \Carbon\CarbonInterval::make($notice) ?? throw new \InvalidArgumentException("Unparsable trial notice interval \"{$notice}\".");
     }
 }

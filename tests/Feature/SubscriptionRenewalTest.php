@@ -37,6 +37,18 @@ class SubscriptionRenewalTest extends TestCase
         $this->assertTrue($subscription->current_period_ends_at->equalTo($expectedNextPeriod));
     }
 
+    public function test_month_advance_clamps_instead_of_overflowing_into_the_next_month(): void
+    {
+        $subscription = $this->activeMonthlySubscription();
+        // Jan 30 + 1 month: Carbon's default addMonth() would overflow "Feb 30" into Mar 2 —
+        // the customer would skip February's charge entirely.
+        $subscription->update(['current_period_ends_at' => \Illuminate\Support\Carbon::parse('2026-01-30 15:24:00')]);
+
+        PaymentSucceeded::dispatch($this->renewalPayment($subscription));
+
+        $this->assertSame('2026-02-28 15:24:00', $subscription->fresh()->current_period_ends_at->format('Y-m-d H:i:s'));
+    }
+
     public function test_a_failed_renewal_moves_to_past_due_with_a_grace_period(): void
     {
         $subscription = $this->activeMonthlySubscription();

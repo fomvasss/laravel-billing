@@ -184,11 +184,19 @@ class BillingServiceProvider extends ServiceProvider
         $this->app->booted(function () {
             $schedule = $this->app->make(Schedule::class);
 
-            $schedule->command('billing:process-recurring-charges')->hourly();
+            // withoutOverlapping on both money-touching commands: a run outliving its interval
+            // must not race a parallel one — the in-command pending-renewal guard is not atomic
+            // across processes, so an overlap could double-initiate a charge.
+            //
+            // everyMinute, not hourly: a renewal lands within a minute of the period end ("paid at
+            // 13:23 → charged 13:23 a month later"), and short-cycle billing (hourly rentals)
+            // works out of the box. Safe at this frequency by construction — the query is indexed
+            // (status, current_period_ends_at), the command is idempotent, overlap is locked out.
+            $schedule->command('billing:process-recurring-charges')->everyMinute()->withoutOverlapping();
             // 15 min, not hourly — reconcile_after_minutes (default 60) already delays how soon a
             // stuck payment qualifies; hourly on top of that meant a real "paid but webhook lost"
             // payment could sit unresolved for up to ~2h before this ever looked at it.
-            $schedule->command('billing:reconcile-pending-payments')->everyFifteenMinutes();
+            $schedule->command('billing:reconcile-pending-payments')->everyFifteenMinutes()->withoutOverlapping();
             $schedule->command('billing:expire-trials')->daily();
             $schedule->command('model:prune', ['--model' => [\Fomvasss\Billing\Webhooks\BillingWebhookCall::class]])->daily();
         });

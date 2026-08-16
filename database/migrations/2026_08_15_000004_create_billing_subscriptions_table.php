@@ -18,8 +18,9 @@ return new class extends Migration
             $table->decimal('current_usage', 18, 4)->default(0);
             $table->string('external_id')->nullable();
             $table->timestamp('trial_ends_at')->nullable();
-            // TrialWillEnd already dispatched for this trial (billing:expire-trials) — once per subscription.
-            $table->timestamp('trial_ends_notified_at')->nullable();
+            // Which trial_ending_notices entries already fired for this trial (['3 days', ...]) —
+            // each reminder at most once per subscription.
+            $table->json('trial_notices_sent')->nullable();
             $table->timestamp('current_period_ends_at')->nullable();
             $table->timestamp('cancels_at')->nullable();
             // Dunning — only relevant when gateway=recurring, see the package plan.

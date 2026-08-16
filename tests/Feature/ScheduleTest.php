@@ -26,9 +26,11 @@ class ScheduleTest extends TestCase
         $this->assertSame('*/15 * * * *', $this->expressionFor('billing:reconcile-pending-payments'));
     }
 
-    public function test_process_recurring_charges_runs_hourly(): void
+    public function test_process_recurring_charges_runs_every_minute(): void
     {
-        $this->assertSame('0 * * * *', $this->expressionFor('billing:process-recurring-charges'));
+        // a renewal lands within a minute of the period end — safe at this frequency
+        // (indexed query, idempotent command, withoutOverlapping)
+        $this->assertSame('* * * * *', $this->expressionFor('billing:process-recurring-charges'));
     }
 
     public function test_expire_trials_runs_daily(): void

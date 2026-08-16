@@ -26,6 +26,7 @@ class Price extends Model
             'interval' => Interval::class,
             'interval_count' => 'integer',
             'trial_days' => 'integer',
+            'trial_ending_notices' => 'array',
             'pricing_type' => PricingType::class,
             'included_units' => 'float',
             'is_active' => 'boolean',

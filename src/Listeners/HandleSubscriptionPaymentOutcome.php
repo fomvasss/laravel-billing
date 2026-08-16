@@ -117,8 +117,12 @@ class HandleSubscriptionPaymentOutcome
             Interval::Hour => $base->copy()->addHours($count),
             Interval::Day => $base->copy()->addDays($count),
             Interval::Week => $base->copy()->addWeeks($count),
-            Interval::Month => $base->copy()->addMonths($count),
-            Interval::Year => $base->copy()->addYears($count),
+            // NoOverflow: Jan 30 + 1 month is Feb 28, not "Feb 30" spilling into Mar 2 (Carbon
+            // overflows by default). Known simplification: after one clamp the anchor day stays
+            // clamped (Jan 31 → Feb 28 → Mar 28), we don't keep the original day-of-month the way
+            // Stripe's billing anchor does.
+            Interval::Month => $base->copy()->addMonthsNoOverflow($count),
+            Interval::Year => $base->copy()->addYearsNoOverflow($count),
         };
     }
 }

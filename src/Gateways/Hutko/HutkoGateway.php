@@ -125,7 +125,12 @@ class HutkoGateway extends AbstractGateway implements TokenizesPaymentMethod, \F
         // retried checkout gets a fresh payment_id, so both outcomes dispatch.
         $externalId = isset($payload['payment_id']) ? (string) $payload['payment_id'] : null;
 
-        $payment->update(array_filter(['status' => $status, 'external_id' => $externalId]));
+        // fee — Hutko's commission, minor units like every Hutko amount (the test merchant sends
+        // ""); spread AFTER the array_filter so a real fee=0 isn't dropped by it.
+        $payment->update([
+            ...array_filter(['status' => $status, 'external_id' => $externalId]),
+            ...$this->feeFrom($payload['fee'] ?? null),
+        ]);
 
         return new WebhookResult(
             type: WebhookEventType::Payment,
@@ -240,7 +245,10 @@ class HutkoGateway extends AbstractGateway implements TokenizesPaymentMethod, \F
 
         $externalId = isset($data['payment_id']) ? (string) $data['payment_id'] : null;
 
-        $payment->update(array_filter(['status' => $status, 'external_id' => $externalId]));
+        $payment->update([
+            ...array_filter(['status' => $status, 'external_id' => $externalId]),
+            ...$this->feeFrom($data['fee'] ?? null),
+        ]);
 
         return new WebhookResult(
             type: WebhookEventType::Payment,

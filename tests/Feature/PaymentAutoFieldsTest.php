@@ -11,6 +11,20 @@ use Fomvasss\Billing\Tests\TestCase;
 
 class PaymentAutoFieldsTest extends TestCase
 {
+    public function test_number_is_consumer_assigned_and_findable(): void
+    {
+        // the package stores the column, the CONSUMER owns the scheme — the documented hook:
+        Payment::creating(function (Payment $payment) {
+            $payment->number ??= 'PAY-' . now()->format('Y') . '-000001';
+        });
+
+        $payment = $this->makePayment();
+
+        $this->assertSame('PAY-' . now()->format('Y') . '-000001', $payment->number);
+        $this->assertTrue(Payment::findByNumber($payment->number)->is($payment));
+        $this->assertNull(Payment::findByNumber('PAY-nope'));
+    }
+
     public function test_paid_at_is_stamped_only_when_status_becomes_paid(): void
     {
         $payment = $this->makePayment();

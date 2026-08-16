@@ -243,6 +243,42 @@ Payment::create([
 
 `paid_at` is stamped automatically the moment `status` becomes `paid`.
 
+### Payment numbers
+
+A UUID is a terrible thing to read over the phone — `payments.number` is the human-facing reference for receipts, emails and support ("payment PAY-2026-000123"), unique-indexed, with `Payment::findByNumber()`. The package never generates it, because numbering schemes are project-specific (global sequence, per-order suffix, yearly reset, per-tenant) — assign yours once, in a hook:
+
+```php
+// AppServiceProvider::boot()
+Payment::creating(function (Payment $payment) {
+    $payment->number ??= 'PAY-' . now()->format('Y') . '-' . str_pad((string) PaymentSequence::next(), 6, '0', STR_PAD_LEFT);
+});
+```
+
+### Gateway fee and net amount
+
+`amount` is always **what the customer paid** — refund caps, webhook amount verification and reconciliation all depend on that, so nothing ever rewrites it. What the merchant actually receives lives next to it:
+
+- `payments.fee` — the gateway's commission, minor units, same currency as `amount`. Drivers parse it from the payment callback where the gateway reports it: Monobank (`paymentInfo.fee`), LiqPay (`receiver_commission`), WayForPay (`fee`), Hutko (`fee`). Stripe doesn't include the fee in its webhook (it lives on the balance transaction, a separate API object) — `fee` stays `null` there.
+- `$payment->netAmount()` — `amount - fee`, or `null` while the fee is unknown. Derived, never stored.
+
+`null` genuinely means "unknown": the package never guesses a commission, while a reported `0` records as "known, zero". If you'd rather book your **own** commission policy (a flat percent you've agreed to absorb, different rates for foreign cards) — the column is yours to write, and `PaymentSucceeded` fires after the driver has already filled whatever the bank reported:
+
+```php
+// Fill only where the gateway stayed silent — or overwrite unconditionally, your call
+Event::listen(function (PaymentSucceeded $event) {
+    $payment = $event->payment;
+
+    if ($payment->fee === null) {
+        $percent = match ($payment->gateway) {
+            'stripe' => 2.9,
+            default => 1.3,
+        };
+
+        $payment->update(['fee' => (int) round($payment->amount * $percent / 100)]);
+    }
+});
+```
+
 ### Refunds
 
 `Billing::refund()` is the entry point — it makes the gateway call *and* records what happened: a child `Payment` row (`type=refund`, linked via `parent_payment_id`) plus a `PaymentRefunded` event carrying that row. Full refund by default, partial via `Money`; cumulative refunds can never exceed the original charge:
@@ -954,6 +990,7 @@ $payment->isPending();
 $payment->isFailed();
 $payment->isRefund();               // this row is a refund (type=refund), not a charge
 $payment->refundedAmount();         // total refunded against this charge, minor units
+$payment->netAmount();              // amount minus the gateway's fee — null while fee is unknown
 $payment->hasActivePaymentUrl();    // checkout link still usable — no need to charge() again
 
 Payment::paid()->get();
@@ -1016,6 +1053,34 @@ If a `Price`'s currency isn't accepted by the chosen gateway, `BillingManager::r
 ```php
 $this->app->bind(\Fomvasss\Billing\Contracts\CurrencyConverterContract::class, MyCurrencyConverter::class);
 ```
+
+### Price the site in USD, charge in UAH
+
+A common Ukrainian setup: prices are shown in USD, but the charge must go through in UAH (fiscalization requires the settlement currency). The rule the whole package is built around: **a `Payment` lives in one currency — the one the money actually moves in**. Convert *before* creating the row and record the conversion facts next to it; the USD price on the site is presentation, not billing:
+
+```php
+use Fomvasss\Billing\Contracts\CurrencyConverterContract;
+use Fomvasss\Billing\Support\Money;
+
+$usd = new Money($order->total, 'USD'); // what the customer saw
+$uah = app(CurrencyConverterContract::class)->convert($usd, 'UAH');
+
+$payment = Payment::create([
+    'status' => PaymentStatus::Pending,
+    'type' => PaymentType::Charge,
+    'gateway' => 'monobank',
+    'amount' => $uah->amount, // the charge happens in UAH
+    'currency' => 'UAH',
+    'converted_from_currency' => 'USD',
+    'exchange_rate' => $uah->amount / $usd->amount,
+    'exchange_rate_at' => now(),
+    // ...payable/billable...
+]);
+
+Billing::charge($payment);
+```
+
+Everything downstream stays consistent for free: the webhook's amount check verifies the UAH sum, the gateway's fee arrives in UAH next to it (see "Gateway fee and net amount"), and the original USD price plus the exact rate used are on the row for any later report. For subscriptions this whole dance is automatic — `resolveChargeAmount()` above does the same thing and stamps the same three columns.
 
 ## Testing
 

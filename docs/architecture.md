@@ -77,7 +77,7 @@ The fastest debugging question is "who could have changed this column":
 
 | Column(s) | Written by |
 |---|---|
-| `payments.status`, `paid_at` (auto), `external_id` | drivers only — `handleWebhook()` / `checkStatus()` (plus your own code for manual payments) |
+| `payments.status`, `paid_at` (auto), `external_id`, `fee` | drivers only — `handleWebhook()` / `checkStatus()` (plus your own code for manual payments, or a `fee` policy listener) |
 | `payments.payment_url`, `payment_url_expires_at` | `BillingManager::charge()`/`chargeWithMethod()` |
 | `payments` refund rows (`type=refund`, `parent_payment_id`) | `BillingManager::refund()` only — drivers just make the API call |
 | `subscriptions.status`, `current_period_ends_at`, `recurring_attempts`, `grace_ends_at`, `next_retry_at`, `gateway` (stamp on first payment), `current_usage` reset | `HandleSubscriptionPaymentOutcome` |

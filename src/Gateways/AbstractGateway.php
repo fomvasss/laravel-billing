@@ -110,6 +110,20 @@ abstract class AbstractGateway implements PaymentGatewayContract
     }
 
     /**
+     * `['fee' => <minor units>]` when the gateway reported its commission in a callback/status
+     * response, `[]` otherwise — merged into the driver's Payment update so an unreported fee
+     * stays null (unknown), never a guessed 0. $decimal for gateways whose amounts are decimal
+     * strings (LiqPay, WayForPay); is_numeric (not isset) because Hutko sends "" when unset.
+     * A real 0 still records as "known, zero commission".
+     */
+    protected function feeFrom(mixed $value, bool $decimal = false): array
+    {
+        return is_numeric($value)
+            ? ['fee' => $decimal ? (int) round((float) $value * 100) : (int) $value]
+            : [];
+    }
+
+    /**
      * A signed "paid" callback whose sum/currency doesn't match this Payment row is NOT proof this
      * row was paid — the classic case is a stale checkout link paid after the amount was edited
      * and charge() re-issued. The driver refuses to mark paid on a mismatch; the row stays pending

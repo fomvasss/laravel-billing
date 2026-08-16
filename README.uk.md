@@ -239,6 +239,42 @@ Payment::create([
 
 `paid_at` виставляється автоматично в момент, коли `status` стає `paid`.
 
+### Номери платежів
+
+UUID неможливо продиктувати телефоном — `payments.number` це людський референс для чеків, листів і підтримки ("платіж PAY-2026-000123"), з унікальним індексом і `Payment::findByNumber()`. Пакет його ніколи не генерує, бо схеми нумерації в кожного свої (глобальний лічильник, суфікс до номера замовлення, річне скидання, per-tenant) — признач свою один раз, у хуку:
+
+```php
+// AppServiceProvider::boot()
+Payment::creating(function (Payment $payment) {
+    $payment->number ??= 'PAY-' . now()->format('Y') . '-' . str_pad((string) PaymentSequence::next(), 6, '0', STR_PAD_LEFT);
+});
+```
+
+### Комісія шлюзу і чиста сума
+
+`amount` — це завжди **скільки заплатив клієнт**: на цьому тримаються кап повернень, звірка суми на вебхуці й реконсиляція, тому його ніщо ніколи не переписує. Те, що реально отримує мерчант, живе поруч:
+
+- `payments.fee` — комісія гейтвея, мінорні одиниці, та сама валюта що й `amount`. Драйвери парсять її з callback'а оплати там, де гейтвей її повідомляє: Monobank (`paymentInfo.fee`), LiqPay (`receiver_commission`), WayForPay (`fee`), Hutko (`fee`). Stripe комісію у вебхук не кладе (вона на balance transaction, окремому API-об'єкті) — там `fee` лишається `null`.
+- `$payment->netAmount()` — `amount - fee`, або `null`, поки комісія невідома. Похідна, не зберігається.
+
+`null` чесно означає "невідомо": пакет ніколи не вгадує комісію, а повідомлений `0` записується як "відомо, нуль". Якщо ж хочеш обліковувати **власну** закладену комісію (фіксований відсоток, різні ставки для іноземних карток) — колонка твоя для запису, а `PaymentSucceeded` спрацьовує вже після того, як драйвер записав те, що прислав банк:
+
+```php
+// Заповнюй лише там, де гейтвей промовчав — або перезаписуй завжди, на твій розсуд
+Event::listen(function (PaymentSucceeded $event) {
+    $payment = $event->payment;
+
+    if ($payment->fee === null) {
+        $percent = match ($payment->gateway) {
+            'stripe' => 2.9,
+            default => 1.3,
+        };
+
+        $payment->update(['fee' => (int) round($payment->amount * $percent / 100)]);
+    }
+});
+```
+
 ### Повернення коштів
 
 `Billing::refund()` — єдина точка входу: робить виклик до гейтвея *і* фіксує результат — дочірній рядок `Payment` (`type=refund`, зв'язок через `parent_payment_id`) плюс подія `PaymentRefunded` з цим рядком. За замовчуванням — повне повернення, часткове — через `Money`; сумарні повернення ніколи не перевищать оригінальне списання:
@@ -950,6 +986,7 @@ $payment->isPending();
 $payment->isFailed();
 $payment->isRefund();               // цей рядок — рефанд (type=refund), не списання
 $payment->refundedAmount();         // сумарно повернуто за цим списанням, мінорні одиниці
+$payment->netAmount();              // amount мінус комісія гейтвея — null, поки комісія невідома
 $payment->hasActivePaymentUrl();    // посилання на оплату ще живе — не треба знову charge()
 
 Payment::paid()->get();
@@ -1012,6 +1049,34 @@ Override живить усе, що звіряється зі списком: `su
 ```php
 $this->app->bind(\Fomvasss\Billing\Contracts\CurrencyConverterContract::class, MyCurrencyConverter::class);
 ```
+
+### Ціни на сайті в USD, списання в UAH
+
+Типовий український сетап: ціни показуються в USD, але списання має пройти в UAH (фіскалізація вимагає валюту розрахунку). Правило, навколо якого збудований весь пакет: **`Payment` живе в одній валюті — тій, у якій реально рухаються гроші**. Конвертуй *до* створення рядка й зафіксуй факти конвертації поруч; ціна в USD на сайті — це презентація, не білінг:
+
+```php
+use Fomvasss\Billing\Contracts\CurrencyConverterContract;
+use Fomvasss\Billing\Support\Money;
+
+$usd = new Money($order->total, 'USD'); // що бачив клієнт
+$uah = app(CurrencyConverterContract::class)->convert($usd, 'UAH');
+
+$payment = Payment::create([
+    'status' => PaymentStatus::Pending,
+    'type' => PaymentType::Charge,
+    'gateway' => 'monobank',
+    'amount' => $uah->amount, // списання відбувається в UAH
+    'currency' => 'UAH',
+    'converted_from_currency' => 'USD',
+    'exchange_rate' => $uah->amount / $usd->amount,
+    'exchange_rate_at' => now(),
+    // ...payable/billable...
+]);
+
+Billing::charge($payment);
+```
+
+Усе далі узгоджене само собою: перевірка суми на вебхуці звіряє саме гривневу суму, комісія гейтвея приходить у UAH поруч (див. "Комісія шлюзу і чиста сума"), а оригінальна ціна в USD і точний використаний курс лишаються на рядку для будь-якого пізнішого звіту. Для підписок увесь цей танець автоматичний — `resolveChargeAmount()` вище робить те саме і проставляє ті самі три колонки.
 
 ## Тестування
 

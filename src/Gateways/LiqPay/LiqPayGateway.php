@@ -127,7 +127,13 @@ class LiqPayGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $decoded);
         }
 
-        $payment->update(['status' => $status, 'external_id' => $decoded['payment_id'] ?? $decoded['transaction_id'] ?? null]);
+        // receiver_commission — what LiqPay withholds from the MERCHANT, decimal in the payment's
+        // currency (sender_/agent_commission are someone else's cost, not ours).
+        $payment->update([
+            'status' => $status,
+            'external_id' => $decoded['payment_id'] ?? $decoded['transaction_id'] ?? null,
+            ...$this->feeFrom($decoded['receiver_commission'] ?? null, decimal: true),
+        ]);
 
         return new WebhookResult(
             type: WebhookEventType::Payment,
@@ -226,7 +232,11 @@ class LiqPayGateway extends AbstractGateway implements RefundsPayments, ChecksPa
         }
 
         $externalId = (string) ($data['payment_id'] ?? $data['order_id']);
-        $payment->update(['status' => $status, 'external_id' => $externalId]);
+        $payment->update([
+            'status' => $status,
+            'external_id' => $externalId,
+            ...$this->feeFrom($data['receiver_commission'] ?? null, decimal: true),
+        ]);
 
         return new WebhookResult(
             type: WebhookEventType::Payment,

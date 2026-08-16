@@ -14,8 +14,17 @@ return new class extends Migration
             $table->uuid('id')->primary(); // UUID v7 (Model::HasUuids) — time-ordered, not v4: no insert-fragmentation downside. See "Доменні таблиці" in the package plan.
             $table->string('status', 20)->default('pending');
             $table->string('type', 20)->default('charge');
+            // Human-facing payment reference ("PAY-2026-000123") for receipts/emails/support —
+            // something a UUID can't be. The package never generates it: numbering schemes are
+            // project-specific — assign it in your own Payment::creating() hook (see README).
+            $table->string('number', 64)->nullable()->unique();
             $table->string('gateway', 50)->nullable();
             $table->unsignedBigInteger('amount');
+            // The gateway's commission for this payment — minor units, same currency as `amount`.
+            // Drivers fill it from the payment callback where the gateway reports it; null means
+            // "unknown", never a guessed 0. Consumers may write it too (own commission policy —
+            // see "Gateway fee and net amount" in README).
+            $table->unsignedBigInteger('fee')->nullable();
             $table->string('currency', 3);
             $table->string('converted_from_currency', 3)->nullable();
             $table->decimal('exchange_rate', 18, 8)->nullable();

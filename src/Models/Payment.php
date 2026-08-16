@@ -29,6 +29,7 @@ class Payment extends Model
             'status' => PaymentStatus::class,
             'type' => PaymentType::class,
             'amount' => 'integer',
+            'fee' => 'integer',
             'exchange_rate' => 'float',
             'exchange_rate_at' => 'datetime',
             'payment_url_expires_at' => 'datetime',
@@ -101,6 +102,27 @@ class Payment extends Model
     public function refundedAmount(): int
     {
         return (int) $this->refunds()->where('status', PaymentStatus::Paid)->sum('amount');
+    }
+
+    /**
+     * Lookup by the human-facing payment number ("PAY-2026-000123") — the package stores the
+     * column but never generates it; your app assigns numbers in a Payment::creating() hook
+     * (numbering schemes are project-specific). See "Payment numbers" in the README.
+     */
+    public static function findByNumber(string $number): ?self
+    {
+        return static::query()->where('number', $number)->first();
+    }
+
+    /**
+     * What the merchant actually receives: amount minus the gateway's fee, minor units. Null while
+     * the fee is unknown (the gateway didn't report it and nothing else assigned one) — never a
+     * guess. Derived, not stored: refundedAmount() reasoning. See "Gateway fee and net amount" in
+     * the README.
+     */
+    public function netAmount(): ?int
+    {
+        return $this->fee === null ? null : $this->amount - $this->fee;
     }
 
     /** The checkout link is still usable — no need to call charge() again (see BillingManager::charge()). */

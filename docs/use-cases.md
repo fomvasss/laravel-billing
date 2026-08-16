@@ -246,7 +246,53 @@ The supporting package mechanics: `Price.is_active = false` retires a price for 
 
 ---
 
-## 5. The listener layer: "the package signals — your app decides"
+## 5. Multi-currency storefront: price in USD, settle in UAH, track the gateway's cut
+
+**The business:** prices are quoted and shown in USD (stable against inflation, familiar to the market), but the actual charge must go through in UAH — fiscalization only works in the settlement currency. After the payment the owner wants to know the *net* proceeds: what landed after the gateway's commission.
+
+**Split:** the conversion moment, the recorded rate and the fee fact — package columns and drivers. The display currency, the rate source and any *own* commission policy — your app.
+
+### The one rule that makes it simple
+
+A `Payment` lives in **one currency — the one the money actually moves in**. USD on the site is presentation; the moment billing starts, you convert once, create the row in UAH, and record the conversion facts next to it:
+
+```php
+$usd = new Money($order->total_usd, 'USD');
+$uah = app(CurrencyConverterContract::class)->convert($usd, 'UAH'); // your rate source behind the contract
+
+$payment = Payment::create([
+    'status' => PaymentStatus::Pending,
+    'type' => PaymentType::Charge,
+    'gateway' => 'monobank',
+    'amount' => $uah->amount,
+    'currency' => 'UAH',
+    'converted_from_currency' => 'USD',
+    'exchange_rate' => $uah->amount / $usd->amount,
+    'exchange_rate_at' => now(),
+    'payable_type' => Order::class,
+    'payable_id' => $order->id,
+    'billable_type' => User::class,
+    'billable_id' => $order->user_id,
+]);
+
+Billing::charge($payment);
+```
+
+Everything downstream now agrees on one number: the checkout page shows the UAH sum, the webhook's amount verification checks the UAH sum, fiscalization receipts the UAH sum. The USD origin and the exact rate stay on the row — an argument about "what did we actually sell this for" is a query, not an archaeology dig. (For subscriptions, `resolveChargeAmount()` does this conversion and stamps the same columns automatically.)
+
+### The gateway's cut
+
+When the paid callback arrives, the driver also parses the gateway's commission into `payments.fee` where the gateway reports it (Monobank, LiqPay, WayForPay, Hutko — Stripe keeps fees on a separate API object, so it stays `null` there). `null` means "unknown", never a guessed zero; `$payment->netAmount()` gives `amount - fee` once the fee is known.
+
+If the business prefers its *own* booked commission (a flat percent agreed with finance rather than the bank's exact cut), a `PaymentSucceeded` listener overwrites or fills the same column — it runs after the driver, so it can see what the bank reported and decide. The README's "Gateway fee and net amount" section has the listener.
+
+### Reporting back in USD
+
+The report wants USD, the rows are UAH — and both conversions you might want are already on the row: `amount / exchange_rate` re-derives the USD the customer was quoted, while converting `netAmount()` at *today's* rate answers "what is that worth now". Which one is correct depends on the question — which is exactly why the package stores the facts and doesn't pick for you.
+
+---
+
+## 6. The listener layer: "the package signals — your app decides"
 
 Every consequential moment is an event, and the events deliberately carry *context*, not *decisions*. The patterns that keep coming up:
 

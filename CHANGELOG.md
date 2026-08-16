@@ -6,9 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
-## [1.0.0] - 2026-08-16
+All five built-in gateways are live-verified end to end (checkout, webhooks, tokenization, off-session charges, health probes).
 
-First stable release. The public API is frozen under semver — breaking changes mean 2.0. All five built-in gateways are live-verified end to end (checkout, webhooks, tokenization, off-session charges, health probes).
+### Payments extras
+- `Payment::$number` — a human-facing payment reference ("PAY-2026-000123") for receipts/emails/support, with a unique index and `Payment::findByNumber()`. The package never generates it — numbering schemes are project-specific, assign yours in a `Payment::creating()` hook (see README "Payment numbers").
+- `Payment::$fee` + `netAmount()` — the gateway's commission (minor units, payment currency), parsed from the payment callback/status response on Monobank, LiqPay, WayForPay and Hutko; Stripe doesn't report it in webhooks, so it stays `null` there. `null` means "unknown" (never a guessed 0); the column is consumer-writable for your own commission policy via a `PaymentSucceeded` listener (see README "Gateway fee and net amount").
 
 ### Gateways
 - Built-in drivers: **LiqPay**, **WayForPay**, **Monobank Acquiring**, **Stripe**, **Hutko** — registered automatically, credentials from `config('billing.gateways.*')` (env stubs shipped). A `fake` gateway (local/testing only) runs the full pipeline without a bank.

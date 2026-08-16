@@ -39,7 +39,7 @@ class AcmePayGateway implements PaymentGatewayContract
 }
 ```
 
-Extend `AbstractGateway` instead of implementing the interface directly and you get a constructor (`$credentials`, `$gatewayName`), a debug logger, a `requiresDashboardWebhook()` default (`false` — most gateways take the callback URL per charge request), and the `webhookUrl()`/`successUrl()`/`failUrl()`/`linkTtlMinutes()`/`persistPaymentMethod()`/`paidAmountMismatch()` helpers. Both paths are equally supported — the base class just saves boilerplate.
+Extend `AbstractGateway` instead of implementing the interface directly and you get a constructor (`$credentials`, `$gatewayName`), a debug logger, a `requiresDashboardWebhook()` default (`false` — most gateways take the callback URL per charge request), and the `webhookUrl()`/`successUrl()`/`failUrl()`/`linkTtlMinutes()`/`persistPaymentMethod()`/`paidAmountMismatch()`/`feeFrom()` helpers. Both paths are equally supported — the base class just saves boilerplate.
 
 ### `charge()`
 
@@ -115,7 +115,15 @@ public function handleWebhook(BillingWebhookCall $webhookCall): WebhookResult
         return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
     }
 
-    $payment->update(['status' => $status, 'external_id' => $payload['id']]);
+    $payment->update([
+        'status' => $status,
+        'external_id' => $payload['id'],
+        // Optional: if the callback reports the gateway's commission, record it. feeFrom()
+        // returns ['fee' => <minor units>] when the value is numeric, [] otherwise — an
+        // unreported fee stays null ("unknown"), never a guessed 0. Pass decimal: true when
+        // your gateway sends decimal amounts.
+        ...$this->feeFrom($payload['fee'] ?? null),
+    ]);
 
     return new WebhookResult(
         type: WebhookEventType::Payment,
@@ -328,6 +336,7 @@ Add a tamper case (flip a byte in the body, expect rejection) and, if the gatewa
 - [ ] `handleWebhook()` updates the `Payment` and returns a real `externalId`
 - [ ] Non-terminal gateway statuses and unknown references return `Ignored`, not an error
 - [ ] Paid callbacks checked against the payment's amount/currency (`paidAmountMismatch()`)
+- [ ] Gateway commission parsed into `fee` where the callback reports it (`feeFrom()`)
 - [ ] Credentials read from `$this->credentials`, not `config()`
 - [ ] Validator fails closed on a missing secret; `hash_equals()` for comparison; rotating keys cached with one throttled retry
 - [ ] Checked whether the gateway needs a specific acknowledgment body

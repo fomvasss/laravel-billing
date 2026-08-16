@@ -30,6 +30,12 @@ abstract class AbstractGateway implements PaymentGatewayContract
         return Str::headline(class_basename(static::class));
     }
 
+    /** Most gateways take the callback URL per charge request — Stripe-style dashboard-only delivery overrides this. */
+    public static function requiresDashboardWebhook(): bool
+    {
+        return false;
+    }
+
     protected function log(string $method, array $context = []): void
     {
         if (config('billing.debug')) {

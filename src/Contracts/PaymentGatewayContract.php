@@ -39,6 +39,15 @@ interface PaymentGatewayContract
     /** Field schema for the admin credentials form (name/type/secret/help). */
     public static function credentialFields(): array;
 
+    /**
+     * True when the gateway only delivers webhooks to an endpoint configured in its merchant
+     * dashboard (Stripe) — false when the driver passes the callback URL in every charge request
+     * (Monobank/LiqPay/WayForPay/Hutko), so there's nothing to set up manually. Surfaces as
+     * `webhook_requires_dashboard_setup` in Billing::gateways() for a settings UI to show the
+     * "paste this URL into the dashboard" hint only where it's actually needed.
+     */
+    public static function requiresDashboardWebhook(): bool;
+
     /** ISO 4217 currency codes this gateway accepts. */
     public static function supportedCurrencies(): array;
 }

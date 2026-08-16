@@ -35,10 +35,11 @@ class AcmePayGateway implements PaymentGatewayContract
     public static function label(): string;              // human name for a settings UI
     public static function credentialFields(): array;    // field schema, see below
     public static function supportedCurrencies(): array; // ISO codes this gateway accepts
+    public static function requiresDashboardWebhook(): bool; // true only if webhooks must be registered in the gateway's dashboard (Stripe-style)
 }
 ```
 
-Extend `AbstractGateway` instead of implementing the interface directly and you get a constructor (`$credentials`, `$gatewayName`), a debug logger, and the `webhookUrl()`/`successUrl()`/`failUrl()`/`persistPaymentMethod()` helpers. Both paths are equally supported — the base class just saves boilerplate.
+Extend `AbstractGateway` instead of implementing the interface directly and you get a constructor (`$credentials`, `$gatewayName`), a debug logger, a `requiresDashboardWebhook()` default (`false` — most gateways take the callback URL per charge request), and the `webhookUrl()`/`successUrl()`/`failUrl()`/`persistPaymentMethod()` helpers. Both paths are equally supported — the base class just saves boilerplate.
 
 ### `charge()`
 

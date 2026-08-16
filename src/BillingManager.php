@@ -91,7 +91,7 @@ class BillingManager
         ]);
     }
 
-    /** @return array<string, array{key: string, label: string, currencies: array, credential_fields: array, webhook_url: string, capabilities: array}> */
+    /** @return array<string, array{key: string, label: string, currencies: array, credential_fields: array, webhook_url: string, webhook_requires_dashboard_setup: bool, capabilities: array}> */
     public function gateways(): array
     {
         return collect($this->drivers)->mapWithKeys(fn (string $class, string $name) => [$name => [
@@ -100,6 +100,9 @@ class BillingManager
             'currencies' => $class::supportedCurrencies(),
             'credential_fields' => $class::credentialFields(),
             'webhook_url' => route('billing.webhook', ['gateway' => $name]),
+            // true = paste webhook_url into the gateway's dashboard; false = the driver already
+            // sends it in every charge request, nothing to configure manually
+            'webhook_requires_dashboard_setup' => $class::requiresDashboardWebhook(),
             'capabilities' => [
                 'refunds' => is_subclass_of($class, RefundsPayments::class),
                 'subscriptions' => is_subclass_of($class, SubscriptionGatewayContract::class),

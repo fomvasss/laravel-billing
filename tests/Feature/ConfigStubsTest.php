@@ -27,6 +27,19 @@ class ConfigStubsTest extends TestCase
         }
     }
 
+    public function test_gateways_listing_says_which_gateways_need_dashboard_webhook_setup(): void
+    {
+        $gateways = Billing::gateways();
+
+        // Stripe is the only built-in that delivers webhooks solely to a Dashboard-registered
+        // endpoint; the rest pass the callback URL in every charge request.
+        $this->assertTrue($gateways['stripe']['webhook_requires_dashboard_setup']);
+
+        foreach (['monobank', 'liqpay', 'wayforpay', 'hutko', 'fake'] as $gateway) {
+            $this->assertFalse($gateways[$gateway]['webhook_requires_dashboard_setup'], $gateway);
+        }
+    }
+
     public function test_config_stubs_match_each_drivers_credential_fields(): void
     {
         $config = (require __DIR__ . '/../../config/billing.php')['gateways'];

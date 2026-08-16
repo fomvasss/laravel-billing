@@ -101,11 +101,11 @@ MonobankGateway::credentialFields();
 ```php
 use Fomvasss\Billing\Facades\Billing;
 
-Billing::gateways(); // ['monobank' => ['label' => 'Monobank Acquiring', 'currencies' => [...], 'credential_fields' => [...], 'webhook_url' => '...', 'capabilities' => [...]], ...]
+Billing::gateways(); // ['monobank' => ['label' => 'Monobank Acquiring', 'currencies' => [...], 'credential_fields' => [...], 'webhook_url' => '...', 'webhook_requires_dashboard_setup' => false, 'capabilities' => [...]], ...]
 Billing::gateway('monobank'); // лише запис цього гейтвея, або null, якщо не зареєстрований
 ```
 
-`webhook_url` у цьому масиві — точний callback URL для кабінету відповідного гейтвея.
+`webhook_url` — точний callback URL цього гейтвея, а `webhook_requires_dashboard_setup` каже UI налаштувань, чи показувати його з підказкою "вкажіть у кабінеті гейтвея" — більшості гейтвеїв ручне налаштування не потрібне взагалі (див. "Налаштування вебхуків" нижче).
 
 Динамічні креди per-tenant (замість статичного масиву в конфізі) — забіндити власний резолвер:
 
@@ -340,6 +340,22 @@ Event::listen(PaymentSucceeded::class, function (PaymentSucceeded $event) {
     $event->payment->payable; // ваш Order, Subscription тощо
 });
 ```
+
+### Налаштування вебхуків у кабінетах гейтвеїв
+
+Callback URL кожного гейтвея — `https://твій-домен/billing/webhooks/{gateway}`, готове значення лежить у `Billing::gateways()[$name]['webhook_url']`. Фішка в тому, що **для більшості гейтвеїв налаштовувати нічого** — драйвер передає URL у кожному запиті на оплату. Та сама відповідь у рантаймі, по кожному гейтвею — поле `webhook_requires_dashboard_setup` у `Billing::gateways()`:
+
+| Гейтвей | Як отримує URL | Налаштування в кабінеті |
+|---|---|---|
+| Monobank | `webHookUrl` у кожному invoice-запиті | не потрібне |
+| LiqPay | `server_url` у кожному платежі | не потрібне |
+| WayForPay | `serviceUrl` у кожному Purchase/Charge | не потрібне |
+| Hutko | `server_callback_url` у кожному запиті | не потрібне |
+| **Stripe** | Лише ендпоінти, зареєстровані в Dashboard | **обов'язкове** |
+
+Stripe: Dashboard → Developers → Webhooks → Add endpoint з `https://твій-домен/billing/webhooks/stripe`, підписка на події `checkout.session.completed`, `checkout.session.expired`, `payment_intent.succeeded`, `payment_intent.payment_failed`, і скопіюй **Signing secret** (`whsec_...`) у `STRIPE_WEBHOOK_SECRET` — без нього валідатор відхиляє все (fail-closed).
+
+Стосується всіх: `APP_URL` має бути реальним публічним URL (`route()` будує callback з нього), шлях має бути доступний по HTTPS без basic auth/IP-блоків (CSRF уже не заважає — роут поза групою `web`), а до локальної машини банк не достукається — тунель (ngrok/expose) або просто `fake`-гейтвей, який ганяє той самий пайплайн. Кожен прийнятий вебхук лишає рядок у `billing_webhook_calls`; 403 у логах = проблема з підписом/секретом.
 
 ### Що гарантує пайплайн
 

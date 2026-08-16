@@ -105,11 +105,11 @@ MonobankGateway::credentialFields();
 ```php
 use Fomvasss\Billing\Facades\Billing;
 
-Billing::gateways(); // ['monobank' => ['label' => 'Monobank Acquiring', 'currencies' => [...], 'credential_fields' => [...], 'webhook_url' => '...', 'capabilities' => [...]], ...]
+Billing::gateways(); // ['monobank' => ['label' => 'Monobank Acquiring', 'currencies' => [...], 'credential_fields' => [...], 'webhook_url' => '...', 'webhook_requires_dashboard_setup' => false, 'capabilities' => [...]], ...]
 Billing::gateway('monobank'); // just that one gateway's entry, or null if not registered
 ```
 
-`webhook_url` in that array is the exact callback URL to paste into each gateway's own dashboard.
+`webhook_url` is that gateway's exact callback URL, and `webhook_requires_dashboard_setup` tells a settings UI whether to show it with a "paste this into the gateway's dashboard" hint — most gateways don't need any manual setup at all (see "Setting up webhooks" below).
 
 Dynamic per-tenant credentials (instead of one static config array) — bind your own resolver:
 
@@ -344,6 +344,22 @@ Event::listen(PaymentSucceeded::class, function (PaymentSucceeded $event) {
     $event->payment->payable; // your Order, Subscription, etc.
 });
 ```
+
+### Setting up webhooks in the gateway dashboards
+
+Every gateway's callback URL is `https://your-domain/billing/webhooks/{gateway}` — ready-made in `Billing::gateways()[$name]['webhook_url']`. The catch: **for most gateways there's nothing to configure** — the driver passes the URL in every charge request. `webhook_requires_dashboard_setup` in `Billing::gateways()` carries the same answer at runtime, per gateway:
+
+| Gateway | How it gets the URL | Dashboard setup |
+|---|---|---|
+| Monobank | `webHookUrl` in every invoice request | none |
+| LiqPay | `server_url` in every payment | none |
+| WayForPay | `serviceUrl` in every Purchase/Charge | none |
+| Hutko | `server_callback_url` in every request | none |
+| **Stripe** | Dashboard-registered endpoints only | **required** |
+
+Stripe: Dashboard → Developers → Webhooks → Add endpoint with `https://your-domain/billing/webhooks/stripe`, subscribe to `checkout.session.completed`, `checkout.session.expired`, `payment_intent.succeeded`, `payment_intent.payment_failed`, then copy the **Signing secret** (`whsec_...`) into `STRIPE_WEBHOOK_SECRET` — without it the validator rejects everything (fail-closed).
+
+Applies to all of them: `APP_URL` must be your real public URL (`route()` builds the callback from it), the path must be reachable over HTTPS without basic auth/IP blocks (CSRF is already not an issue — the route lives outside the `web` group), and on a local machine a bank can't reach you at all — use a tunnel (ngrok/expose) or just the `fake` gateway, which runs the same pipeline. Every accepted webhook leaves a row in `billing_webhook_calls`; a 403 in the logs means a signature/secret problem.
 
 ### What the pipeline guarantees
 

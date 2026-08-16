@@ -115,6 +115,11 @@ class RecordingGateway implements PaymentGatewayContract
         return new WebhookResult(type: \Fomvasss\Billing\Enums\WebhookEventType::Ignored, status: 'ignored');
     }
 
+    public static function requiresDashboardWebhook(): bool
+    {
+        return false;
+    }
+
     public static function label(): string
     {
         return 'Recording';

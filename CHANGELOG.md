@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+- `Billing::gateways()` entries carry `webhook_requires_dashboard_setup` (new required static `requiresDashboardWebhook()` on the gateway contract, default `false` via `AbstractGateway`) — lets a settings UI show the "paste this webhook URL into the gateway's dashboard" hint only where it's actually needed (Stripe, of the built-ins). README got a per-gateway webhook setup table.
+
 ## [0.3.0] - 2026-08-16
 
 ### Changed

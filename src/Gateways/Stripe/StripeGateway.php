@@ -308,6 +308,12 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
         return 'Stripe';
     }
 
+    /** Stripe only delivers events to endpoints registered in the Dashboard (Developers → Webhooks) — no per-request callback URL. */
+    public static function requiresDashboardWebhook(): bool
+    {
+        return true;
+    }
+
     public static function credentialFields(): array
     {
         return [

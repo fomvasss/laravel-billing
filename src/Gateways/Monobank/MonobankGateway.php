@@ -95,7 +95,7 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
         // Same schema as GET /invoice/status — "reference" is exactly what we set to $payment->id on charge().
         // A webhook for a payment this package didn't create (another integration on the same
         // merchant account, a row created before install) is Ignored, not a failed job.
-        $payment = isset($payload['reference']) ? Payment::find($payload['reference']) : null;
+        $payment = $this->findPaymentByReference($payload['reference'] ?? null);
 
         if ($payment === null) {
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
@@ -306,7 +306,7 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
      */
     protected function handleWalletData(array $payload): WebhookResult
     {
-        $payment = isset($payload['reference']) ? Payment::find($payload['reference']) : null;
+        $payment = $this->findPaymentByReference($payload['reference'] ?? null);
 
         if ($payment === null) {
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);

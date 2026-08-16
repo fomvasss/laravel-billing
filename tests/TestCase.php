@@ -6,7 +6,6 @@ namespace Fomvasss\Billing\Tests;
 
 use Fomvasss\Billing\BillingServiceProvider;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Facades\Schema;
 use Orchestra\Testbench\TestCase as OrchestraTestCase;
 
 abstract class TestCase extends OrchestraTestCase
@@ -23,11 +22,24 @@ abstract class TestCase extends OrchestraTestCase
     protected function getEnvironmentSetUp($app): void
     {
         $app['config']->set('database.default', 'testing');
-        $app['config']->set('database.connections.testing', [
-            'driver' => 'sqlite',
-            'database' => ':memory:',
-            'prefix' => '',
-        ]);
+        // sqlite in-memory by default; DB_CONNECTION=pgsql runs the SAME suite against a real
+        // PostgreSQL — the package supports MySQL and Postgres alike, and sqlite masks the
+        // pgsql-only failure modes (uuid cast errors on foreign references, SQLSTATE 23505).
+        $app['config']->set('database.connections.testing', match (env('DB_CONNECTION', 'sqlite')) {
+            'pgsql' => [
+                'driver' => 'pgsql',
+                'host' => env('DB_HOST', 'postgres'),
+                'port' => env('DB_PORT', 5432),
+                'database' => env('DB_DATABASE', 'billing_test'),
+                'username' => env('DB_USERNAME', 'default'),
+                'password' => env('DB_PASSWORD', 'secret'),
+            ],
+            default => [
+                'driver' => 'sqlite',
+                'database' => ':memory:',
+                'prefix' => '',
+            ],
+        });
 
         $app['config']->set('app.key', 'base64:' . base64_encode(random_bytes(32)));
         $app['config']->set('cache.default', 'array');
@@ -43,21 +55,9 @@ abstract class TestCase extends OrchestraTestCase
     protected function defineDatabaseMigrations(): void
     {
         $this->loadMigrationsFrom(__DIR__ . '/../database/migrations');
-        $this->createFixtureTables();
-    }
-
-    private function createFixtureTables(): void
-    {
-        Schema::create('test_users', function ($table) {
-            $table->id();
-            $table->string('name')->nullable();
-            $table->timestamps();
-        });
-
-        Schema::create('test_orders', function ($table) {
-            $table->id();
-            $table->string('title')->nullable();
-            $table->timestamps();
-        });
+        // Fixture tables are real migrations, not inline Schema::create() — on a persistent server
+        // (DB_CONNECTION=pgsql) RefreshDatabase's migrate:fresh must own them too, or they vanish
+        // mid-run; sqlite :memory: recreates everything per test and never notices the difference.
+        $this->loadMigrationsFrom(__DIR__ . '/database/migrations');
     }
 }

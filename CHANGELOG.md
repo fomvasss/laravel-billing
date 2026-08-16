@@ -39,6 +39,7 @@ All five built-in gateways are live-verified end to end (checkout, webhooks, tok
 - `Plan`/`Price`/`Subscription` models: flat/licensed/metered pricing, minute-to-year intervals (short-cycle billing works out of the box), trials, pause/resume, cancel now or at period end, plan swap, usage quotas (`included_units`, `reportUsage()` with idempotency keys, `UsageLimitReached`) orthogonal to pricing type.
 - Auto-renewal: `billing:process-recurring-charges` (every minute, overlap-locked) charges the saved default card when the period ends — month-end-safe date math, an unresolved renewal blocks a double charge, period-end cancellations are finalized before billing. The first payment stamps its gateway onto a gateway-less (trial) subscription; a quota resets on every paid period.
 - Dunning: configurable attempts / retry interval / grace window (`past_due` keeps `isActive()` true until grace ends); a declined card during a trial never cancels it.
+- Provider-managed subscriptions (a driver implementing `SubscriptionGatewayContract`, Stripe-Billing-style): `subscriptions.external_id` marks the gateway as the lifecycle owner (`Subscription::isProviderManaged()`) — the package's schedulers skip such rows, so its charges/cancellations/trial notices never race the provider's. Per subscription, not per gateway: both models coexist on one driver. No built-in driver implements it yet.
 - Trials: `billing:expire-trials` dispatches `TrialWillEnd` at each configured interval (`billing.trial_ending_notices`, e.g. `['7 days', '3 days', '1 day']` or `['15 minutes']`; per-`Price` override, `[]` disables; `$event->notice` says which fired) and moves expired trials to `ended` — it never takes money; converting is a normal payment against the subscription row.
 - `Billable` trait: `payments()`/`subscriptions()`/`paymentMethods()` relations, `defaultPaymentMethod(For)()`, `activeSubscription()`/`hasActiveSubscription()` matching `isActive()` semantics (grace included), `tenantId()` hook for per-tenant credentials (`CredentialResolverContract`).
 
@@ -52,6 +53,8 @@ All five built-in gateways are live-verified end to end (checkout, webhooks, tok
 - Every amount is an integer in minor units; `Money::fromDecimal()`/`toDecimal()` bridge `decimal` columns safely. Two-decimal currencies only, by design.
 
 ### Setup & docs
+- Octane-compatible (Swoole/RoadRunner/FrankenPHP): no per-request state survives in memory between requests — gateway instances and credentials (incl. per-tenant) are resolved per call.
+- Database-agnostic: MySQL/MariaDB, PostgreSQL and SQLite are all supported — webhook callbacks carrying a foreign (non-UUID) reference are safely ignored and duplicate-delivery handling works identically on every driver; the test suite runs against SQLite and PostgreSQL.
 - Migrations are published in groups (`billing-migrations-core` / `-subscriptions` / `-payment-methods`), re-publish-safe; morph id columns are strings (int and UUID billables/payables both fit).
 - The schedule is off by default (`billing.schedule.enabled`); commands are idempotent and safe to re-register at any cadence.
 - Docs: README (uk/en), `docs/use-cases.md` (end-to-end system designs), `docs/writing-a-gateway.md` (driver authoring), `docs/architecture.md` (internals), `docs/webhook-testing.md` (manual testing, tunnels).

@@ -39,7 +39,7 @@ class AcmePayGateway implements PaymentGatewayContract
 }
 ```
 
-Extend `AbstractGateway` instead of implementing the interface directly and you get a constructor (`$credentials`, `$gatewayName`), a debug logger, a `requiresDashboardWebhook()` default (`false` — most gateways take the callback URL per charge request), and the `webhookUrl()`/`successUrl()`/`failUrl()`/`linkTtlMinutes()`/`persistPaymentMethod()`/`paidAmountMismatch()`/`feeFrom()` helpers. Both paths are equally supported — the base class just saves boilerplate.
+Extend `AbstractGateway` instead of implementing the interface directly and you get a constructor (`$credentials`, `$gatewayName`), a debug logger, a `requiresDashboardWebhook()` default (`false` — most gateways take the callback URL per charge request), and the `webhookUrl()`/`successUrl()`/`failUrl()`/`linkTtlMinutes()`/`persistPaymentMethod()`/`paidAmountMismatch()`/`feeFrom()`/`findPaymentByReference()` helpers. Both paths are equally supported — the base class just saves boilerplate.
 
 ### `charge()`
 
@@ -88,7 +88,7 @@ public function handleWebhook(BillingWebhookCall $webhookCall): WebhookResult
 
     // A callback for a payment this package didn't create (another integration on the same
     // merchant account) is Ignored, not a failed job.
-    $payment = isset($payload['reference']) ? Payment::find($payload['reference']) : null;
+    $payment = $this->findPaymentByReference($payload['reference'] ?? null);
 
     if ($payment === null) {
         return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
@@ -141,7 +141,7 @@ Things worth getting right:
 - **`externalId` feeds the dedup key.** Return the gateway's own reference for this event; the pipeline combines it with the event's type+status (`WebhookResult::dedupKey()`) and claims it against a `unique(name, external_id)` index on `billing_webhook_calls`. Net effect: a re-delivered "paid" callback never fires `PaymentSucceeded` twice, but "declined, then the customer retried the same checkout and paid" — the same reference with a *different* outcome — dispatches both events. You don't have to make the reference unique per attempt.
 - **Unknown/intermediate statuses are `Ignored`, not errors.** Gateways send more states than the package's four (`pending`/`paid`/`failed`/`canceled`); anything non-terminal just means "nothing to do yet".
 - **Verify the paid amount** (`paidAmountMismatch()`, shown above) whenever the callback carries one.
-- **Unknown references are `Ignored` too** — `Payment::find()`, never `findOrFail()`: your merchant account may serve other integrations, and their callbacks must not become failed jobs.
+- **Unknown references are `Ignored` too** — `AbstractGateway::findPaymentByReference()`, never `findOrFail()` or a bare `Payment::find()`: your merchant account may serve other integrations, and their callbacks must not become failed jobs. The helper also guards the reference against the uuid PK — on PostgreSQL a bare `find('their-order-123')` throws a cast error instead of returning null.
 
 ### `credentialFields()`
 
@@ -246,6 +246,10 @@ Implement only what your gateway actually does. `BillingManager` checks with `in
 | `TokenizesPaymentMethod` | Saved cards / off-session recurring charges |
 | `SubscriptionGatewayContract` | Native subscriptions on the gateway's own side (Stripe-style) |
 | `HasReceiptItems` | (on your `Payable`, not the driver) fiscal basket line items |
+
+### `SubscriptionGatewayContract`
+
+For gateways that host the subscription lifecycle themselves (Stripe Billing). The one hard rule: **your `createSubscription()` must store the provider's subscription reference in `subscriptions.external_id`** — that column is the ownership marker (`Subscription::isProviderManaged()`), and every package scheduler (recurring charges, cancellation finalizing, trial expiry and notices) skips rows where it's set, on the assumption the provider renews/duns/converts and your `handleWebhook()` maps its callbacks (`renewed`, `payment_failed`, `canceled`, `trial_will_end`) to the normal subscription events. Leave `external_id` null and the package will race the provider with its own charges. The split is per subscription, not per driver — the same gateway can serve package-managed subscriptions in parallel.
 
 ### `ChecksPaymentStatus`
 

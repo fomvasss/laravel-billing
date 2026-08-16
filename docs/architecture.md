@@ -84,6 +84,7 @@ The fastest debugging question is "who could have changed this column":
 | `subscriptions.status` → canceled at `cancels_at`; renewal `Payment` rows | `billing:process-recurring-charges` |
 | `subscriptions.status` → ended, `trial_notices_sent` | `billing:expire-trials` |
 | `payment_methods` rows, `is_default` demotion | `AbstractGateway::persistPaymentMethod()` (called from drivers' attach paths) |
+| `subscriptions.external_id` (ownership marker) | `SubscriptionGatewayContract` drivers only — non-null means "provider-managed", and every scheduled command skips the row |
 | `billing_webhook_calls.external_id` (dedup claims) | `ProcessWebhookJob` (UPDATE) and `dispatchOnce()` (synthetic INSERT) |
 
 ## Scheduled commands, internally

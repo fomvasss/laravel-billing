@@ -38,7 +38,7 @@ class FakeGateway extends AbstractGateway implements \Fomvasss\Billing\Contracts
     {
         $payload = $webhookCall->payload;
 
-        $payment = isset($payload['payment_id']) ? Payment::find($payload['payment_id']) : null;
+        $payment = $this->findPaymentByReference($payload['payment_id'] ?? null);
 
         if ($payment === null) {
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);

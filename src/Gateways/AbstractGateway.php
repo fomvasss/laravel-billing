@@ -110,6 +110,19 @@ abstract class AbstractGateway implements PaymentGatewayContract
     }
 
     /**
+     * Payment::find() for a gateway-supplied reference. The reference is untrusted (another
+     * integration on the same merchant account can post its own order ids) — MySQL just finds
+     * nothing for a non-UUID string, but Postgres throws casting it to the uuid PK column, so the
+     * UUID check is what keeps "unknown references are Ignored, not failed jobs" true on both.
+     */
+    protected function findPaymentByReference(mixed $reference): ?Payment
+    {
+        return is_scalar($reference) && \Illuminate\Support\Str::isUuid((string) $reference)
+            ? Payment::find((string) $reference)
+            : null;
+    }
+
+    /**
      * `['fee' => <minor units>]` when the gateway reported its commission in a callback/status
      * response, `[]` otherwise — merged into the driver's Payment update so an unreported fee
      * stays null (unknown), never a guessed 0. $decimal for gateways whose amounts are decimal

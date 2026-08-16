@@ -27,6 +27,9 @@ class ExpireTrialsCommand extends Command
 
         $count = Subscription::query()
             ->where('status', SubscriptionStatus::Trialing)
+            // Provider-managed trials convert (or lapse) on the gateway's side and report back via
+            // webhooks — ending one locally would fight the provider's own transition.
+            ->whereNull('external_id')
             ->whereNotNull('trial_ends_at')
             ->where('trial_ends_at', '<=', now())
             ->update(['status' => SubscriptionStatus::Ended]);
@@ -51,6 +54,9 @@ class ExpireTrialsCommand extends Command
         Subscription::query()
             ->with('price')
             ->where('status', SubscriptionStatus::Trialing)
+            // The provider sends its own trial-ending webhook (Stripe trial_will_end) which the
+            // driver maps to TrialWillEnd — local notices on top would double every reminder.
+            ->whereNull('external_id')
             ->whereNotNull('trial_ends_at')
             ->where('trial_ends_at', '>', now())
             ->chunkById(200, function ($subscriptions) use ($default) {

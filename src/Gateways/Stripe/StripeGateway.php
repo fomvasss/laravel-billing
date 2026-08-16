@@ -113,7 +113,7 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
         }
 
         // An event for a payment this package didn't create is Ignored, not a failed job.
-        $payment = Payment::find($paymentId);
+        $payment = $this->findPaymentByReference($paymentId);
 
         if ($payment === null) {
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $event);

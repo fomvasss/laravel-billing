@@ -14,6 +14,8 @@ Built-in gateways: **LiqPay**, **WayForPay**, **Monobank Acquiring**, **Stripe**
 
 - PHP ^8.3
 - Laravel ^12 | ^13
+- Database: MySQL/MariaDB, PostgreSQL or SQLite — no raw SQL anywhere, and the test suite runs against both SQLite and PostgreSQL
+- Octane/long-running workers (Swoole, RoadRunner, FrankenPHP): supported — the package keeps no per-request state in memory. The singleton `BillingManager` only holds class-name registries written at boot; every `driver()` call builds a fresh instance and resolves credentials (including per-tenant ones) at call time, and all caching goes through the `Cache` store, never in-process statics. Just follow the documented pattern: register custom gateways in a `ServiceProvider::boot()`, not mid-request
 
 ## Installation
 
@@ -592,6 +594,14 @@ Schedule::command('billing:expire-trials')->daily();
 ```
 
 Keep `withoutOverlapping()` on the money-touching commands, and add `onOneServer()` if the scheduler runs on several servers.
+
+### Who runs the renewal: package-managed vs provider-managed
+
+Everything above describes **package-managed** subscriptions — the package's scheduler charges the saved card, paces the dunning, expires the trials. That's the only mode the built-in drivers produce, because none of the Ukrainian gateways host subscriptions natively.
+
+Some gateways *can* own the whole lifecycle themselves (Stripe Billing is the canonical example): a driver implementing `SubscriptionGatewayContract` creates the subscription on the provider's side, and from then on the provider renews, retries and converts trials, reporting back through webhooks the driver maps to the normal subscription events. Such a subscription carries the provider's reference in `subscriptions.external_id` — and that column is the ownership marker, not just "some id": `Subscription::isProviderManaged()` reads it, and every scheduled command (`process-recurring-charges`, cancellation finalizing, `expire-trials`, trial notices) skips provider-managed rows entirely, so the package never charges, cancels or notifies in a race with the provider.
+
+The split is **per subscription, not per gateway** — deliberately, since a gateway like Stripe supports both models at once: the same merchant can run B2C plans through Stripe Billing (proration and invoices for free) and custom B2B deals package-managed on the very same driver. Rule of thumb: `external_id` on a subscription must only ever be written by a `SubscriptionGatewayContract` driver — set it by hand and you're telling the package "hands off, the provider drives this one".
 
 ### Statuses and history
 

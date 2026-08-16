@@ -13,12 +13,11 @@ return new class extends Migration
         Schema::create('billing_payment_methods', function (Blueprint $table) {
             $table->uuid('id')->primary();
             $table->string('gateway', 50);
-            // Free-text, not an enum — greespi's Radom (crypto) driver has no card brand/last4.
+            // Free-text, not an enum — non-card methods (crypto wallets, ...) have no brand/last4.
             $table->string('type', 30)->default('card');
             $table->string('brand', 30)->nullable();
             $table->string('last4', 4)->nullable();
-            // dateTime, NOT timestamp — MySQL TIMESTAMP caps at 2038-01-19, and card expiries
-            // already exceed it (Stripe's test card is 12/55; live-found on the first real attach).
+            // dateTime, NOT timestamp — MySQL TIMESTAMP caps at 2038, card expiries already exceed it.
             $table->dateTime('expires_at')->nullable();
             $table->boolean('is_default')->default(false);
             $table->timestamps();

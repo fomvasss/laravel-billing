@@ -244,6 +244,34 @@ public function tariffs(Request $request)
 
 The supporting package mechanics: `Price.is_active = false` retires a price for new signups while existing subscriptions keep renewing on it; one plan holds prices per gateway/currency and `resolveChargeAmount()` picks the right one; `Subscription.billable_id` is not unique, so a base plan and several add-ons run as parallel subscriptions with independent lifecycles — cancelling one never touches the others.
 
+### The pricing-page payload
+
+The classic pricing table — name, tagline, feature bullets, a Monthly/Annual toggle, a "Current" badge — maps onto the same rows with nothing extra: presentation copy lives in `Plan.meta` (the package stores it, never reads it), the toggle is just two `Price` rows per plan with different `interval`s, and "current" is a comparison against `activeSubscription()`. The package is deliberately headless — this endpoint is the whole integration:
+
+```php
+public function plans(Request $request)
+{
+    $current = $request->user()->activeSubscription()?->price;
+
+    return Plan::query()
+        ->with(['prices' => fn ($q) => $q->where('is_active', true)->whereNull('gateway')])
+        ->orderBy('meta->sort')
+        ->get()
+        ->map(fn (Plan $plan) => [
+            'code' => $plan->code,
+            'name' => $plan->name,
+            'description' => $plan->meta['description'] ?? null, // "For growing teams"
+            'features' => $plan->meta['features'] ?? [],          // ["10 seats", "Priority support"]
+            'is_current' => $current?->plan_id === $plan->id,
+            'prices' => $plan->prices->map(fn (Price $price) => [
+                'interval' => $price->interval?->value,           // 'month' | 'year' → the toggle
+                'amount' => Money::toDecimal($price->amount),     // "49.00"
+                'currency' => $price->currency,
+            ])->values(),
+        ]);
+}
+```
+
 ---
 
 ## 5. Multi-currency storefront: price in USD, settle in UAH, track the gateway's cut

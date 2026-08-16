@@ -91,7 +91,7 @@ class LiqPayGateway extends AbstractGateway implements RefundsPayments, ChecksPa
         $decoded = json_decode(base64_decode($webhookCall->payload['data']), true, 512, JSON_THROW_ON_ERROR);
 
         // A callback for a payment this package didn't create is Ignored, not a failed job.
-        $payment = isset($decoded['order_id']) ? Payment::find($decoded['order_id']) : null;
+        $payment = $this->findPaymentByReference($decoded['order_id'] ?? null);
 
         if ($payment === null) {
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $decoded);

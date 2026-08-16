@@ -11,19 +11,15 @@ return new class extends Migration
     public function up(): void
     {
         Schema::create('billing_payments', function (Blueprint $table) {
-            $table->uuid('id')->primary(); // UUID v7 (Model::HasUuids) — time-ordered, not v4: no insert-fragmentation downside. See "Доменні таблиці" in the package plan.
+            $table->uuid('id')->primary();
             $table->string('status', 20)->default('pending');
             $table->string('type', 20)->default('charge');
-            // Human-facing payment reference ("PAY-2026-000123") for receipts/emails/support —
-            // something a UUID can't be. The package never generates it: numbering schemes are
-            // project-specific — assign it in your own Payment::creating() hook (see README).
+            // Human-facing reference ("PAY-2026-000123"); consumer-assigned — see "Payment numbers" in README.
             $table->string('number', 64)->nullable()->unique();
             $table->string('gateway', 50)->nullable();
             $table->unsignedBigInteger('amount');
-            // The gateway's commission for this payment — minor units, same currency as `amount`.
-            // Drivers fill it from the payment callback where the gateway reports it; null means
-            // "unknown", never a guessed 0. Consumers may write it too (own commission policy —
-            // see "Gateway fee and net amount" in README).
+            // Gateway's commission, minor units in the payment's currency; null = unknown, never a
+            // guessed 0. See "Gateway fee and net amount" in README.
             $table->unsignedBigInteger('fee')->nullable();
             $table->string('currency', 3);
             $table->string('converted_from_currency', 3)->nullable();
@@ -33,18 +29,15 @@ return new class extends Migration
             $table->string('payment_url', 2048)->nullable();
             $table->timestamp('payment_url_expires_at')->nullable();
             $table->timestamp('paid_at')->nullable();
+            // Gateway's refund-API response (refund rows only) — webhook payloads live in billing_webhook_calls.
             $table->json('raw_response')->nullable();
-            // Opaque, consumer-controlled — the package never reads or writes it. Same idea as
-            // Plan.meta: a place to stash your own "what is this payment for" data (a token-package
-            // quantity, a product code, ...) without a dedicated Payable model when one isn't
-            // otherwise warranted. See "Recipes" in README.
+            // Opaque, consumer-controlled — the package never reads or writes it. See "Recipes" in README.
             $table->json('meta')->nullable();
             $table->timestamps();
             $table->softDeletes();
+            // Snapshot of the billable's tenantId() at creation — scoping/reports; credential resolution reads the billable live.
             $table->string('tenant_id', 100)->nullable();
-            // String morph ids, not morphs()/unsignedBigInteger — payable can be the package's own
-            // Subscription (UUID, written by billing:process-recurring-charges) and a consumer's
-            // Order (int) in the same column; billable likewise.
+            // String morph ids — the package's Subscription (UUID) and a consumer's Order (int) both fit.
             $table->string('payable_type');
             $table->string('payable_id', 64);
             $table->string('billable_type');

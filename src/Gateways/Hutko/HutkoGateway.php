@@ -85,7 +85,7 @@ class HutkoGateway extends AbstractGateway implements TokenizesPaymentMethod, \F
         }
 
         // A callback for a payment this package didn't create is Ignored, not a failed job.
-        $payment = isset($payload['order_id']) ? Payment::find($payload['order_id']) : null;
+        $payment = $this->findPaymentByReference($payload['order_id'] ?? null);
 
         if ($payment === null) {
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);

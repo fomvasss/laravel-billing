@@ -16,17 +16,16 @@ return new class extends Migration
             $table->string('gateway', 50)->nullable();
             $table->unsignedInteger('qty')->default(1);
             $table->decimal('current_usage', 18, 4)->default(0);
+            // Ownership marker, not just a reference: non-null = provider-managed, the package's
+            // schedulers skip the row. See Subscription::isProviderManaged().
             $table->string('external_id')->nullable();
             $table->timestamp('trial_ends_at')->nullable();
-            // Which trial_ending_notices entries already fired for this trial (['3 days', ...]) —
-            // each reminder at most once per subscription.
+            // trial_ending_notices entries already fired — each reminder at most once per subscription.
             $table->json('trial_notices_sent')->nullable();
             $table->timestamp('current_period_ends_at')->nullable();
             $table->timestamp('cancels_at')->nullable();
-            // Dunning — only relevant when gateway=recurring, see the package plan.
+            // Dunning state — see "Recurring charges" in README.
             $table->timestamp('grace_ends_at')->nullable();
-            // Earliest moment of the next dunning retry — spaces attempts retry_interval_hours
-            // apart instead of every scheduler run.
             $table->timestamp('next_retry_at')->nullable();
             $table->unsignedInteger('recurring_attempts')->default(0);
             $table->timestamps();

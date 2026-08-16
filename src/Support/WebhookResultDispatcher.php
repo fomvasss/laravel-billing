@@ -17,7 +17,7 @@ use Fomvasss\Billing\Events\SubscriptionPaymentFailed;
 use Fomvasss\Billing\Events\SubscriptionRenewed;
 use Fomvasss\Billing\Events\TrialWillEnd;
 use Fomvasss\Billing\Webhooks\BillingWebhookCall;
-use Illuminate\Database\QueryException;
+use Illuminate\Database\UniqueConstraintViolationException;
 
 /**
  * Shared by ProcessWebhookJob (webhook path) and ReconcilePendingPaymentsCommand (status-polling
@@ -70,12 +70,8 @@ final class WebhookResultDispatcher
                     'external_id' => $key,
                     'payload' => $result->raw,
                 ]);
-            } catch (QueryException $exception) {
-                if ((int) $exception->getCode() === 23000) {
-                    return;
-                }
-
-                throw $exception;
+            } catch (UniqueConstraintViolationException) {
+                return; // the real webhook already claimed this outcome — see docblock
             }
         }
 

@@ -19,9 +19,7 @@ return new class extends Migration
             $table->string('interval', 20)->nullable();
             $table->unsignedInteger('interval_count')->default(1);
             $table->unsignedInteger('trial_days')->default(0);
-            // Per-price override of config('billing.trial_ending_notices'): null = the global
-            // list, [] = no reminders for this price, ['7 days', '1 day'] = its own cadence
-            // (a yearly plan and an hourly rental can coexist in one project).
+            // Per-price override of config('billing.trial_ending_notices'): null = global list, [] = off.
             $table->json('trial_ending_notices')->nullable();
             $table->string('external_price_id')->nullable();
             $table->string('unit_label')->nullable();

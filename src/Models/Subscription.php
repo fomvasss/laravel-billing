@@ -131,6 +131,19 @@ class Subscription extends Model
     }
 
     /**
+     * The gateway owns this subscription's lifecycle (it was created through
+     * SubscriptionGatewayContract::createSubscription() and carries the provider's own reference
+     * in external_id) — renewals, dunning and trial conversion happen on the provider's side and
+     * reach this row only through webhooks. The package's own schedulers skip such rows entirely;
+     * external_id null = package-managed, the default and the only mode built-in drivers produce.
+     * Per-SUBSCRIPTION, not per-gateway, on purpose: Stripe supports both modes at once.
+     */
+    public function isProviderManaged(): bool
+    {
+        return $this->external_id !== null;
+    }
+
+    /**
      * "Is the customer entitled to the service right now" — the one check most consumer code
      * actually wants. True while trialing, active, or still inside the dunning grace window
      * (a failed renewal shouldn't cut access off mid-retry); false once canceled/ended/paused.

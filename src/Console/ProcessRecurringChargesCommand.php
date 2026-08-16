@@ -37,6 +37,10 @@ class ProcessRecurringChargesCommand extends Command
         Subscription::query()
             ->whereIn('status', [SubscriptionStatus::Active, SubscriptionStatus::PastDue])
             ->whereNotNull('gateway')
+            // Provider-managed subscriptions (Subscription::isProviderManaged()) renew on the
+            // gateway's side — charging here would race the provider's own renewal (a late
+            // `renewed` webhook must not trigger a second debit from us).
+            ->whereNull('external_id')
             ->whereNotNull('current_period_ends_at')
             ->where('current_period_ends_at', '<=', now())
             // Dunning pacing: a failed attempt stamps next_retry_at (retry_interval_hours ahead) —
@@ -71,6 +75,9 @@ class ProcessRecurringChargesCommand extends Command
     {
         Subscription::query()
             ->whereIn('status', [SubscriptionStatus::Active, SubscriptionStatus::PastDue])
+            // A provider-managed subscription's cancellation is finalized by the gateway's own
+            // `canceled` webhook — finalizing it here too would double-dispatch SubscriptionCancelled.
+            ->whereNull('external_id')
             ->whereNotNull('cancels_at')
             ->where('cancels_at', '<=', now())
             ->chunkById(200, function ($subscriptions) {

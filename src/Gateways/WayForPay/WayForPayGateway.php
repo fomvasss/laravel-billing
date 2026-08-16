@@ -109,7 +109,7 @@ class WayForPayGateway extends AbstractGateway implements ChecksPaymentStatus, T
         $payload = $webhookCall->payload;
 
         // A callback for a payment this package didn't create is Ignored, not a failed job.
-        $payment = isset($payload['orderReference']) ? Payment::find($payload['orderReference']) : null;
+        $payment = $this->findPaymentByReference($payload['orderReference'] ?? null);
 
         if ($payment === null) {
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);

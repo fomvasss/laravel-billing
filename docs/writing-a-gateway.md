@@ -243,6 +243,25 @@ Implement only what your gateway actually does. `BillingManager` checks with `in
 
 Cheap to add and genuinely valuable — without it, a payment whose webhook got lost stays `pending` forever. **Update the `Payment` inside `checkStatus()`**, same as `handleWebhook()` does; returning a `WebhookResult` without persisting is a bug we shipped once and had to fix across four drivers at the same time.
 
+### `ChecksGatewayHealth`
+
+One method — a live, **side-effect-free** probe answering "do the configured credentials work and is the API up". It powers `Billing::health()`, the `billing:health` command and the `capabilities.health` flag a settings UI reads to show a "test connection" button. Wrap the probe in `AbstractGateway::probeHealth()` — it times the call and turns any throw into a `down()` result, so a health check itself can never explode:
+
+```php
+public function healthCheck(): GatewayHealth
+{
+    return $this->probeHealth(function () {
+        // Best case: the gateway has an introspection endpoint (Stripe /v1/balance,
+        // Monobank /api/merchant/details) — call it, return an "up" detail message:
+        $data = $this->http()->retry(1)->get('/merchant/info')->throw()->json();
+
+        return $data['merchant_name'] ?? null;
+    });
+}
+```
+
+No introspection endpoint? Probe with the **status of a nonexistent payment** and discriminate by the error: an "order not found"-shaped response proves the request was authenticated and understood (credentials fine → return a message), an "invalid signature"-shaped one proves it wasn't (→ throw with the gateway's reason). Two hard rules: the probe must never create anything on the gateway's side, and the discriminating error codes must be verified against the **live API**, not assumed from docs — the built-in LiqPay/WayForPay/Hutko drivers document their live-verified pairs (`payment_not_found` vs `invalid_signature`, `1127` vs `1113`, `1018` vs `1014`) as worked examples.
+
 ### `TokenizesPaymentMethod`
 
 Three shapes exist in the wild, and which one you get decides how you write it:
@@ -314,4 +333,5 @@ Add a tamper case (flip a byte in the body, expect rejection) and, if the gatewa
 - [ ] Checked whether the gateway needs a specific acknowledgment body
 - [ ] HTTP calls have `timeout()`; charge attempts aren't blindly retried
 - [ ] Only the capability contracts the gateway actually supports
+- [ ] `healthCheck()` (if implemented) is side-effect-free, and its error discriminators are verified against the live API
 - [ ] `Http::fake()` tests for `charge()`, independent signature recomputation for the validator

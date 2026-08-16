@@ -246,7 +246,7 @@ Cheap to add and genuinely valuable — without it, a payment whose webhook got 
 
 Three shapes exist in the wild, and which one you get decides how you write it:
 
-1. **Synchronous frontend token** (Stripe): the frontend SDK hands your backend a token, `attachPaymentMethod()` persists it directly and dispatches `PaymentMethodAttached` itself.
+1. **Synchronous frontend token** (Stripe's SetupIntent path): the frontend SDK hands your backend a token, `attachPaymentMethod()` persists it directly and dispatches `PaymentMethodAttached` itself. (Stripe *also* supports the no-frontend shape — hosted checkout with `setup_future_usage`, the method pulled off the session's intent inside `handleWebhook()` — see `StripeGateway::attachFromCheckoutSession()` for the worked example of a webhook-side attach that needs a follow-up API call.)
 2. **Async, separate webhook delivery** (Monobank): the token arrives in its own webhook, distinct from the payment-status one. Return `WebhookResult(type: PaymentMethod, status: 'attached')` from `handleWebhook()` and let `WebhookResultDispatcher` fire the event.
 3. **Async, same delivery as the payment status** (LiqPay, WayForPay, Hutko): the token rides along in the payment-status callback. That `WebhookResult` is already reporting the `Payment` outcome, so persist the method as a side effect and dispatch `PaymentMethodAttached` **directly** — there's no second return value for the dispatcher to work with. Guard the dispatch with `$method->wasRecentlyCreated`: a direct dispatch runs before the job-level dedup claim, so without the guard a re-delivered callback fires the event again.
 

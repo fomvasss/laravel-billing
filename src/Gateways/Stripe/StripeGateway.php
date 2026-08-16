@@ -46,6 +46,15 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
 
     public function charge(Payment $payment, ChargeOptions $options = new ChargeOptions()): PaymentResult
     {
+        // saveCard without any frontend JS: the hosted Checkout saves the card to our per-billable
+        // customer via setup_future_usage=off_session (the same "tokenize as a side effect of the
+        // first charge" flow the UA gateways have; confirmed by greespi's production Stripe
+        // subscriptions). handleWebhook() then persists the PaymentMethod from the session's
+        // payment intent. Stripe rejects customer+customer_email together — customer wins here.
+        $customerId = $options->saveCard && $payment->billable instanceof Model && $payment->billable instanceof Billable
+            ? $this->resolveCustomerId($payment->billable)
+            : null;
+
         $response = $this->http()->asForm()->post('/checkout/sessions', array_filter([
             // Gateway-specific extras (automatic_tax, custom_fields, ...). Merged first so the
             // driver's own fields below always win — raw adds, never overrides amount/metadata.
@@ -54,10 +63,14 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             'line_items' => $this->lineItems($payment, $options),
             'success_url' => $this->successUrl($payment, $options),
             'cancel_url' => $this->failUrl($payment, $options),
-            'customer_email' => $options->customerEmail,
+            'customer' => $customerId,
+            'customer_email' => $customerId === null ? $options->customerEmail : null,
             'client_reference_id' => (string) $payment->id,
             'metadata' => ['payment_id' => (string) $payment->id],
-            'payment_intent_data' => ['metadata' => ['payment_id' => (string) $payment->id]],
+            'payment_intent_data' => array_filter([
+                'metadata' => ['payment_id' => (string) $payment->id],
+                'setup_future_usage' => $customerId !== null ? 'off_session' : null,
+            ]),
             'locale' => $options->locale,
         ]))->throw();
 
@@ -113,6 +126,16 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             $object['currency'] ?? null,
         )) {
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $event);
+        }
+
+        // The saveCard flow's second half: a paid session carrying a customer means charge() ran
+        // with setup_future_usage — pull the payment method off the session's intent and persist
+        // it (see attachFromCheckoutSession()).
+        if ($status === PaymentStatus::Paid
+            && ($event['type'] ?? null) === 'checkout.session.completed'
+            && ! empty($object['customer'])
+            && ! empty($object['payment_intent'])) {
+            $this->attachFromCheckoutSession($payment, (string) $object['customer'], (string) $object['payment_intent']);
         }
 
         $externalId = $object['payment_intent'] ?? $object['id'] ?? null;
@@ -213,8 +236,8 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             'currency' => strtolower($payment->currency),
             'customer' => $method->external_customer_id,
             'payment_method' => $method->external_id,
-            'off_session' => true,
-            'confirm' => true,
+            'off_session' => 'true', // asForm() turns PHP true into "1", which Stripe's form encoding rejects ("Invalid boolean: 1") — live-found
+            'confirm' => 'true',
             'metadata' => ['payment_id' => (string) $payment->id],
         ]));
 
@@ -324,10 +347,26 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
 
     public static function supportedCurrencies(): array
     {
-        // Stripe supports 135+ currencies — this is a representative subset, not the exhaustive
-        // list; extend as real Price rows in other currencies actually come up (UAH is NOT
-        // supported by Stripe, unlike the other 4 built-in drivers).
-        return ['USD', 'EUR', 'GBP', 'PLN', 'CZK', 'CAD', 'AUD'];
+        // The full presentment list from docs.stripe.com/currencies (fetched 2026-08-16), MINUS
+        // what this package can't represent: zero-decimal currencies (BIF, CLP, DJF, GNF, JPY,
+        // KMF, KRW, MGA, PYG, RWF, UGX, VND, VUV, XAF, XOF, XPF), three-decimal ones (BHD, JOD,
+        // KWD, OMR, TND) and ISK (two-decimal on the wire but fractions are rejected) — Money and
+        // the drivers assume 2-decimal minor units throughout. UAH live-verified with a test-mode
+        // payment. Actual availability still varies by the merchant account's country.
+        return [
+            'AED', 'AFN', 'ALL', 'AMD', 'ANG', 'AOA', 'ARS', 'AUD', 'AWG', 'AZN',
+            'BAM', 'BBD', 'BDT', 'BMD', 'BND', 'BOB', 'BRL', 'BSD', 'BWP', 'BYN', 'BZD',
+            'CAD', 'CDF', 'CHF', 'CNY', 'COP', 'CRC', 'CVE', 'CZK',
+            'DKK', 'DOP', 'DZD', 'EGP', 'ETB', 'EUR', 'FJD', 'FKP',
+            'GBP', 'GEL', 'GIP', 'GMD', 'GTQ', 'GYD', 'HKD', 'HNL', 'HTG', 'HUF',
+            'IDR', 'ILS', 'INR', 'JMD', 'KES', 'KGS', 'KHR', 'KYD', 'KZT',
+            'LAK', 'LBP', 'LKR', 'LRD', 'LSL', 'MAD', 'MDL', 'MKD', 'MMK', 'MNT', 'MOP',
+            'MUR', 'MVR', 'MWK', 'MXN', 'MYR', 'MZN', 'NAD', 'NGN', 'NIO', 'NOK', 'NPR', 'NZD',
+            'PAB', 'PEN', 'PGK', 'PHP', 'PKR', 'PLN', 'QAR', 'RON', 'RSD', 'RUB',
+            'SAR', 'SBD', 'SCR', 'SEK', 'SGD', 'SHP', 'SLE', 'SOS', 'SRD', 'STD', 'SZL',
+            'THB', 'TJS', 'TOP', 'TRY', 'TTD', 'TWD', 'TZS',
+            'UAH', 'USD', 'UYU', 'UZS', 'WST', 'XCD', 'XCG', 'YER', 'ZAR', 'ZMW',
+        ];
     }
 
     protected function http(): PendingRequest
@@ -364,6 +403,48 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
     protected function secretKey(): string
     {
         return $this->credentials['secret_key'] ?? throw new BillingException('Stripe: credential "secret_key" is missing.');
+    }
+
+    /**
+     * The webhook half of the no-frontend saveCard flow: retrieves the session's PaymentIntent
+     * with its payment method expanded, and persists it IF it was actually attached to the
+     * customer (without setup_future_usage the pm has no customer — nothing was saved). Also
+     * promotes it to the customer's default on Stripe's side, same as attachPaymentMethod().
+     * Runs inside the queued webhook job, so the extra API calls are off the request path.
+     */
+    protected function attachFromCheckoutSession(Payment $payment, string $customerId, string $paymentIntentId): void
+    {
+        $pm = $this->http()
+            ->get("/payment_intents/{$paymentIntentId}", ['expand' => ['payment_method']])
+            ->throw()
+            ->json('payment_method');
+
+        if (! is_array($pm) || ($pm['customer'] ?? null) === null) {
+            return;
+        }
+
+        $this->http()->asForm()
+            ->post("/customers/{$customerId}", ['invoice_settings' => ['default_payment_method' => $pm['id']]])
+            ->throw();
+
+        $method = $this->persistPaymentMethod(
+            $payment->billable_type,
+            (string) $payment->billable_id,
+            $payment->billable instanceof Billable ? $payment->billable->tenantId() : null,
+            $customerId,
+            $pm['id'],
+            $pm['card']['last4'] ?? null,
+            $pm['card']['brand'] ?? null,
+            isset($pm['card']['exp_year'], $pm['card']['exp_month'])
+                ? Carbon::createFromDate((int) $pm['card']['exp_year'], (int) $pm['card']['exp_month'], 1)->endOfMonth()
+                : null,
+        );
+
+        // Direct dispatch runs BEFORE ProcessWebhookJob's dedup claim — wasRecentlyCreated keeps a
+        // re-delivered event from firing PaymentMethodAttached again (same as the UA drivers).
+        if ($method->wasRecentlyCreated) {
+            PaymentMethodAttached::dispatch($method);
+        }
     }
 
     /** Reuses the customer id from a previously attached method for this billable+gateway, creates one otherwise. */

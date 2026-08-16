@@ -42,6 +42,26 @@ class CurrencyResolutionTest extends TestCase
         $this->assertNull($resolved->convertedFromCurrency);
     }
 
+    public function test_config_override_extends_or_narrows_a_drivers_currency_list(): void
+    {
+        // Extend: GBP isn't in the fake driver's list, the config override says the merchant
+        // account takes it — step 1 must now accept it as-is.
+        config()->set('billing.gateways.fake.currencies', ['uah', 'gbp']); // lowercase on purpose — normalized
+        $this->assertSame(['UAH', 'GBP'], app(BillingManager::class)->supportedCurrencies('fake'));
+
+        $plan = $this->plan();
+        $price = $plan->prices()->create(['currency' => 'GBP', 'amount' => 3000, 'pricing_type' => 'flat']);
+        $resolved = app(BillingManager::class)->resolveChargeAmount($price, 'fake');
+        $this->assertEquals(new Money(3000, 'GBP'), $resolved->money);
+
+        // Narrow: USD is in the driver's default list but not in the override — must throw now.
+        // (Its GBP sibling above would normally rescue it — an unrelated plan avoids that.)
+        $usd = \Fomvasss\Billing\Models\Plan::create(['code' => 'other', 'name' => 'Other'])
+            ->prices()->create(['currency' => 'USD', 'amount' => 500, 'pricing_type' => 'flat']);
+        $this->expectException(BillingException::class);
+        app(BillingManager::class)->resolveChargeAmount($usd, 'fake');
+    }
+
     public function test_step_three_converts_via_the_bound_currency_converter(): void
     {
         $this->app->bind(CurrencyConverterContract::class, fn () => new class implements CurrencyConverterContract {

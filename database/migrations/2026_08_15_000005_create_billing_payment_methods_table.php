@@ -17,7 +17,9 @@ return new class extends Migration
             $table->string('type', 30)->default('card');
             $table->string('brand', 30)->nullable();
             $table->string('last4', 4)->nullable();
-            $table->timestamp('expires_at')->nullable();
+            // dateTime, NOT timestamp — MySQL TIMESTAMP caps at 2038-01-19, and card expiries
+            // already exceed it (Stripe's test card is 12/55; live-found on the first real attach).
+            $table->dateTime('expires_at')->nullable();
             $table->boolean('is_default')->default(false);
             $table->timestamps();
             $table->string('tenant_id', 100)->nullable();

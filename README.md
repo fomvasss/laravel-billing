@@ -577,7 +577,17 @@ Event::listen([
 
 All 5 built-in gateways implement `TokenizesPaymentMethod` — attach a card once, then `chargeWithMethod()` it any time after (renewals, overage charges, upgrades, ...).
 
-**Stripe** needs an explicit attach step, driven by your frontend:
+**The main path — every gateway, no frontend code:** the card is saved as a side effect of the first real charge, and the `PaymentMethod` just shows up once the customer pays:
+
+```php
+// Monobank/LiqPay/Hutko/Stripe need the flag; only WayForPay saves the card regardless
+Billing::charge($payment, new ChargeOptions(saveCard: true));
+// ... customer pays, the PaymentMethod attaches on its own and PaymentMethodAttached fires — nothing else to call
+```
+
+On Stripe this works through the hosted Checkout (`setup_future_usage`, a per-billable Stripe customer is created/reused automatically) — no Stripe.js involved.
+
+**Stripe extra: saving a card *without* charging** (the one thing the UA gateways can't do) — a SetupIntent driven by your frontend:
 
 ```php
 $customerId = Billing::driver('stripe')->createCustomer($user);
@@ -587,14 +597,6 @@ $customerId = Billing::driver('stripe')->createCustomer($user);
 $method = Billing::driver('stripe')->attachPaymentMethod($user, ['payment_method_id' => $pmId]);
 
 Billing::chargeWithMethod($payment, $method);
-```
-
-**Monobank, LiqPay, WayForPay, Hutko** attach themselves — no separate step, the `PaymentMethod` just shows up once the customer pays:
-
-```php
-// Monobank/LiqPay/Hutko need the flag to save the card; only WayForPay saves it regardless
-Billing::charge($payment, new ChargeOptions(saveCard: true));
-// ... customer pays, the PaymentMethod attaches on its own and PaymentMethodAttached fires — nothing else to call
 ```
 
 Already have a token from somewhere else? `attachPaymentMethod($billable, [...])` takes it directly — the array key differs per gateway: `payment_method_id` (Stripe), `card_token` (Monobank/LiqPay), `rec_token` (WayForPay), `rectoken` (Hutko). `detachPaymentMethod($method)` removes the saved card — only Monobank also revokes it at the bank, the other three just stop using it locally.
@@ -798,7 +800,7 @@ Billing::charge($payment, new ChargeOptions(saveCard: true));
 return redirect($payment->payment_url);
 ```
 
-**Where the saved card comes from.** On Monobank/LiqPay/WayForPay/Hutko there is no "attach a card without charging" — the card is saved as a side effect of that first real charge (`saveCard: true`; only WayForPay saves it even without the flag), and that's what makes every later renewal automatic. Only **Stripe** can collect a card during the trial without charging (a SetupIntent on your frontend + `attachPaymentMethod()`, see "Tokenization") — but even then the conversion charge is yours to make with `chargeWithMethod()`: `billing:expire-trials` deliberately never takes money, it only closes unconverted trials.
+**Where the saved card comes from.** On every gateway the card is saved as a side effect of that first real charge (`saveCard: true`; only WayForPay saves it even without the flag; Stripe does it through its hosted Checkout, no frontend code) — and that's what makes every later renewal automatic. Only **Stripe** can additionally collect a card during the trial *without* charging (a SetupIntent on your frontend + `attachPaymentMethod()`, see "Tokenization") — but even then the conversion charge is yours to make with `chargeWithMethod()`: `billing:expire-trials` deliberately never takes money, it only closes unconverted trials.
 
 A declined card *during* the trial doesn't cancel anything — dunning only applies to real renewals, the trial keeps running until it converts or expires.
 
@@ -942,6 +944,27 @@ if ($subscription->status === SubscriptionStatus::PastDue) { ... } // reading a 
 Each enum also has `label()` for UI (`'Past due'`) and the usual `cases()` for building selects. (`Interval::Minute`/`Hour` exist mostly for testing renewal cycles.)
 
 ## Currency conversion
+
+Which currencies a gateway accepts:
+
+```php
+Billing::supportedCurrencies('stripe'); // ['AED', ..., 'UAH', 'USD', ...]
+Billing::gateways()['stripe']['currencies']; // the same list in the settings-UI payload
+```
+
+The driver's built-in list is an **approximation** — no gateway exposes a "list my currencies" API, and actual availability depends on your merchant account's country and settings. Override it per gateway in config, without touching the driver — narrow it to what your account really has enabled, or extend it when the driver's list lags:
+
+```php
+// config/billing.php
+'gateways' => [
+    'stripe' => [
+        // ...credentials...
+        'currencies' => ['UAH', 'USD', 'EUR'], // replaces the driver's default list entirely
+    ],
+],
+```
+
+The override feeds everything that consults the list: `supportedCurrencies()`, the `gateways()` payload, and `resolveChargeAmount()` below.
 
 If a `Price`'s currency isn't accepted by the chosen gateway, `BillingManager::resolveChargeAmount()` tries, in order: (1) the price's own currency, if accepted; (2) a sibling `Price` of the same `Plan` in an accepted currency — one pinned to this gateway first, a generic one (`gateway = null`) as fallback; (3) a bound `CurrencyConverterContract`; (4) throws `BillingException`. Bind a converter (e.g. an adapter over [`fomvasss/laravel-currency`](https://github.com/fomvasss/laravel-currency), not a hard dependency of this package):
 

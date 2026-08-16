@@ -573,7 +573,17 @@ Event::listen([
 
 Усі 5 вбудованих гейтвеїв реалізують `TokenizesPaymentMethod` — прив'язуєте картку один раз, далі `chargeWithMethod()` будь-коли (продовження підписки, овербюджет, апгрейд, ...).
 
-**Stripe** потребує окремого кроку прив'язки, керованого фронтендом:
+**Основний шлях — будь-який гейтвей, без жодного фронтенд-коду:** картка зберігається побічним ефектом першої реальної оплати, `PaymentMethod` просто з'являється, щойно клієнт оплатив:
+
+```php
+// Monobank/LiqPay/Hutko/Stripe потребують прапорця; лише WayForPay зберігає картку і без нього
+Billing::charge($payment, new ChargeOptions(saveCard: true));
+// ... клієнт платить, PaymentMethod прив'язується сам, диспатчиться PaymentMethodAttached — більше нічого викликати не треба
+```
+
+На Stripe це працює через hosted Checkout (`setup_future_usage`, per-billable Stripe-customer створюється/перевикористовується автоматично) — без Stripe.js.
+
+**Stripe-бонус: збереження картки *без* списання** (єдине, чого не вміють укр. гейтвеї) — SetupIntent, керований фронтендом:
 
 ```php
 $customerId = Billing::driver('stripe')->createCustomer($user);
@@ -583,14 +593,6 @@ $customerId = Billing::driver('stripe')->createCustomer($user);
 $method = Billing::driver('stripe')->attachPaymentMethod($user, ['payment_method_id' => $pmId]);
 
 Billing::chargeWithMethod($payment, $method);
-```
-
-**Monobank, LiqPay, WayForPay, Hutko** прив'язуються самі — без окремого кроку, `PaymentMethod` просто з'являється, щойно клієнт оплатив:
-
-```php
-// Monobank/LiqPay/Hutko потребують прапорця, щоб зберегти картку; лише WayForPay зберігає і без нього
-Billing::charge($payment, new ChargeOptions(saveCard: true));
-// ... клієнт платить, PaymentMethod прив'язується сам, диспатчиться PaymentMethodAttached — більше нічого викликати не треба
 ```
 
 Уже маєте токен звідкись іншим шляхом? `attachPaymentMethod($billable, [...])` бере його напряму — ключ масиву різний для кожного гейтвея: `payment_method_id` (Stripe), `card_token` (Monobank/LiqPay), `rec_token` (WayForPay), `rectoken` (Hutko). `detachPaymentMethod($method)` видаляє збережену картку — лише Monobank реально відкликає її й на боці банку, решта три просто перестають нею користуватись локально.
@@ -794,7 +796,7 @@ Billing::charge($payment, new ChargeOptions(saveCard: true));
 return redirect($payment->payment_url);
 ```
 
-**Звідки береться збережена картка.** На Monobank/LiqPay/WayForPay/Hutko "прив'язати картку без списання" неможливо — картка зберігається як побічний ефект цієї першої реальної оплати (`saveCard: true`; лише WayForPay зберігає і без прапорця), і саме це робить усі наступні продовження автоматичними. Лише **Stripe** вміє зібрати картку під час trial без списання (SetupIntent на фронтенді + `attachPaymentMethod()`, див. "Токенізація") — але й тоді списання при конвертації робиш ти сам через `chargeWithMethod()`: `billing:expire-trials` свідомо ніколи не бере гроші, він лише закриває неконвертовані тріали.
+**Звідки береться збережена картка.** На будь-якому гейтвеї картка зберігається побічним ефектом цієї першої реальної оплати (`saveCard: true`; лише WayForPay зберігає і без прапорця; Stripe робить це через свій hosted Checkout, без фронтенд-коду) — і саме це робить усі наступні продовження автоматичними. Лише **Stripe** додатково вміє зібрати картку під час trial *без* списання (SetupIntent на фронтенді + `attachPaymentMethod()`, див. "Токенізація") — але й тоді списання при конвертації робиш ти сам через `chargeWithMethod()`: `billing:expire-trials` свідомо ніколи не бере гроші, він лише закриває неконвертовані тріали.
 
 Відхилена картка *під час* trial нічого не скасовує — dunning стосується лише реальних продовжень, trial живе далі до конвертації або спливання.
 
@@ -938,6 +940,27 @@ if ($subscription->status === SubscriptionStatus::PastDue) { ... } // читан
 У кожного enum'а є `label()` для UI (`'Past due'`) і звичайний `cases()` для побудови селектів. (`Interval::Minute`/`Hour` існують переважно для тестування циклів продовження.)
 
 ## Конвертація валют
+
+Які валюти приймає гейтвей:
+
+```php
+Billing::supportedCurrencies('stripe'); // ['AED', ..., 'UAH', 'USD', ...]
+Billing::gateways()['stripe']['currencies']; // той самий список у payload для UI налаштувань
+```
+
+Вбудований список драйвера — **наближення**: жоден гейтвей не має API "перелічи мої валюти", а фактична доступність залежить від країни й налаштувань твого мерчант-акаунта. Перевизнач його per-gateway у конфізі, без правки драйвера — звузь до того, що реально ввімкнено на акаунті, або розшир, якщо список драйвера відстав:
+
+```php
+// config/billing.php
+'gateways' => [
+    'stripe' => [
+        // ...креди...
+        'currencies' => ['UAH', 'USD', 'EUR'], // повністю замінює дефолтний список драйвера
+    ],
+],
+```
+
+Override живить усе, що звіряється зі списком: `supportedCurrencies()`, payload `gateways()` і `resolveChargeAmount()` нижче.
 
 Якщо валюта `Price` не приймається обраним гейтвеєм, `BillingManager::resolveChargeAmount()` пробує по черзі: (1) власну валюту ціни, якщо приймається; (2) сіблінг-`Price` того ж `Plan` у прийнятній валюті — спершу прив'язаний до цього гейтвея, потім generic (`gateway = null`); (3) забінджений `CurrencyConverterContract`; (4) кидає `BillingException`. Забіндити конвертер (напр. адаптер над [`fomvasss/laravel-currency`](https://github.com/fomvasss/laravel-currency), не жорстка залежність цього пакета):
 

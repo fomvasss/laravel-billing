@@ -91,13 +91,31 @@ class BillingManager
         ]);
     }
 
+    /**
+     * The currencies a gateway accepts. The driver's static supportedCurrencies() is the default;
+     * config('billing.gateways.{name}.currencies') overrides it — narrow it to what YOUR merchant
+     * account actually has enabled, or extend it when the driver's hardcoded list lags behind the
+     * gateway (no gateway exposes a "list my currencies" API, so the driver's list is always an
+     * approximation).
+     */
+    public function supportedCurrencies(string $gateway): array
+    {
+        $class = $this->drivers[$gateway] ?? throw BillingException::unknownGateway($gateway);
+
+        $override = config("billing.gateways.{$gateway}.currencies");
+
+        return is_array($override) && $override !== []
+            ? array_map(strtoupper(...), $override)
+            : $class::supportedCurrencies();
+    }
+
     /** @return array<string, array{key: string, label: string, currencies: array, credential_fields: array, webhook_url: string, webhook_requires_dashboard_setup: bool, capabilities: array}> */
     public function gateways(): array
     {
         return collect($this->drivers)->mapWithKeys(fn (string $class, string $name) => [$name => [
             'key' => $name,
             'label' => $class::label(),
-            'currencies' => $class::supportedCurrencies(),
+            'currencies' => $this->supportedCurrencies($name),
             'credential_fields' => $class::credentialFields(),
             'webhook_url' => route('billing.webhook', ['gateway' => $name]),
             // true = paste webhook_url into the gateway's dashboard; false = the driver already
@@ -256,8 +274,7 @@ class BillingManager
      */
     public function resolveChargeAmount(Price $price, string $gateway): ResolvedAmount
     {
-        $class = $this->drivers[$gateway] ?? throw BillingException::unknownGateway($gateway);
-        $supported = $class::supportedCurrencies();
+        $supported = $this->supportedCurrencies($gateway);
 
         if (in_array($price->currency, $supported, true)) {
             return new ResolvedAmount(new Money($price->amount, $price->currency));

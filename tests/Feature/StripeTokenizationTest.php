@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace Fomvasss\Billing\Tests\Feature;
 
+use Fomvasss\Billing\DTO\ChargeOptions;
+use Fomvasss\Billing\Webhooks\BillingWebhookCall;
+
 use Fomvasss\Billing\Events\PaymentMethodAttached;
 use Fomvasss\Billing\Events\PaymentMethodDetached;
 use Fomvasss\Billing\Facades\Billing;
@@ -102,8 +105,10 @@ class StripeTokenizationTest extends TestCase
             && $request['currency'] === 'usd'
             && $request['customer'] === 'cus_123'
             && $request['payment_method'] === 'pm_123'
-            && $request['off_session'] === true
-            && $request['confirm'] === true);
+            // string 'true', not PHP true — asForm() would send true as "1", which Stripe's
+            // form encoding rejects with "Invalid boolean: 1" (live-found on a real token charge)
+            && $request['off_session'] === 'true'
+            && $request['confirm'] === 'true');
     }
 
     public function test_a_declined_card_does_not_throw_and_still_returns_the_payment_intent_id(): void
@@ -180,6 +185,84 @@ class StripeTokenizationTest extends TestCase
     }
 
     /** @return array{0: Payment, 1: PaymentMethod} */
+    public function test_save_card_charge_uses_a_customer_and_setup_future_usage(): void
+    {
+        Http::fake([
+            'https://api.stripe.com/v1/customers' => Http::response(['id' => 'cus_new']),
+            'https://api.stripe.com/v1/checkout/sessions' => Http::response(['id' => 'cs_1', 'url' => 'https://checkout.stripe.com/x']),
+        ]);
+
+        [$payment] = $this->paymentAndMethod();
+
+        Billing::charge($payment, new ChargeOptions(saveCard: true, customerEmail: 'a@b.test'));
+
+        Http::assertSent(fn ($request) => str_ends_with($request->url(), '/checkout/sessions')
+            && $request['customer'] === 'cus_123' // reused from the existing saved method
+            && ! isset($request['customer_email']) // Stripe rejects customer+customer_email together
+            && $request['payment_intent_data']['setup_future_usage'] === 'off_session');
+    }
+
+    public function test_a_paid_session_with_a_customer_attaches_the_payment_method_from_its_intent(): void
+    {
+        Event::fake([PaymentMethodAttached::class]);
+        Http::fake([
+            'https://api.stripe.com/v1/payment_intents/pi_77*' => Http::response(['id' => 'pi_77', 'payment_method' => [
+                'id' => 'pm_from_checkout',
+                'customer' => 'cus_123', // attached ⇒ setup_future_usage did its job
+                'card' => ['last4' => '4242', 'brand' => 'visa', 'exp_year' => 2030, 'exp_month' => 5],
+            ]]),
+            'https://api.stripe.com/v1/customers/cus_123' => Http::response(['id' => 'cus_123']),
+        ]);
+
+        [$payment] = $this->paymentAndMethod();
+
+        $webhook = new BillingWebhookCall(['name' => 'stripe', 'payload' => [
+            'type' => 'checkout.session.completed',
+            'data' => ['object' => [
+                'id' => 'cs_1',
+                'payment_status' => 'paid',
+                'payment_intent' => 'pi_77',
+                'customer' => 'cus_123',
+                'amount_total' => 2900,
+                'currency' => 'usd',
+                'metadata' => ['payment_id' => (string) $payment->id],
+            ]],
+        ]]);
+
+        Billing::driver('stripe')->handleWebhook($webhook);
+
+        $method = PaymentMethod::where('external_id', 'pm_from_checkout')->firstOrFail();
+        $this->assertSame('4242', $method->last4);
+        $this->assertTrue($method->is_default);
+        $this->assertSame('paid', $payment->fresh()->status->value);
+        Event::assertDispatchedTimes(PaymentMethodAttached::class, 1);
+    }
+
+    public function test_a_paid_session_without_a_customer_attaches_nothing(): void
+    {
+        Event::fake([PaymentMethodAttached::class]);
+        Http::fake();
+
+        [$payment] = $this->paymentAndMethod();
+
+        Billing::driver('stripe')->handleWebhook(new BillingWebhookCall(['name' => 'stripe', 'payload' => [
+            'type' => 'checkout.session.completed',
+            'data' => ['object' => [
+                'id' => 'cs_1',
+                'payment_status' => 'paid',
+                'payment_intent' => 'pi_88',
+                'customer' => null, // no saveCard — plain checkout
+                'amount_total' => 2900,
+                'currency' => 'usd',
+                'metadata' => ['payment_id' => (string) $payment->id],
+            ]],
+        ]]));
+
+        Http::assertNothingSent();
+        Event::assertNotDispatched(PaymentMethodAttached::class);
+        $this->assertSame('paid', $payment->fresh()->status->value);
+    }
+
     private function paymentAndMethod(): array
     {
         $user = TestUser::create(['name' => 'Buyer']);

@@ -178,6 +178,11 @@ return [
     | driver also declares this same field list at runtime via its static
     | credentialFields(), which is what an admin settings UI should read.
     |
+    | Any gateway block also takes an optional 'currencies' => ['UAH', ...]
+    | override: the driver's built-in list is an approximation (no gateway has
+    | a "list my currencies" API, and availability depends on your merchant
+    | account) — narrow or extend it here without touching the driver.
+    |
     */
 
     'gateways' => [

@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-16
+
+### Added
+- Stripe supports `ChargeOptions::$saveCard` — the card is saved through the hosted Checkout (`setup_future_usage`, a per-billable Stripe customer is created/reused automatically) and the `PaymentMethod` attaches from the webhook, **no frontend code needed** — the same side-effect flow the UA gateways have (pattern proven by greespi's production Stripe subscriptions). The frontend SetupIntent + `attachPaymentMethod()` path remains for saving a card without charging.
+- `Billing::supportedCurrencies($gateway)` + per-gateway config override `billing.gateways.{name}.currencies` — replaces the driver's built-in currency list (always an approximation: no gateway has a "list my currencies" API, availability is account-specific). Feeds `gateways()` and `resolveChargeAmount()` too. See README "Currency conversion".
+
+### Fixed
+- Stripe off-session charges (`chargePaymentMethod()`) no longer 400 with "Invalid boolean: 1" — form-encoded booleans must be the strings `'true'`/`'false'`, not PHP booleans (live-found on the first real token charge).
+- `billing_payment_methods.expires_at` is a `DATETIME`, not `TIMESTAMP` — MySQL's TIMESTAMP caps at 2038 and card expiries already exceed it (Stripe's test card is 12/55; the first real attach crashed on it). Re-publish the migrations.
+- Stripe's `supportedCurrencies()` now carries the full official presentment list (~110 codes, docs.stripe.com/currencies) instead of an 8-currency subset — UAH included (live-verified with a test-mode payment; the earlier "Stripe has no UAH" note was wrong), so `resolveChargeAmount()` no longer detours listed currencies through sibling lookups or conversion. Zero-decimal (JPY, KRW, ...), three-decimal (BHD, ...) currencies and ISK stay excluded — the package is two-decimal-only by design.
+
 ## [0.4.0] - 2026-08-16
 
 ### Fixed

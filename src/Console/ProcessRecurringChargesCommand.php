@@ -119,7 +119,14 @@ class ProcessRecurringChargesCommand extends Command
             ->first();
 
         if ($method === null) {
-            return false; // no saved method to charge — surfaces via the usual grace/dunning cycle on the next attempt, not here
+            // No saved card to charge (never tokenized, or detached since the last renewal) — from
+            // the customer's perspective this is identical to a declined charge, so it gets the
+            // same grace/dunning treatment rather than silently stalling: without this the
+            // subscription would stay `active` on a stale current_period_ends_at and get re-picked
+            // by this command forever, never reaching past_due or ever cancelling.
+            $subscription->recordRenewalFailure();
+
+            return false;
         }
 
         $price = $subscription->price;

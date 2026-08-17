@@ -27,9 +27,11 @@ class Price extends Model
             'interval_count' => 'integer',
             'trial_days' => 'integer',
             'trial_ending_notices' => 'array',
+            'grace_access' => 'boolean',
             'pricing_type' => PricingType::class,
             'included_units' => 'float',
             'is_active' => 'boolean',
+            'meta' => 'array',
         ];
     }
 

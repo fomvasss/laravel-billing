@@ -10,7 +10,6 @@ use Fomvasss\Billing\Enums\SubscriptionStatus;
 use Fomvasss\Billing\Events\PaymentFailed;
 use Fomvasss\Billing\Events\PaymentSucceeded;
 use Fomvasss\Billing\Events\SubscriptionCancelled;
-use Fomvasss\Billing\Events\SubscriptionPaymentFailed;
 use Fomvasss\Billing\Events\SubscriptionRenewed;
 use Fomvasss\Billing\Models\Price;
 use Fomvasss\Billing\Models\Subscription;
@@ -80,27 +79,7 @@ class HandleSubscriptionPaymentOutcome
             return;
         }
 
-        $attempts = $subscription->recurring_attempts + 1;
-        $maxAttempts = (int) config('billing.max_recurring_attempts', 3);
-
-        if ($attempts >= $maxAttempts) {
-            $subscription->update(['status' => SubscriptionStatus::Canceled, 'recurring_attempts' => $attempts, 'cancels_at' => now()]);
-            SubscriptionCancelled::dispatch($subscription);
-
-            return;
-        }
-
-        $subscription->update([
-            'status' => SubscriptionStatus::PastDue,
-            'recurring_attempts' => $attempts,
-            'grace_ends_at' => now()->addDays((int) config('billing.grace_period_days', 3)),
-            // Spaces the retries out — without this, the hourly scheduler would re-pick a past_due
-            // subscription every run and burn through max_recurring_attempts within hours, making
-            // the multi-day grace window meaningless.
-            'next_retry_at' => now()->addHours((int) config('billing.retry_interval_hours', 24)),
-        ]);
-
-        SubscriptionPaymentFailed::dispatch($subscription);
+        $subscription->recordRenewalFailure();
     }
 
     protected function nextPeriodEnd(Subscription $subscription, ?Price $price): ?Carbon

@@ -35,6 +35,22 @@ class PaymentMetaTest extends TestCase
         $this->assertSame(['product' => 'ai_tokens', 'tokens' => 10000], $payment->fresh()->meta);
     }
 
+    public function test_price_meta_round_trips_as_an_array(): void
+    {
+        $plan = \Fomvasss\Billing\Models\Plan::create(['code' => 'box', 'name' => 'Box']);
+
+        $price = $plan->prices()->create([
+            'gateway' => 'fake',
+            'currency' => 'UAH',
+            'amount' => 45000,
+            'pricing_type' => 'flat',
+            'interval' => 'year',
+            'meta' => ['delivery' => ['interval' => 'month', 'every' => 1]],
+        ]);
+
+        $this->assertSame(['delivery' => ['interval' => 'month', 'every' => 1]], $price->fresh()->meta);
+    }
+
     public function test_meta_defaults_to_null(): void
     {
         $user = TestUser::create(['name' => 'Buyer']);

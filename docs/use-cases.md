@@ -320,7 +320,194 @@ The report wants USD, the rows are UAH — and both conversions you might want a
 
 ---
 
-## 6. The listener layer: "the package signals — your app decides"
+## 6. Pay yearly, deliver monthly: billing cadence ≠ fulfillment cadence
+
+**The business:** a subscription box — the customer pays once a year (12 monthly deliveries minus a discount) but receives a parcel every month. Quarterly and monthly payment options exist for the same box.
+
+**Split:** this case is really two independent clocks, and only one of them is billing. The *payment* clock (yearly/quarterly/monthly) is the package's `Price.interval` — charging, renewal at year end from the saved card, dunning all come built-in. The *delivery* clock (always monthly) is fulfillment — your app's scheduler over your own order/shipment tables. Keeping them separate is what makes "same box, three payment options" one plan instead of three products.
+
+### Package side
+
+```php
+$plan = Plan::create([
+    'code' => 'veg-box',
+    'name' => 'Vegetable Box',
+    'meta' => [
+        // read ONLY by your delivery scheduler — the package never looks inside meta
+        'delivery' => ['interval' => 'month', 'every' => 1],
+    ],
+]);
+
+// one plan, three payment cadences — delivery stays monthly for all of them
+$plan->prices()->create(['gateway' => 'stripe', 'currency' => 'UAH', 'amount' => 12 * 45000 * 85 / 100, 'pricing_type' => PricingType::Flat, 'interval' => Interval::Year]);
+$plan->prices()->create(['gateway' => 'stripe', 'currency' => 'UAH', 'amount' => 3 * 45000 * 95 / 100, 'pricing_type' => PricingType::Flat, 'interval' => Interval::Month, 'interval_count' => 3]);
+$plan->prices()->create(['gateway' => 'stripe', 'currency' => 'UAH', 'amount' => 45000, 'pricing_type' => PricingType::Flat, 'interval' => Interval::Month]);
+```
+
+The yearly amount bakes the discount in at `Price`-creation time — pricing math is your storefront's, the package just charges what the row says. Per-`Price` custom data goes in `Price.meta`, same contract as `Plan.meta`.
+
+### App side — the delivery scheduler
+
+Your own monthly tick (mirror of the renewal command, minus the money):
+
+```php
+// scheduled daily/hourly in your app
+Subscription::active()
+    ->whereHas('price.plan', fn ($q) => $q->whereNotNull('meta->delivery'))
+    ->each(function (Subscription $subscription) {
+        if ($this->deliveryDue($subscription)) { // your own delivery_schedules table decides
+            CreateDeliveryOrder::run($subscription); // clone your order template, pick a date
+        }
+    });
+```
+
+`isActive()` is the only billing question the scheduler ever asks — it already covers the grace window, so a yearly renewal that bounced once doesn't silently stop the parcels mid-dunning. Start (or extend) the schedule from `PaymentSucceeded`/`SubscriptionRenewed`: a paid year begins, your listener lays out the next 12 delivery dates.
+
+### Pausing deliveries without pausing billing
+
+"Skip next month's box" is a fulfillment pause, not a billing pause — don't reach for `$subscription->pause()` (that freezes the *subscription*). Skip the delivery in your own schedule, and if skipped months should extend the paid period, push the anchor forward yourself:
+
+```php
+$subscription->update(['current_period_ends_at' => $subscription->current_period_ends_at->addMonthNoOverflow()]);
+```
+
+The next yearly charge shifts with it automatically — `billing:process-recurring-charges` only looks at that column.
+
+**What deliberately stays out of the package:** order templates, delivery-date picking, carrier availability, skip/pause cycles — shop domain. The package's whole contribution here is the money clock and the events; the parcel clock is yours.
+
+---
+
+## 7. Buying time: per-minute bike rental, postpaid rides and a prepaid points balance
+
+**The business:** a bike is billed per minute of actual riding. Consumers pay either per ride (card charged when the ride ends) or from a prepaid points balance they top up in packs; corporate clients get a monthly invoice for the minutes their team consumed.
+
+**The one rule that shapes all three models: never call the gateway per minute.** Fixed fees and latency make micro-charges absurd — the gateway moves money in *chunks* (a ride, a top-up, a month), while minutes are *metering*, tracked on your side. This is a different case from the hourly rental in case 3: there the customer books a time *slot* (a short-cycle subscription); here they consume *usage* and pay for what the meter counted.
+
+### Model A — postpaid ride: charge the saved card when the ride ends
+
+Card is tokenized once at signup (the first charge with `saveCard: true` — a 1 UAH verification charge or simply the first ride). After that every ride is one off-session charge:
+
+```php
+// ride ended: 23 minutes × 3.50 UAH
+$payment = Payment::create([
+    'status' => PaymentStatus::Pending,
+    'type' => PaymentType::Charge,
+    'gateway' => 'monobank',
+    'amount' => $ride->minutes * 350,
+    'currency' => 'UAH',
+    'payable_type' => Ride::class, // your model — the payment knows what it paid for
+    'payable_id' => $ride->id,
+    'billable_type' => User::class,
+    'billable_id' => $user->id,
+]);
+
+Billing::chargeWithMethod($payment, $user->defaultPaymentMethodFor('monobank'));
+```
+
+The outcome arrives through the normal webhook pipeline. A `PaymentFailed` listener is your debt policy: block the next unlock, and email the permanent pay link — `route('billing.pay', $payment)` — so the customer settles the failed ride from their phone; the link re-issues a fresh checkout by itself.
+
+### Model B — prepaid points: money moves on top-up, minutes move on the ledger
+
+Points are the wallet pattern from case 1 — an append-only ledger in *your* schema (the package deliberately has no wallet). The package's job here is only the top-up and its refund:
+
+```php
+// selling a pack: the Payment itself records what was bought — no Payable model needed
+$payment = Payment::create([
+    // ...gateway/amount/billable as usual...
+    'meta' => ['points' => 500, 'bonus' => 50], // bigger packs, bigger bonus — your pricing
+]);
+Billing::charge($payment); // hosted checkout
+
+// the ONLY place points are credited — the verified pipeline, never the return page
+Event::listen(function (PaymentSucceeded $event) {
+    if ($points = $event->payment->meta['points'] ?? null) {
+        PointLedger::credit($event->payment->billable, $points + ($event->payment->meta['bonus'] ?? 0), source: $event->payment);
+    }
+});
+```
+
+Rides then debit the ledger per minute — the gateway is not involved at all. Two recipes fall out almost for free:
+
+- **Auto top-up:** when a ride ends with the balance under a threshold, create a top-up `Payment` and `chargeWithMethod()` it off-session — the same `PaymentSucceeded` listener credits it. The customer opted in once; the balance refills itself.
+- **Refunding unused points:** `Billing::refund($topUpPayment, new Money($unspent, 'UAH'))` plus a ledger debit in the `PaymentRefunded` listener — the payment row already knows how many points it bought and what was paid.
+
+### Model C — corporate: metered subscription, invoice per month
+
+For a B2B fleet the package's `metered` pricing does the whole loop: minutes are reported as usage, the monthly renewal charges `minutes × rate` automatically:
+
+```php
+$price = $plan->prices()->create([
+    'gateway' => 'stripe',
+    'currency' => 'UAH',
+    'amount' => 350, // per unit = per minute
+    'pricing_type' => PricingType::Metered,
+    'interval' => Interval::Month,
+    'unit_label' => 'minute',
+]);
+
+// each ride reports its minutes; the ride id makes retries idempotent
+$subscription->reportUsage($ride->minutes, idempotencyKey: "ride:{$ride->id}");
+```
+
+At period end `billing:process-recurring-charges` bills the accumulated usage against the saved card and resets the counter on payment — nothing to build.
+
+**Choosing between them:** A when rides are occasional and cards are reliable; B when rides are frequent (fees on micro-charges) or you want prepaid cash flow and gamified packs; C when someone else pays monthly for many riders. They compose — the same fleet can run B for consumers and C for corporate on one `Plan`.
+
+---
+
+## 8. Choosing an access policy for a failed renewal: grace credit vs hard paywall
+
+**The business:** two tiers on the same app. A cheap consumer plan should lock out the moment a card is declined — margin is thin, and a lapsed customer costs nothing to re-onboard. A B2B/enterprise tier should keep working through a few retry days — an account manager needs time to reach the right person before anyone gets locked out of a tool their whole team depends on.
+
+**Split:** the package owns the retry mechanics identically for both — `recurring_attempts`, `grace_ends_at`, `next_retry_at`, the eventual cancellation all run unchanged regardless of tier. The only thing that differs is what `isActive()` returns *while* those retries are in flight, and that's a one-column decision:
+
+```php
+$plan->prices()->create([/* consumer tier */, 'grace_access' => false]); // locked out on the first failed renewal
+$plan->prices()->create([/* enterprise tier */, 'grace_access' => true]); // keeps working through the grace window
+```
+
+### Gating access and reacting to the cut
+
+The gate never needs to know which tier it's looking at — `isActive()` already resolved the policy:
+
+```php
+Gate::define('use-app', fn (User $user) => $user->activeSubscription()?->isActive() ?? false);
+```
+
+`SubscriptionAccessSuspended` only fires for the tier that actually got cut immediately — the consumer tier's declined card triggers a harder message than the routine `SubscriptionPaymentFailed` every retry sends:
+
+```php
+Event::listen(function (SubscriptionAccessSuspended $event) {
+    Mail::to($event->subscription->billable)->send(new AccessSuspendedMail($event->subscription));
+});
+```
+
+### What happens when the customer finally pays
+
+Whichever tier it is — access stayed on through grace, or it was cut and the customer paid specifically to get back in — the eventual successful retry **does not shift the billing anchor** to make up for the delay. The package computes the next period from the *originally scheduled* end date, never from the day the card actually got charged, because a failed-renewal `Payment` never touches `current_period_ends_at` — only a successful one does, and it always advances from the stale value already on the row:
+
+```
+Period was due to end:      Jan 1
+Renewal fails → past_due:   Jan 1  (grace_ends_at = Jan 4, retries running)
+Customer fixes the card:    Jan 4  (PaymentSucceeded)
+Next current_period_ends_at: Feb 1  ← from Jan 1, NOT Jan 4
+```
+
+The three days spent `past_due` are free either way — never billed for on the consumer tier that lost access during them, never clawed back from the enterprise tier that kept working through them. This is also why a card that starts working again on its own (a reissued number, a network token update) needs nothing beyond the built-in retry loop — whenever it succeeds, the period math is already correct.
+
+This is a deliberate choice, not a limitation: none of the major billing engines (Stripe, Chargebee, Recurly) auto-extend a period to compensate for dunning downtime either — a fixed anchor is what keeps MRR and cohort reporting predictable, and auto-compensating would double-reward a customer who also kept access via `grace_access`. Extending a specific customer's period as a goodwill gesture is a support decision, not a billing rule, and the package doesn't stand in the way of it — `current_period_ends_at` is a plain writable column, so a CS agent (or your own policy for a given tier) can credit days back after the fact:
+
+```php
+// A support action, once the outage is confirmed with the customer — not an automatic package
+// behavior. $goodwillDays is whatever the agent (or your policy) decides to credit.
+$subscription->update([
+    'current_period_ends_at' => $subscription->current_period_ends_at->addDays($goodwillDays),
+]);
+```
+
+---
+
+## 9. The listener layer: "the package signals — your app decides"
 
 Every consequential moment is an event, and the events deliberately carry *context*, not *decisions*. The patterns that keep coming up:
 

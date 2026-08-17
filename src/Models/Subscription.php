@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace Fomvasss\Billing\Models;
 
 use Fomvasss\Billing\Enums\SubscriptionStatus;
+use Fomvasss\Billing\Events\SubscriptionAccessSuspended;
 use Fomvasss\Billing\Events\SubscriptionCancelled;
 use Fomvasss\Billing\Events\SubscriptionPaused;
+use Fomvasss\Billing\Events\SubscriptionPaymentFailed;
 use Fomvasss\Billing\Events\SubscriptionResumed;
 use Fomvasss\Billing\Events\UsageLimitReached;
 use Illuminate\Database\Eloquent\Builder;
@@ -131,6 +133,59 @@ class Subscription extends Model
     }
 
     /**
+     * The dunning step: bumps recurring_attempts, either schedules the next retry inside a grace
+     * window or — once max_recurring_attempts is reached — cancels outright. Shared by an actual
+     * declined charge (HandleSubscriptionPaymentOutcome::handlePaymentFailed()) and a renewal that
+     * never got as far as calling the gateway because there's no saved card to charge
+     * (ProcessRecurringChargesCommand) — from the customer's perspective "no card on file" and "the
+     * card was declined" deserve the identical grace/retry treatment, not a silent no-op for the
+     * former. Callers own the trial/gateway-less guards that decide whether this is even reachable.
+     */
+    public function recordRenewalFailure(): void
+    {
+        $attempts = $this->recurring_attempts + 1;
+        $maxAttempts = (int) config('billing.max_recurring_attempts', 3);
+        // Captured before the update: access is only ever "cut" on the transition INTO past_due,
+        // never on a later retry within the same episode (it's already off by then).
+        $wasPastDue = $this->status === SubscriptionStatus::PastDue;
+
+        if ($attempts >= $maxAttempts) {
+            $this->update(['status' => SubscriptionStatus::Canceled, 'recurring_attempts' => $attempts, 'cancels_at' => now()]);
+
+            SubscriptionCancelled::dispatch($this);
+
+            return;
+        }
+
+        $this->update([
+            'status' => SubscriptionStatus::PastDue,
+            'recurring_attempts' => $attempts,
+            'grace_ends_at' => now()->addDays((int) config('billing.grace_period_days', 3)),
+            // Spaces the retries out — without this, the scheduler would re-pick a past_due
+            // subscription every run and burn through max_recurring_attempts within minutes, making
+            // the multi-day grace window meaningless.
+            'next_retry_at' => now()->addHours((int) config('billing.retry_interval_hours', 24)),
+        ]);
+
+        SubscriptionPaymentFailed::dispatch($this);
+
+        if (! $wasPastDue && ! $this->hasGraceAccess()) {
+            SubscriptionAccessSuspended::dispatch($this);
+        }
+    }
+
+    /**
+     * Whether isActive() stays true for a past_due subscription while dunning retries run
+     * (grace_access=true, the default) or turns false the moment the first renewal fails
+     * (grace_access=false) — config('billing.grace_access'), overridable per Price. Purely an
+     * access policy: recurring_attempts/grace_ends_at and the retry cycle are unaffected either way.
+     */
+    public function hasGraceAccess(): bool
+    {
+        return $this->price?->grace_access ?? (bool) config('billing.grace_access', true);
+    }
+
+    /**
      * The gateway owns this subscription's lifecycle (it was created through
      * SubscriptionGatewayContract::createSubscription() and carries the provider's own reference
      * in external_id) — renewals, dunning and trial conversion happen on the provider's side and
@@ -152,7 +207,7 @@ class Subscription extends Model
     {
         return match ($this->status) {
             SubscriptionStatus::Trialing, SubscriptionStatus::Active => true,
-            SubscriptionStatus::PastDue => $this->onGracePeriod(),
+            SubscriptionStatus::PastDue => $this->hasGraceAccess() && $this->onGracePeriod(),
             default => false,
         };
     }
@@ -188,11 +243,23 @@ class Subscription extends Model
      */
     public function scopeActive(Builder $query): void
     {
-        $query->where(function (Builder $query) {
+        // Mirrors hasGraceAccess(): a Price with grace_access=true always counts; grace_access=null
+        // falls back to the global default, so it's only added to the sub-query when that default
+        // is actually true (grace_access=false on a Price is never included either way).
+        $graceAccessDefault = (bool) config('billing.grace_access', true);
+
+        $query->where(function (Builder $query) use ($graceAccessDefault) {
             $query->whereIn('status', [SubscriptionStatus::Trialing, SubscriptionStatus::Active])
                 ->orWhere(fn (Builder $query) => $query
                     ->where('status', SubscriptionStatus::PastDue)
-                    ->where('grace_ends_at', '>', now()));
+                    ->where('grace_ends_at', '>', now())
+                    ->whereHas('price', function (Builder $priceQuery) use ($graceAccessDefault) {
+                        $priceQuery->where('grace_access', true);
+
+                        if ($graceAccessDefault) {
+                            $priceQuery->orWhereNull('grace_access');
+                        }
+                    }));
         });
     }
 

@@ -47,6 +47,28 @@ class ModelHelpersTest extends TestCase
         $this->assertFalse($subscription->fresh()->isCancelling());
     }
 
+    public function test_grace_access_can_be_disabled_globally(): void
+    {
+        $subscription = $this->subscription(['status' => SubscriptionStatus::PastDue, 'grace_ends_at' => now()->addDay()]);
+        $this->assertTrue($subscription->isActive()); // default: access survives the grace window
+
+        config(['billing.grace_access' => false]);
+
+        $this->assertFalse($subscription->isActive()); // now cut immediately, even though grace_ends_at is still future
+    }
+
+    public function test_price_grace_access_overrides_the_global_default_either_way(): void
+    {
+        // global stays true (default), this Price opts OUT — access still cuts immediately
+        $noAccess = $this->subscriptionWithPriceMeta(['grace_access' => false], ['status' => SubscriptionStatus::PastDue, 'grace_ends_at' => now()->addDay()]);
+        $this->assertFalse($noAccess->isActive());
+
+        // global turned off, this Price opts back IN — access survives the grace window
+        config(['billing.grace_access' => false]);
+        $keepsAccess = $this->subscriptionWithPriceMeta(['grace_access' => true], ['status' => SubscriptionStatus::PastDue, 'grace_ends_at' => now()->addDay()]);
+        $this->assertTrue($keepsAccess->isActive());
+    }
+
     public function test_subscription_scopes(): void
     {
         $user = TestUser::create(['name' => 'Buyer']);
@@ -58,6 +80,16 @@ class ModelHelpersTest extends TestCase
 
         $this->assertCount(2, Subscription::active()->get());
         $this->assertCount(4, Subscription::forBillable($user)->get());
+    }
+
+    public function test_active_scope_respects_the_grace_access_override(): void
+    {
+        // matches isActive(): a past_due row with grace_access=false must NOT count as active,
+        // even while grace_ends_at is still in the future.
+        $this->subscriptionWithPriceMeta(['grace_access' => false], ['status' => SubscriptionStatus::PastDue, 'grace_ends_at' => now()->addDay()]);
+        $this->subscription(['status' => SubscriptionStatus::Active]);
+
+        $this->assertCount(1, Subscription::active()->get());
     }
 
     public function test_payment_status_helpers_and_scopes(): void
@@ -100,6 +132,30 @@ class ModelHelpersTest extends TestCase
         $user ??= TestUser::create(['name' => 'Buyer']);
         $plan = Plan::create(['code' => 'pro-' . uniqid(), 'name' => 'Pro']);
         $price = Price::create(['plan_id' => $plan->id, 'currency' => 'UAH', 'amount' => 10000, 'pricing_type' => 'flat', 'interval' => 'month', 'interval_count' => 1]);
+
+        return Subscription::create([
+            'gateway' => 'fake',
+            'price_id' => $price->id,
+            'billable_type' => TestUser::class,
+            'billable_id' => $user->id,
+            ...$attributes,
+        ]);
+    }
+
+    /** Same as subscription(), but the Price carries its own attributes (e.g. grace_access). */
+    private function subscriptionWithPriceMeta(array $priceAttributes, array $attributes, ?TestUser $user = null): Subscription
+    {
+        $user ??= TestUser::create(['name' => 'Buyer']);
+        $plan = Plan::create(['code' => 'pro-' . uniqid(), 'name' => 'Pro']);
+        $price = Price::create([
+            'plan_id' => $plan->id,
+            'currency' => 'UAH',
+            'amount' => 10000,
+            'pricing_type' => 'flat',
+            'interval' => 'month',
+            'interval_count' => 1,
+            ...$priceAttributes,
+        ]);
 
         return Subscription::create([
             'gateway' => 'fake',

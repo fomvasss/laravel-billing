@@ -393,6 +393,7 @@ One route (`POST /billing/webhooks/{gateway}`) handles every gateway, resolved a
 | `PaymentSucceeded` / `PaymentFailed` | A `Payment`'s status resolves to a terminal state |
 | `PaymentRefunded` | `Billing::refund()` created a refund row (see "Refunds") |
 | `SubscriptionRenewed` / `SubscriptionPaymentFailed` / `SubscriptionCancelled` | The outcome of a renewal charge, handled by the package's own listener (period advanced / dunning / cancelled after `max_recurring_attempts` or at `cancels_at`) |
+| `SubscriptionAccessSuspended` | Only when `grace_access` resolves `false` — fires once, the moment a failed renewal cuts `isActive()` to `false` immediately instead of granting the grace window |
 | `SubscriptionCreated` | Native-subscription gateways only — no built-in driver dispatches it yet |
 | `TrialWillEnd` | From `billing:expire-trials`, at each `trial_ending_notices` interval before `trial_ends_at` (default `['3 days']`; e.g. `['7 days', '3 days', '1 day']` for yearly plans, `['1 hour', '15 minutes']` for hourly rentals) — once per subscription per notice, `$event->notice` says which one fired |
 | `SubscriptionPaused` / `SubscriptionResumed` | Local-only, via `$subscription->pause()`/`resume()` — never gateway-driven |
@@ -575,7 +576,7 @@ Three artisan commands, off by default (`billing.schedule.enabled`, since they t
 
 | Command | Runs | What it does |
 |---|---|---|
-| `billing:process-recurring-charges` | every minute | First finalizes subscriptions whose `cancels_at` has passed (status → `canceled`, `SubscriptionCancelled` fires) so a period-end cancellation is never billed again. Then finds subscriptions where `current_period_ends_at <= now()` and charges the saved `PaymentMethod` via `chargePaymentMethod()` — unless an earlier renewal `Payment` is still `pending` (webhook not yet resolved), which blocks a second charge for the same period. Only *initiates* the charge — the outcome arrives later through the normal webhook pipeline, handled automatically: the period advances on `PaymentSucceeded`; on `PaymentFailed` the subscription goes `past_due` and is retried every `retry_interval_hours` (default 24 — spaced out, *not* every scheduler run) until `max_recurring_attempts` is reached, then `SubscriptionCancelled`. With the defaults that's 3 attempts a day apart across the 3-day grace window. |
+| `billing:process-recurring-charges` | every minute | First finalizes subscriptions whose `cancels_at` has passed (status → `canceled`, `SubscriptionCancelled` fires) so a period-end cancellation is never billed again. Then finds subscriptions where `current_period_ends_at <= now()` and charges the saved `PaymentMethod` via `chargePaymentMethod()` — unless an earlier renewal `Payment` is still `pending` (webhook not yet resolved), which blocks a second charge for the same period. Only *initiates* the charge — the outcome arrives later through the normal webhook pipeline, handled automatically: the period advances on `PaymentSucceeded`; on `PaymentFailed` the subscription goes `past_due` and is retried every `retry_interval_hours` (default 24 — spaced out, *not* every scheduler run) until `max_recurring_attempts` is reached, then `SubscriptionCancelled`. With the defaults that's 3 attempts a day apart across the 3-day grace window. **No saved card to charge** (never tokenized, or detached since the last renewal) gets the identical grace/retry treatment via `Subscription::recordRenewalFailure()` — it doesn't stall in `active` waiting for a card that never arrives. |
 | `billing:reconcile-pending-payments` | every 15 min | Fallback for a `Payment` stuck `pending` because a webhook was lost, or a gateway `expired` status that never gets its own webhook. Only looks at payments older than `config('billing.reconcile_after_minutes')` (default 60 min) — that cutoff already delays how soon a stuck payment qualifies, which is why this runs more often than the other two, not hourly like them. A failure on one payment is reported and skipped, never blocks the rest. |
 | `billing:expire-trials` | daily | Dispatches `TrialWillEnd` at each configured `trial_ending_notices` interval (once per subscription per notice; when several become due at once only the closest fires), then moves `trialing` subscriptions past `trial_ends_at` to `ended`. Converting a trial to paid is a normal `chargeWithMethod()` call, same as any renewal (see "Free trial period" in Recipes). |
 | `model:prune` (BillingWebhookCall) | daily | Deletes stored webhook calls older than `webhook.prune_after_days` (default 30). |
@@ -939,6 +940,26 @@ The customer pays with the new card → `PaymentSucceeded` reactivates the subsc
 
 Proactively, before it breaks: `PaymentMethod::$expires_at` is filled where the gateway reports card expiry (Stripe does; the Ukrainian gateways' callbacks don't), so a monthly scan of `paymentMethods()->where('expires_at', '<', now()->addMonth())` works for Stripe. For the rest, the first failed renewal *is* the signal — and grace keeps the customer's access alive while they fix it.
 
+### 7. Cut access immediately instead of granting a grace credit
+
+"Grace keeps access alive" above is the default, but not every business wants it — a paid-content subscription might prefer to block the moment a renewal fails, while the retries (`recurring_attempts`, `next_retry_at`, eventual cancellation) keep running unchanged in the background. `config('billing.grace_access')` controls exactly that:
+
+```php
+// config/billing.php — global default, both directions supported
+'grace_access' => env('BILLING_GRACE_ACCESS', true), // false = cut access on the first failed renewal
+```
+
+Override it per `Price` when the policy should vary within the same app (`null` = the global default, either way is explicit otherwise):
+
+```php
+$plan->prices()->create([/* ... */, 'grace_access' => false]); // this tier: no credit, cut immediately
+$plan->prices()->create([/* ... */, 'grace_access' => true]);  // this one: keep the grace window
+```
+
+Only `isActive()` (and the matching `Subscription::active()` scope) reads this — `recurring_attempts`/`grace_ends_at`/the retry cadence and the eventual cancellation are identical either way. When access is cut immediately, `SubscriptionAccessSuspended` fires once, right at that moment (not on every subsequent retry within the same `past_due` episode) — your cue for a harder "access suspended, update your card to restore it" notice, distinct from `SubscriptionPaymentFailed`, which fires on every retry regardless of the access policy.
+
+Either way — grace kept access on, or it was cut and the customer paid to restore it — the eventual successful retry doesn't shift the billing anchor to make up for the delay: `current_period_ends_at` is never touched while `past_due`, so the next period is computed from the *originally scheduled* end date, not from the day the card actually got charged. A period due January 1st that recovers on January 4th still renews February 1st, not February 4th — the days spent in `past_due` are effectively free, never billed for or clawed back.
+
 ## Money
 
 Every amount in this package — `payments.amount`, `prices.amount`, `Money`, receipt items — is an **integer in the currency's minor units** (kopiykas/cents): `10000` is 100.00. Same convention Stripe, Monobank and most PSPs use, and it keeps rounding errors out of money by construction.
@@ -1008,7 +1029,7 @@ Payment::pending()->get();
 Payment::forBillable($organization)->latest()->get();
 ```
 
-`isActive()` is the one to reach for in a gate/middleware — it deliberately keeps access on during the dunning grace window, so a customer isn't locked out mid-retry over a card that failed once.
+`isActive()` is the one to reach for in a gate/middleware — by default it keeps access on during the dunning grace window, so a customer isn't locked out mid-retry over a card that failed once; `config('billing.grace_access')` (or a per-`Price` override) can flip that to cut access on the first failed renewal instead — see Recipes "Cut access immediately instead of granting a grace credit".
 
 ## Enums
 

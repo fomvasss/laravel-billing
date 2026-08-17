@@ -21,10 +21,14 @@ return new class extends Migration
             $table->unsignedInteger('trial_days')->default(0);
             // Per-price override of config('billing.trial_ending_notices'): null = global list, [] = off.
             $table->json('trial_ending_notices')->nullable();
+            // Per-price override of config('billing.grace_access'): null = global default.
+            $table->boolean('grace_access')->nullable();
             $table->string('external_price_id')->nullable();
             $table->string('unit_label')->nullable();
             $table->decimal('included_units', 18, 4)->nullable();
             $table->boolean('is_active')->default(true);
+            // Opaque, consumer-controlled — the package never reads or writes it (same as Plan.meta).
+            $table->json('meta')->nullable();
             $table->timestamps();
             $table->foreignUuid('plan_id')->constrained('billing_plans')->cascadeOnDelete();
 

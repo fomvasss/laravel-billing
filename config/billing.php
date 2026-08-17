@@ -80,6 +80,22 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Grace access
+    |--------------------------------------------------------------------------
+    |
+    | Whether isActive() stays true for a past_due subscription while retries
+    | are still running (true, the default) or turns false the moment a
+    | renewal first fails, before the retries have even had a chance to
+    | recover it (false). Either way recurring_attempts/grace_ends_at and the
+    | retry cycle itself are unaffected — this only gates customer-facing
+    | access. Override per Price via prices.grace_access (null = this value).
+    |
+    */
+
+    'grace_access' => env('BILLING_GRACE_ACCESS', true),
+
+    /*
+    |--------------------------------------------------------------------------
     | Trial ending notices
     |--------------------------------------------------------------------------
     |

@@ -64,7 +64,7 @@ Order matters here; several audit-era guarantees live in the ordering itself:
 
 ## charge() orchestration
 
-`BillingManager::charge()` does what a bare driver call can't: resolves the driver with the billable's tenant, auto-fills `receiptItems` from a `HasReceiptItems` payable, calls the driver, then writes `external_id` / `payment_url` / `payment_url_expires_at` back. For form-only gateways (LiqPay) the form is cached (TTL = `payment_url_expires_at`, from the driver's `linkTtlMinutes()`) and `payment_url` points at `billing.checkout-form`, which renders it as a self-submitting page — the "payment_url is always a plain link" guarantee lives here, not in drivers.
+`BillingManager::charge()` does what a bare driver call can't: resolves the driver with the billable's tenant, auto-fills `receiptItems` from a `HasReceiptItems` payable, calls the driver, then writes `external_id` / `payment_url` / `payment_url_expires_at` back. For form-only gateways (LiqPay) the form is cached (TTL = `payment_url_expires_at`, from the driver's `linkTtlMinutes()`) and `payment_url` points at `billing.checkout-form`, which renders it as a self-submitting page — the "payment_url is always a plain link" guarantee lives here, not in drivers. `chargeWithMethod()` runs the same `receiptItems` auto-fill (its `$options` is a full `ChargeOptions`, not a bare array) — the one payable it can never auto-fill from is the package's own `Subscription` (a scheduled renewal's payable), which deliberately doesn't implement `HasReceiptItems`.
 
 The browser-facing routes on top of it:
 

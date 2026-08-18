@@ -716,6 +716,8 @@ class Order extends Model implements Payable, HasReceiptItems
 
 Що саме гейтвей із цим робить — різне: **Monobank** (`basketOrder`), **WayForPay** (`productName[]`/`productPrice[]`/`productCount[]`), **Stripe** (`line_items`) і **Hutko** (`reservation_data` — фіскальний кошик програмного РРО) беруть це як є. Виняток — **LiqPay**: позиції його `rro_info` посилаються на товари, зареєстровані у вашому кабінеті LiqPay, за їхнім каталожним id — значення, під яке в цій нейтральній структурі поля немає, тож саме його передавайте явно через `ChargeOptions::$raw` (нижче).
 
+Той самий автозапис діє й у `chargeWithMethod()` — списання без редіректу (овербюджет, поповнення, постпейд-поїздка з кейсу №7) фіскалізується так само, як редіректна каса, поки `$payment->payable` реалізує `HasReceiptItems`. Куди це не дотягується — `billing:process-recurring-charges`: payable рекурентного списання завжди рядок власної моделі `Subscription`, яка свідомо **не** реалізує `HasReceiptItems` — відтворити правильну суму кошика там означало б, що пакет мовчки вгадує математику `pricing_type`/конвертації валют для фіскального документа, а він так не робить. Якщо продовженню потрібен чек — виклич `chargeWithMethod()` сам з явними `receiptItems`.
+
 ```php
 $payment = Payment::create([
     'status' => PaymentStatus::Pending,

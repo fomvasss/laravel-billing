@@ -180,16 +180,22 @@ class HutkoGateway extends AbstractGateway implements TokenizesPaymentMethod, \F
      * as Stripe's card_error handling. The outcome still resolves through handleWebhook() same as
      * any other Payment; this only initiates it.
      */
-    public function chargePaymentMethod(Payment $payment, PaymentMethod $method, array $options = []): PaymentResult
+    public function chargePaymentMethod(Payment $payment, PaymentMethod $method, ChargeOptions $options = new ChargeOptions()): PaymentResult
     {
         $fields = array_filter([
+            ...$options->raw,
             'order_id' => (string) $payment->id,
-            'order_desc' => $options['description'] ?? "Payment #{$payment->id}",
+            'order_desc' => $options->description ?? "Payment #{$payment->id}",
             'amount' => $payment->amount,
             'currency' => $payment->currency,
             'rectoken' => $method->external_id,
             'server_callback_url' => route('billing.webhook', ['gateway' => $this->gatewayName]),
-            'client_ip' => $options['ip'] ?? '127.0.0.1',
+            'client_ip' => $options->raw['ip'] ?? '127.0.0.1',
+            // Same key/shape as charge()'s checkout/url request — NOT independently live-verified
+            // against /api/recurring's own schema (only checkout/url's fiscalization was, see the
+            // class docblock). Verify against a real recurring charge before relying on it; drop
+            // this key and pass receiptItems: [] if /api/recurring turns out to reject it.
+            'reservation_data' => $this->reservationData($options->receiptItems),
         ]);
 
         $fields['merchant_id'] = $this->merchantId();

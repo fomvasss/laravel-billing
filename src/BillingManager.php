@@ -182,8 +182,16 @@ class BillingManager
         return $result;
     }
 
-    /** Same orchestration as charge(), for a saved payment method instead of a redirect/form. */
-    public function chargeWithMethod(Payment $payment, PaymentMethod $method, array $options = []): PaymentResult
+    /**
+     * Same orchestration as charge(), for a saved payment method instead of a redirect/form —
+     * including the same $options->receiptItems auto-fill (see charge()'s docblock). A scheduled
+     * subscription renewal (ProcessRecurringChargesCommand) never gets one this way: its Payable is
+     * always the package's own Subscription row, which deliberately does NOT implement
+     * HasReceiptItems (the basket total would have to reconstruct pricing_type/currency-conversion
+     * math the package doesn't want to guess at for a fiscal document) — pass receiptItems
+     * yourself when calling chargeWithMethod() directly if a renewal needs a receipt.
+     */
+    public function chargeWithMethod(Payment $payment, PaymentMethod $method, ChargeOptions $options = new ChargeOptions()): PaymentResult
     {
         // Cheap guards against a caller-side mixup that would debit the wrong card: the method
         // must be from the same gateway AND belong to the same billable as the payment.
@@ -199,6 +207,10 @@ class BillingManager
 
         if (! $driver instanceof TokenizesPaymentMethod) {
             throw NotSupportedException::forCapability($payment->gateway, TokenizesPaymentMethod::class);
+        }
+
+        if ($options->receiptItems === [] && $payment->payable instanceof HasReceiptItems) {
+            $options = $options->withReceiptItems($payment->payable->receiptItems());
         }
 
         $result = $driver->chargePaymentMethod($payment, $method, $options);

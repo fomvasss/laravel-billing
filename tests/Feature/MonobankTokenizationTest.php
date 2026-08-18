@@ -118,6 +118,31 @@ class MonobankTokenizationTest extends TestCase
             && $request['initiationKind'] === 'merchant');
     }
 
+    public function test_charging_a_payment_method_with_receipt_items_sends_a_fiscal_basket(): void
+    {
+        Http::fake([
+            'https://api.monobank.ua/api/merchant/wallet/payment' => Http::response(['invoiceId' => 'inv_3', 'status' => 'success']),
+        ]);
+
+        $user = TestUser::create(['name' => 'Buyer']);
+        $payment = $this->pendingMonobankPayment($user);
+        $method = PaymentMethod::create([
+            'gateway' => 'monobank',
+            'external_customer_id' => 'wallet_1',
+            'external_id' => 'card_tok_1',
+            'is_default' => true,
+            'billable_type' => TestUser::class,
+            'billable_id' => $user->id,
+        ]);
+
+        Billing::driver('monobank')->chargePaymentMethod($payment, $method, new \Fomvasss\Billing\DTO\ChargeOptions(
+            receiptItems: [['name' => 'Widget', 'qty' => 1, 'unitAmount' => 10000, 'sku' => 'WID-1']],
+        ));
+
+        Http::assertSent(fn ($request) => $request['merchantPaymInfo']['basketOrder'][0]['name'] === 'Widget'
+            && $request['merchantPaymInfo']['basketOrder'][0]['code'] === 'WID-1');
+    }
+
     public function test_detaching_a_payment_method_sends_the_card_token_as_a_query_parameter(): void
     {
         Event::fake([PaymentMethodDetached::class]);

@@ -245,7 +245,7 @@ Implement only what your gateway actually does. `BillingManager` checks with `in
 | `ChecksGatewayHealth` | A live, side-effect-free credentials/reachability probe (`Billing::health()`, `billing:health`). No introspection endpoint? Probe with the status of a nonexistent payment and tell "order not found" (credentials fine) apart from "invalid signature" — verify the discriminating error codes against the live API, the built-in drivers document theirs |
 | `TokenizesPaymentMethod` | Saved cards / off-session recurring charges |
 | `SubscriptionGatewayContract` | Native subscriptions on the gateway's own side (Stripe-style) |
-| `HasReceiptItems` | (on your `Payable`, not the driver) fiscal basket line items |
+| `HasReceiptItems` | (on your `Payable`, not the driver) fiscal basket line items — auto-fills into `charge()` AND `chargePaymentMethod()` alike, so build the basket in `chargePaymentMethod()` too if the gateway has one (`array_filter`s the basket key away when `$options->receiptItems` is empty, same as `charge()`) |
 
 ### `SubscriptionGatewayContract`
 
@@ -336,6 +336,7 @@ Add a tamper case (flip a byte in the body, expect rejection) and, if the gatewa
 - [ ] Signature formula verified against the official SDK, not just docs prose
 - [ ] `amount` converted if the gateway wants major units
 - [ ] `charge()` puts `$payment->id` where the webhook will echo it back
+- [ ] If the gateway has a fiscal basket field, `chargePaymentMethod()` builds it from `$options->receiptItems` too, not just `charge()` (skip this if the gateway's off-session API genuinely has no basket concept, like Stripe's PaymentIntents)
 - [ ] `expiresAt` filled from a real TTL (`linkTtlMinutes()` + the gateway's lifetime param, or the gateway's own reported expiry) — `null` only when there's truly no way to know
 - [ ] `handleWebhook()` updates the `Payment` and returns a real `externalId`
 - [ ] Non-terminal gateway statuses and unknown references return `Ignored`, not an error

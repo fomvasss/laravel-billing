@@ -191,16 +191,19 @@ class LiqPayGateway extends AbstractGateway implements RefundsPayments, ChecksPa
      * pass $options['ip'] when you track the customer's last known IP; falls back to a placeholder
      * otherwise (LiqPay accepts it, this is a known, documented limitation of off-session use).
      */
-    public function chargePaymentMethod(Payment $payment, PaymentMethod $method, array $options = []): PaymentResult
+    public function chargePaymentMethod(Payment $payment, PaymentMethod $method, ChargeOptions $options = new ChargeOptions()): PaymentResult
     {
+        // No receiptItems here — LiqPay has no neutral fiscal-basket field, only rro_info via
+        // $options->raw (same as charge(), see its docblock).
         $response = $this->api([
+            ...$options->raw,
             'action' => 'paytoken',
             'card_token' => $method->external_id,
             'amount' => $this->formatAmount($payment->amount),
             'currency' => $payment->currency,
-            'description' => $options['description'] ?? "Payment #{$payment->id}",
+            'description' => $options->description ?? "Payment #{$payment->id}",
             'order_id' => (string) $payment->id,
-            'ip' => $options['ip'] ?? '127.0.0.1',
+            'ip' => $options->raw['ip'] ?? '127.0.0.1',
             'is_recurring' => true,
             'server_url' => route('billing.webhook', ['gateway' => $this->gatewayName]),
         ]);

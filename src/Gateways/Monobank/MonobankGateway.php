@@ -188,14 +188,18 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
      * counterpart to the CIT (customer-initiated) checkout charge() does. The outcome still
      * resolves through handleWebhook() same as any other Payment — this only initiates it.
      */
-    public function chargePaymentMethod(Payment $payment, PaymentMethod $method, array $options = []): PaymentResult
+    public function chargePaymentMethod(Payment $payment, PaymentMethod $method, ChargeOptions $options = new ChargeOptions()): PaymentResult
     {
         $response = $this->http()->post('/api/merchant/wallet/payment', array_filter([
+            ...$options->raw,
             'cardToken' => $method->external_id,
             'amount' => $payment->amount,
             'ccy' => $this->currencyCode($payment->currency),
             'initiationKind' => 'merchant',
-            'merchantPaymInfo' => array_filter(['reference' => (string) $payment->id]),
+            'merchantPaymInfo' => array_filter([
+                'reference' => (string) $payment->id,
+                'basketOrder' => $this->basketOrder($options->receiptItems),
+            ]),
             'webHookUrl' => route('billing.webhook', ['gateway' => $this->gatewayName]),
         ]))->throw();
 

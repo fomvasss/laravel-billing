@@ -720,6 +720,8 @@ class Order extends Model implements Payable, HasReceiptItems
 
 What each gateway does with it differs — **Monobank** (`basketOrder`), **WayForPay** (`productName[]`/`productPrice[]`/`productCount[]`), **Stripe** (`line_items`) and **Hutko** (`reservation_data`, its programmable-RRO fiscal basket) all take it as-is. The exception is **LiqPay**: its `rro_info` line items reference goods registered in your LiqPay account by their catalog id — a value this neutral shape has no field for — so pass that one explicitly via `ChargeOptions::$raw` (see below).
 
+The same auto-fill applies to `chargeWithMethod()` — an off-session charge (overage, a top-up, the postpaid-ride charge in use-case #7) is fiscalized exactly like a redirect checkout, as long as `$payment->payable` implements `HasReceiptItems`. The one place this doesn't reach is `billing:process-recurring-charges`: a subscription renewal's payable is always the package's own `Subscription` row, which deliberately does **not** implement `HasReceiptItems` — reconstructing the right basket total there would mean the package guessing at `pricing_type`/currency-conversion math for a fiscal document, which it won't do silently. Call `chargeWithMethod()` yourself with explicit `receiptItems` if a renewal needs one.
+
 ```php
 $payment = Payment::create([
     'status' => PaymentStatus::Pending,

@@ -192,13 +192,14 @@ class WayForPayGateway extends AbstractGateway implements ChecksPaymentStatus, T
      * challenge. The outcome still resolves through handleWebhook() same as any other Payment; this
      * only initiates it.
      */
-    public function chargePaymentMethod(Payment $payment, PaymentMethod $method, array $options = []): PaymentResult
+    public function chargePaymentMethod(Payment $payment, PaymentMethod $method, ChargeOptions $options = new ChargeOptions()): PaymentResult
     {
         $orderDate = now()->timestamp;
         $amount = $this->formatAmount($payment->amount);
-        $products = $this->products([], $payment, new ChargeOptions(description: $options['description'] ?? null));
+        $products = $this->products($options->receiptItems, $payment, $options);
 
         $fields = array_filter([
+            ...$options->raw,
             'transactionType' => 'CHARGE',
             'merchantAccount' => $this->merchantAccount(),
             'merchantAuthType' => 'SimpleSignature',

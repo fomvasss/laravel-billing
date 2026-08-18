@@ -404,6 +404,8 @@ $payment = Payment::create([
 Billing::chargeWithMethod($payment, $user->defaultPaymentMethodFor('monobank'));
 ```
 
+If `Ride` implements `HasReceiptItems` (one line: "23 min × 3.50 UAH"), this charge fiscalizes exactly like a redirect checkout would — `chargeWithMethod()` auto-fills `receiptItems` from the payable the same way `charge()` does.
+
 The outcome arrives through the normal webhook pipeline. A `PaymentFailed` listener is your debt policy: block the next unlock, and email the permanent pay link — `route('billing.pay', $payment)` — so the customer settles the failed ride from their phone; the link re-issues a fresh checkout by itself.
 
 ### Model B — prepaid points: money moves on top-up, minutes move on the ledger

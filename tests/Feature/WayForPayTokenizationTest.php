@@ -121,6 +121,30 @@ class WayForPayTokenizationTest extends TestCase
             && $request['orderReference'] === (string) $payment->id);
     }
 
+    public function test_charging_a_payment_method_with_receipt_items_sends_them_as_products(): void
+    {
+        Http::fake([
+            'https://api.wayforpay.com/api' => Http::response(['orderReference' => 'x', 'transactionStatus' => 'Approved']),
+        ]);
+
+        $user = $this->makeUser();
+        $payment = $this->pendingPayment($user);
+        $method = PaymentMethod::create([
+            'gateway' => 'wayforpay',
+            'external_customer_id' => 'cust_1',
+            'external_id' => 'rec_tok_1',
+            'is_default' => true,
+            'billable_type' => TestUser::class,
+            'billable_id' => $user->id,
+        ]);
+
+        Billing::driver('wayforpay')->chargePaymentMethod($payment, $method, new \Fomvasss\Billing\DTO\ChargeOptions(
+            receiptItems: [['name' => 'Widget', 'qty' => 1, 'unitAmount' => 10000, 'sku' => 'WID-1']],
+        ));
+
+        Http::assertSent(fn ($request) => $request['productName'] === ['Widget'] && $request['productCount'] === [1]);
+    }
+
     public function test_detaching_a_payment_method_deletes_it_locally_without_any_http_call(): void
     {
         Event::fake([PaymentMethodDetached::class]);

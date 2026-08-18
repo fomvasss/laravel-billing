@@ -226,7 +226,13 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
      * normal business outcome, not a wiring failure, so it's returned rather than thrown — anything
      * else (bad credentials, malformed request) still throws.
      */
-    public function chargePaymentMethod(Payment $payment, PaymentMethod $method, array $options = []): PaymentResult
+    /**
+     * $options->receiptItems is unused here — unlike Checkout Sessions (charge()'s line_items),
+     * the PaymentIntents API this off-session charge goes through has no basket/line-item concept
+     * at all, only an amount. ChargeOptions is still the parameter type for interface parity with
+     * every other driver's chargePaymentMethod().
+     */
+    public function chargePaymentMethod(Payment $payment, PaymentMethod $method, ChargeOptions $options = new ChargeOptions()): PaymentResult
     {
         // retry(1) overrides http()'s default retry(2, 200) — a card decline is a normal business
         // outcome to inspect below, not a transient failure worth retrying (and retrying a charge

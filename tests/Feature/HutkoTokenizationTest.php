@@ -115,6 +115,30 @@ class HutkoTokenizationTest extends TestCase
             && isset($request['request']['client_ip']));
     }
 
+    public function test_charging_a_payment_method_with_receipt_items_sends_reservation_data(): void
+    {
+        Http::fake([
+            'https://pay.hutko.org/api/recurring' => Http::response(['response' => ['order_status' => 'approved', 'payment_id' => 778]]),
+        ]);
+
+        $user = $this->makeUser();
+        $payment = $this->pendingPayment($user);
+        $method = PaymentMethod::create([
+            'gateway' => 'hutko',
+            'external_customer_id' => 'cust_1',
+            'external_id' => 'rec_tok_1',
+            'is_default' => true,
+            'billable_type' => TestUser::class,
+            'billable_id' => $user->id,
+        ]);
+
+        Billing::driver('hutko')->chargePaymentMethod($payment, $method, new \Fomvasss\Billing\DTO\ChargeOptions(
+            receiptItems: [['name' => 'Widget', 'qty' => 1, 'unitAmount' => 10000, 'sku' => 'WID-1']],
+        ));
+
+        Http::assertSent(fn ($request) => isset($request['request']['reservation_data']));
+    }
+
     public function test_detaching_a_payment_method_deletes_it_locally_without_any_http_call(): void
     {
         Event::fake([PaymentMethodDetached::class]);

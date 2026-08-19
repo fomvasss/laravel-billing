@@ -36,6 +36,7 @@ class Subscription extends Model
             'trial_notices_sent' => 'array',
             'current_period_ends_at' => 'datetime',
             'cancels_at' => 'datetime',
+            'pause_ends_at' => 'datetime',
             'grace_ends_at' => 'datetime',
             'next_retry_at' => 'datetime',
             'recurring_attempts' => 'integer',
@@ -85,14 +86,16 @@ class Subscription extends Model
     /**
      * Local fact only — the gateway is never called (see greespi's paused status in the package
      * plan). A gateway-side pause (Stripe pause_collection) is a separate, not-yet-needed contract.
+     * $until schedules an automatic resume() via billing:expire-pauses; omit for an indefinite
+     * pause that only an explicit resume() ends.
      */
-    public function pause(): void
+    public function pause(?\DateTimeInterface $until = null): void
     {
         if ($this->status === SubscriptionStatus::Paused) {
             return;
         }
 
-        $this->update(['status' => SubscriptionStatus::Paused]);
+        $this->update(['status' => SubscriptionStatus::Paused, 'pause_ends_at' => $until]);
 
         SubscriptionPaused::dispatch($this);
     }
@@ -103,7 +106,7 @@ class Subscription extends Model
             return;
         }
 
-        $this->update(['status' => SubscriptionStatus::Active]);
+        $this->update(['status' => SubscriptionStatus::Active, 'pause_ends_at' => null]);
 
         SubscriptionResumed::dispatch($this);
     }

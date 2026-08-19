@@ -556,12 +556,15 @@ On a successful renewal, `current_usage` resets to 0 whenever the price has a qu
 ### Pause / resume / cancel
 
 ```php
-$subscription->pause();   // local only — no gateway call, no event to the bank
-$subscription->resume();
+$subscription->pause();                    // local only — no gateway call, no event to the bank
+$subscription->pause(now()->addWeek());    // auto-resumes via billing:expire-pauses
+$subscription->resume();                   // manual resume, any time, ends a pause early
 $subscription->cancel();               // at period end (default)
 $subscription->cancel(atPeriodEnd: false); // immediately
 $subscription->swapPlan($newPrice);
 ```
+
+A pause with no `$until` is indefinite — only an explicit `resume()` ends it. `isActive()` is `false` while `paused`, same as `canceled`/`ended`.
 
 `cancel()` at period end only stamps `cancels_at` — the actual status flip (and the guarantee the customer is *not* charged for another period) happens in `billing:process-recurring-charges` when that moment passes. In other words: period-end cancellation requires the schedule to be enabled, same as auto-renewal itself.
 
@@ -579,6 +582,7 @@ Three artisan commands, off by default (`billing.schedule.enabled`, since they t
 | `billing:process-recurring-charges` | every minute | First finalizes subscriptions whose `cancels_at` has passed (status → `canceled`, `SubscriptionCancelled` fires) so a period-end cancellation is never billed again. Then finds subscriptions where `current_period_ends_at <= now()` and charges the saved `PaymentMethod` via `chargePaymentMethod()` — unless an earlier renewal `Payment` is still `pending` (webhook not yet resolved), which blocks a second charge for the same period. Only *initiates* the charge — the outcome arrives later through the normal webhook pipeline, handled automatically: the period advances on `PaymentSucceeded`; on `PaymentFailed` the subscription goes `past_due` and is retried every `retry_interval_hours` (default 24 — spaced out, *not* every scheduler run) until `max_recurring_attempts` is reached, then `SubscriptionCancelled`. With the defaults that's 3 attempts a day apart across the 3-day grace window. **No saved card to charge** (never tokenized, or detached since the last renewal) gets the identical grace/retry treatment via `Subscription::recordRenewalFailure()` — it doesn't stall in `active` waiting for a card that never arrives. |
 | `billing:reconcile-pending-payments` | every 15 min | Fallback for a `Payment` stuck `pending` because a webhook was lost, or a gateway `expired` status that never gets its own webhook. Only looks at payments older than `config('billing.reconcile_after_minutes')` (default 60 min) — that cutoff already delays how soon a stuck payment qualifies, which is why this runs more often than the other two, not hourly like them. A failure on one payment is reported and skipped, never blocks the rest. |
 | `billing:expire-trials` | daily | Dispatches `TrialWillEnd` at each configured `trial_ending_notices` interval (once per subscription per notice; when several become due at once only the closest fires), then moves `trialing` subscriptions past `trial_ends_at` to `ended`. Converting a trial to paid is a normal `chargeWithMethod()` call, same as any renewal (see "Free trial period" in Recipes). |
+| `billing:expire-pauses` | hourly | Resumes `paused` subscriptions whose `pause_ends_at` (set via `pause($until)`) has passed — hourly rather than daily since a paused subscription has no access (`isActive()` false) and no money is at stake. Indefinite pauses (`pause_ends_at` null) are untouched. |
 | `model:prune` (BillingWebhookCall) | daily | Deletes stored webhook calls older than `webhook.prune_after_days` (default 30). |
 
 None of this fires on its own — `Schedule::command()`/`->hourly()` etc. just register with Laravel's own scheduler, which still needs the standard system cron entry running `php artisan schedule:run` every minute (the usual Laravel deployment requirement, nothing package-specific).
@@ -592,6 +596,7 @@ None of this fires on its own — `Schedule::command()`/`->hourly()` etc. just r
 Schedule::command('billing:process-recurring-charges')->dailyAt('03:00')->withoutOverlapping();
 Schedule::command('billing:reconcile-pending-payments')->everyFiveMinutes()->withoutOverlapping();
 Schedule::command('billing:expire-trials')->daily();
+Schedule::command('billing:expire-pauses')->hourly();
 ```
 
 Keep `withoutOverlapping()` on the money-touching commands, and add `onOneServer()` if the scheduler runs on several servers.
@@ -634,7 +639,7 @@ stateDiagram-v2
 
 **Renewing vs re-subscribing** — the package doesn't decide this, *which row the payment points to* does. A `Payment` with `payable` = an existing subscription row is a renewal/reactivation: the built-in listener flips whatever status it finds (`trialing`, `past_due`, even `canceled`) to `active` and advances the period. `canceled`/`ended` rows are never touched automatically — no auto-charges against them — so "coming back" is always your code's move, and the rule of thumb is: within the grace window (`past_due`) pay against the **same row**; after `canceled`/`ended` create a **new row**. Two reasons: history stays clean (the old row remains a finished episode), and a period-anchor gotcha — the listener advances the period from `current_period_ends_at`, which on a long-dead row is months in the past, so a payment against it would produce a "new" period that has already ended (fixable by nulling `current_period_ends_at` first, but a fresh row simply doesn't have the problem).
 
-What's recorded out of the box: every charge is an immutable `Payment` row (the full financial history, forever), raw webhooks live in `billing_webhook_calls` (pruned after `prune_after_days`), and the subscription row itself keeps the key timestamps (`trial_ends_at`, `cancels_at`, `grace_ends_at`, `recurring_attempts`). What's **not** recorded: a status-transition log — `status` is overwritten in place.
+What's recorded out of the box: every charge is an immutable `Payment` row (the full financial history, forever), raw webhooks live in `billing_webhook_calls` (pruned after `prune_after_days`), and the subscription row itself keeps the key timestamps (`trial_ends_at`, `cancels_at`, `pause_ends_at`, `grace_ends_at`, `recurring_attempts`). What's **not** recorded: a status-transition log — `status` is overwritten in place.
 
 If you want that chronology, every transition already fires an event — one listener in your app writes the journal (`SubscriptionLog` below is your own model, or point the same listener at `spatie/laravel-activitylog`):
 

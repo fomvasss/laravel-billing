@@ -24,6 +24,9 @@ return new class extends Migration
             $table->json('trial_notices_sent')->nullable();
             $table->timestamp('current_period_ends_at')->nullable();
             $table->timestamp('cancels_at')->nullable();
+            // Scheduled auto-resume for Subscription::pause($until) — null means an indefinite
+            // pause, only resume() ends it. See billing:expire-pauses.
+            $table->timestamp('pause_ends_at')->nullable();
             // Dunning state — see "Recurring charges" in README.
             $table->timestamp('grace_ends_at')->nullable();
             $table->timestamp('next_retry_at')->nullable();
@@ -37,6 +40,7 @@ return new class extends Migration
 
             $table->index(['billable_type', 'billable_id']);
             $table->index(['status', 'current_period_ends_at']);
+            $table->index(['status', 'pause_ends_at']);
         });
     }
 

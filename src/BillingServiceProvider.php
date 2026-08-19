@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Fomvasss\Billing;
 
+use Fomvasss\Billing\Console\ExpirePausesCommand;
 use Fomvasss\Billing\Console\ExpireTrialsCommand;
 use Fomvasss\Billing\Console\ProcessRecurringChargesCommand;
 use Fomvasss\Billing\Console\ReconcilePendingPaymentsCommand;
@@ -69,6 +70,7 @@ class BillingServiceProvider extends ServiceProvider
                 ProcessRecurringChargesCommand::class,
                 ReconcilePendingPaymentsCommand::class,
                 ExpireTrialsCommand::class,
+                ExpirePausesCommand::class,
                 \Fomvasss\Billing\Console\StripeRegisterWebhookCommand::class,
                 \Fomvasss\Billing\Console\HealthCommand::class,
             ]);
@@ -200,6 +202,10 @@ class BillingServiceProvider extends ServiceProvider
             // payment could sit unresolved for up to ~2h before this ever looked at it.
             $schedule->command('billing:reconcile-pending-payments')->everyFifteenMinutes()->withoutOverlapping();
             $schedule->command('billing:expire-trials')->daily();
+            // Hourly, not daily like expire-trials above: a paused subscription has isActive()
+            // false, so a full day's lag past $until would deny access well beyond what the
+            // customer scheduled. No money moves here, so hourly costs nothing extra.
+            $schedule->command('billing:expire-pauses')->hourly();
             $schedule->command('model:prune', ['--model' => [\Fomvasss\Billing\Webhooks\BillingWebhookCall::class]])->daily();
         });
     }

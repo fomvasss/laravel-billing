@@ -114,12 +114,27 @@ class SubscriptionUsageTest extends TestCase
 
         $subscription->pause();
         $this->assertSame(SubscriptionStatus::Paused, $subscription->fresh()->status);
+        $this->assertNull($subscription->fresh()->pause_ends_at);
 
         $subscription->resume();
         $this->assertSame(SubscriptionStatus::Active, $subscription->fresh()->status);
 
         Event::assertDispatched(SubscriptionPaused::class);
         Event::assertDispatched(SubscriptionResumed::class);
+    }
+
+    public function test_pause_with_until_stores_it_and_resume_clears_it(): void
+    {
+        $subscription = $this->subscription(includedUnits: null);
+        $subscription->update(['status' => SubscriptionStatus::Active]);
+        $until = now()->addWeek();
+
+        $subscription->pause($until);
+        // Compared to the second — the DB column truncates microseconds, $until doesn't.
+        $this->assertSame($until->format('Y-m-d H:i:s'), $subscription->fresh()->pause_ends_at->format('Y-m-d H:i:s'));
+
+        $subscription->resume();
+        $this->assertNull($subscription->fresh()->pause_ends_at);
     }
 
     private function subscription(?float $includedUnits): Subscription

@@ -922,6 +922,28 @@ foreach (['base' => 'stripe', 'ai-addon' => 'stripe', 'channel-viber' => 'wayfor
 
 Cancelling or lapsing one doesn't touch the others — each row is its own independent lifecycle.
 
+**Checking what a customer can access.** `hasActiveSubscription($planCode)`/`activeSubscription($planCode)` (see "`Payable` and `Billable`") already narrow to one plan — enough when access maps 1:1 to a plan code. For finer-grained, per-feature access (a plan unlocks several features, or the same feature is unlockable by more than one plan), store the feature list on the `Price` (or `Plan`, if it's the same across that plan's prices) in `meta` — the package never reads it, it's yours to define:
+
+```php
+$plan->prices()->create([/* ... */, 'meta' => ['features' => ['api-access', 'export-reports']]]);
+```
+
+Then a small helper on your `Billable` model, aggregating across *all* currently active subscriptions (not just one — the whole point of this recipe is that a customer can hold several at once):
+
+```php
+public function hasFeature(string $feature): bool
+{
+    return $this->subscriptions()
+        ->active()
+        ->whereHas('price', fn ($q) => $q->whereJsonContains('meta->features', $feature))
+        ->exists();
+}
+```
+
+`whereJsonContains()` compiles to the right dialect on its own (MySQL `JSON_CONTAINS`, Postgres `@>`, SQLite `json_each`) — no raw SQL to keep portable by hand.
+
+One thing the package deliberately doesn't guard: nothing stops two active subscriptions on the same `Price` for the same billable. If your product treats that as an accidental duplicate rather than a valid state (unlike the base+add-on mix above), check `hasActiveSubscription($planCode)` in your own `subscribe()` action before calling `Billing::charge()`.
+
 ### 6. The customer's card changed / stopped working
 
 When a renewal charge fails, nothing special is required — that's what dunning is for: the subscription goes `past_due` but `isActive()` stays true through the grace window, `SubscriptionPaymentFailed` fires (your cue to email "we couldn't charge your card — update it" with a payment link), and retries run every `retry_interval_hours`. A card reissued by the same bank sometimes starts working again on its own (network token updates), in which case a retry simply succeeds. After `max_recurring_attempts` the subscription is `canceled`.
@@ -966,6 +988,21 @@ $plan->prices()->create([/* ... */, 'grace_access' => true]);  // this one: keep
 Only `isActive()` (and the matching `Subscription::active()` scope) reads this — `recurring_attempts`/`grace_ends_at`/the retry cadence and the eventual cancellation are identical either way. When access is cut immediately, `SubscriptionAccessSuspended` fires once, right at that moment (not on every subsequent retry within the same `past_due` episode) — your cue for a harder "access suspended, update your card to restore it" notice, distinct from `SubscriptionPaymentFailed`, which fires on every retry regardless of the access policy.
 
 Either way — grace kept access on, or it was cut and the customer paid to restore it — the eventual successful retry doesn't shift the billing anchor to make up for the delay: `current_period_ends_at` is never touched while `past_due`, so the next period is computed from the *originally scheduled* end date, not from the day the card actually got charged. A period due January 1st that recovers on January 4th still renews February 1st, not February 4th — the days spent in `past_due` are effectively free, never billed for or clawed back.
+
+### 8. Raising a tariff without touching current subscribers (grandfathering)
+
+`Subscription::$price_id` points at one `Price` row, not at a `Plan` — that's what makes grandfathering free: never edit `amount` on an existing `Price` (it's a live FK target, not a historical snapshot; one `update()` reprices everyone still on it). Instead:
+
+```php
+$newPrice = $plan->prices()->create([/* ... */, 'amount' => 15000, 'is_active' => true]);
+$oldPrice->update(['is_active' => false]); // hide from new signups, nothing else changes
+```
+
+Existing subscriptions keep their old `price_id`, so `billing:process-recurring-charges` keeps charging the old `amount` on every renewal — `is_active` is consumer-side only (like `meta`), just filter `Price::where('is_active', true)` on your pricing page/checkout. To sunset the old tariff after some grace window, bulk `swapPlan()` (no proration, no gateway call — the new amount applies starting the *next* renewal, current period runs out at the old price):
+
+```php
+Subscription::where('price_id', $oldPrice->id)->each(fn ($s) => $s->swapPlan($newPrice));
+```
 
 ## Money
 

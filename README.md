@@ -91,6 +91,8 @@ HUTKO_SECRET_KEY=
 
 Leave the rest alone — an unset gateway stays unconfigured and only ever errors if something actually tries to charge through it.
 
+Driver-level debug logging (`AbstractGateway::log()`, via the default log channel) is off by default — `BILLING_DEBUG=true` for dev/staging while wiring up a gateway; never leave it on in production, since a driver may log raw request/response data including tokens.
+
 Same list at runtime, if you're building a settings UI rather than reading a file — every driver has a static `credentialFields()`, callable straight on the class, no instance/credentials needed:
 
 ```php
@@ -180,7 +182,7 @@ $result = app(BillingManager::class)->charge($payment, new ChargeOptions(
 return redirect($payment->payment_url);
 ```
 
-`charge()` writes `external_id`/`payment_url`/`payment_url_expires_at` back onto `$payment` — safe to call again on the same `Payment` once the link expires (each driver decides its own TTL). `payment_url` is always a plain, redirectable link, no matter which gateway: even LiqPay, whose checkout page only accepts a client-submitted form, gets one — the form is cached and served through a package-owned page that submits it for you.
+`charge()` writes `external_id`/`payment_url`/`payment_url_expires_at` back onto `$payment` — safe to call again on the same `Payment` once the link expires (each driver decides its own TTL, via its `link_ttl_minutes` config key — e.g. `MONOBANK_LINK_TTL_MINUTES`, default 60 min, 1440 for WayForPay/Hutko). `payment_url` is always a plain, redirectable link, no matter which gateway: even LiqPay, whose checkout page only accepts a client-submitted form, gets one — the form is cached and served through a package-owned page that submits it for you.
 
 If you need the raw driver result instead (building your own API response for a SPA, say): `$result->url` is set for every gateway except LiqPay, which sets `$result->form` (`['action' => ..., 'fields' => [...]]`) instead — POST those fields to that action yourself.
 
@@ -579,7 +581,7 @@ Three artisan commands, off by default (`billing.schedule.enabled`, since they t
 
 | Command | Runs | What it does |
 |---|---|---|
-| `billing:process-recurring-charges` | every minute | First finalizes subscriptions whose `cancels_at` has passed (status → `canceled`, `SubscriptionCancelled` fires) so a period-end cancellation is never billed again. Then finds subscriptions where `current_period_ends_at <= now()` and charges the saved `PaymentMethod` via `chargePaymentMethod()` — unless an earlier renewal `Payment` is still `pending` (webhook not yet resolved), which blocks a second charge for the same period. Only *initiates* the charge — the outcome arrives later through the normal webhook pipeline, handled automatically: the period advances on `PaymentSucceeded`; on `PaymentFailed` the subscription goes `past_due` and is retried every `retry_interval_hours` (default 24 — spaced out, *not* every scheduler run) until `max_recurring_attempts` is reached, then `SubscriptionCancelled`. With the defaults that's 3 attempts a day apart across the 3-day grace window. **No saved card to charge** (never tokenized, or detached since the last renewal) gets the identical grace/retry treatment via `Subscription::recordRenewalFailure()` — it doesn't stall in `active` waiting for a card that never arrives. |
+| `billing:process-recurring-charges` | every minute | First finalizes subscriptions whose `cancels_at` has passed (status → `canceled`, `SubscriptionCancelled` fires) so a period-end cancellation is never billed again. Then finds subscriptions where `current_period_ends_at <= now()` and charges the saved `PaymentMethod` via `chargePaymentMethod()` — unless an earlier renewal `Payment` is still `pending` (webhook not yet resolved), which blocks a second charge for the same period. Only *initiates* the charge — the outcome arrives later through the normal webhook pipeline, handled automatically: the period advances on `PaymentSucceeded`; on `PaymentFailed` the subscription goes `past_due` and is retried every `retry_interval_hours` (default 24 — spaced out, *not* every scheduler run) until `max_recurring_attempts` is reached, then `SubscriptionCancelled`. With the defaults that's 3 attempts a day apart across the 3-day grace window (`grace_period_days`). **No saved card to charge** (never tokenized, or detached since the last renewal) gets the identical grace/retry treatment via `Subscription::recordRenewalFailure()` — it doesn't stall in `active` waiting for a card that never arrives. |
 | `billing:reconcile-pending-payments` | every 15 min | Fallback for a `Payment` stuck `pending` because a webhook was lost, or a gateway `expired` status that never gets its own webhook. Only looks at payments older than `config('billing.reconcile_after_minutes')` (default 60 min) — that cutoff already delays how soon a stuck payment qualifies, which is why this runs more often than the other two, not hourly like them. A failure on one payment is reported and skipped, never blocks the rest. |
 | `billing:expire-trials` | daily | Dispatches `TrialWillEnd` at each configured `trial_ending_notices` interval (once per subscription per notice; when several become due at once only the closest fires), then moves `trialing` subscriptions past `trial_ends_at` to `ended`. Converting a trial to paid is a normal `chargeWithMethod()` call, same as any renewal (see "Free trial period" in Recipes). |
 | `billing:expire-pauses` | hourly | Resumes `paused` subscriptions whose `pause_ends_at` (set via `pause($until)`) has passed — hourly rather than daily since a paused subscription has no access (`isActive()` false) and no money is at stake. Indefinite pauses (`pause_ends_at` null) are untouched. |
@@ -1098,7 +1100,7 @@ $plan->prices()->create(['interval' => Interval::Month, ...]);
 if ($subscription->status === SubscriptionStatus::PastDue) { ... } // reading a cast column gives the enum instance
 ```
 
-Each enum also has `label()` for UI (`'Past due'`) and the usual `cases()` for building selects. `Interval::Minute`/`Hour` work for real short-cycle billing too (hourly parking/equipment rental, not just testing) — the every-minute default schedule covers them out of the box; just rethink the dunning defaults, since a 24-hour retry interval and a 3-day grace make no sense against a one-hour period (e.g. `BILLING_MAX_RECURRING_ATTEMPTS=1`).
+Each enum also has `label()` for UI (`'Past due'`) and the usual `cases()` for building selects. `Interval::Minute`/`Hour` work for real short-cycle billing too (hourly parking/equipment rental, not just testing) — the every-minute default schedule covers them out of the box; just rethink the dunning defaults, since a 24-hour retry interval (`retry_interval_hours`) and a 3-day grace (`grace_period_days`) make no sense against a one-hour period (e.g. `BILLING_MAX_RECURRING_ATTEMPTS=1`).
 
 ## Currency conversion
 

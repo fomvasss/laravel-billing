@@ -81,6 +81,7 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             url: $data['url'],
             expiresAt: isset($data['expires_at']) ? Carbon::createFromTimestamp($data['expires_at']) : null,
             externalId: $data['id'],
+            raw: $data,
         );
     }
 

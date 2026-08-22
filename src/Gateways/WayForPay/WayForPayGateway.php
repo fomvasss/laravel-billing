@@ -101,7 +101,7 @@ class WayForPayGateway extends AbstractGateway implements ChecksPaymentStatus, T
             throw new BillingException('WayForPay: purchase request did not return a url: ' . json_encode($data));
         }
 
-        return new PaymentResult(url: $data['url'], expiresAt: now()->addMinutes($this->linkTtlMinutes()));
+        return new PaymentResult(url: $data['url'], expiresAt: now()->addMinutes($this->linkTtlMinutes()), raw: $data);
     }
 
     public function handleWebhook(BillingWebhookCall $webhookCall): WebhookResult

@@ -174,6 +174,25 @@ class ProcessRecurringChargesCommand extends Command
             return null;
         }
 
+        $price = $subscription->price;
+        $resolved = $billing->resolveChargeAmount($price, $subscription->gateway);
+        $multiplier = $price->chargeMultiplier($subscription);
+
+        $amount = new Money((int) round($resolved->money->amount * $multiplier), $resolved->money->currency);
+
+        // Nothing to charge — a metered period nobody used, or a licensed one down to zero seats.
+        // Every gateway rejects a zero/negative debit, and the rejected attempt would leave a
+        // pending Payment behind that blocks this subscription's renewals for good. The period is
+        // still owed to the customer, so advance it directly.
+        //
+        // Checked BEFORE the card: whether a card is on file is irrelevant to a period that owes
+        // nothing, and dunning a customer over a bill of zero would eventually cancel them for it.
+        if ($amount->amount <= 0) {
+            $subscription->recordRenewalSuccess();
+
+            return null;
+        }
+
         $method = PaymentMethod::query()
             ->where('billable_type', $subscription->billable_type)
             ->where('billable_id', $subscription->billable_id)
@@ -194,22 +213,6 @@ class ProcessRecurringChargesCommand extends Command
             // subscription would stay `active` on a stale current_period_ends_at and get re-picked
             // by this command forever, never reaching past_due or ever cancelling.
             $subscription->recordRenewalFailure();
-
-            return null;
-        }
-
-        $price = $subscription->price;
-        $resolved = $billing->resolveChargeAmount($price, $subscription->gateway);
-        $multiplier = $price->chargeMultiplier($subscription);
-
-        $amount = new Money((int) round($resolved->money->amount * $multiplier), $resolved->money->currency);
-
-        // Nothing to charge — a metered period nobody used, or a licensed one down to zero seats.
-        // Every gateway rejects a zero/negative debit, and the rejected attempt would leave a
-        // pending Payment behind that blocks this subscription's renewals for good. The period is
-        // still owed to the customer, so advance it directly.
-        if ($amount->amount <= 0) {
-            $subscription->recordRenewalSuccess();
 
             return null;
         }

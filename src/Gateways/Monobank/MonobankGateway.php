@@ -76,6 +76,7 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
             url: $data['pageUrl'],
             expiresAt: now()->addMinutes($this->linkTtlMinutes(60)),
             externalId: $data['invoiceId'],
+            raw: $data,
         );
     }
 

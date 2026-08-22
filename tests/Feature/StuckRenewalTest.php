@@ -52,6 +52,28 @@ class StuckRenewalTest extends TestCase
         Http::assertNothingSent();
     }
 
+    /** Whether a card is on file is irrelevant to a period that owes nothing. */
+    public function test_a_metered_period_with_no_usage_advances_even_without_a_saved_card(): void
+    {
+        Event::fake([SubscriptionRenewed::class, SubscriptionPaymentFailed::class]);
+        Http::fake();
+
+        $subscription = $this->dueSubscription(['pricing_type' => 'metered']);
+        PaymentMethod::query()->delete();
+
+        $periodEnd = $subscription->current_period_ends_at;
+
+        $this->artisan('billing:process-recurring-charges')->assertSuccessful();
+
+        $subscription->refresh();
+
+        $this->assertSame(SubscriptionStatus::Active, $subscription->status);
+        $this->assertSame(0, $subscription->recurring_attempts);
+        $this->assertTrue($subscription->current_period_ends_at->greaterThan($periodEnd));
+        Event::assertDispatchedTimes(SubscriptionRenewed::class, 1);
+        Event::assertNotDispatched(SubscriptionPaymentFailed::class);
+    }
+
     public function test_an_initiation_that_never_reached_the_gateway_fails_instead_of_hanging_pending(): void
     {
         Http::fake(fn () => throw new ConnectionException('timed out'));

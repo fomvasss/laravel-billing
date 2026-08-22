@@ -70,7 +70,7 @@ class HutkoGateway extends AbstractGateway implements TokenizesPaymentMethod, \F
             'lifetime' => $this->linkTtlMinutes() * 60,
         ]));
 
-        return new PaymentResult(url: $data['checkout_url'], expiresAt: now()->addMinutes($this->linkTtlMinutes()));
+        return new PaymentResult(url: $data['checkout_url'], expiresAt: now()->addMinutes($this->linkTtlMinutes()), raw: $data);
     }
 
     public function handleWebhook(BillingWebhookCall $webhookCall): WebhookResult

@@ -24,6 +24,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Str;
 use Fomvasss\Billing\Webhooks\BillingWebhookCall;
 
 /**
@@ -159,10 +160,16 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
 
     public function refund(Payment $payment, ?Money $amount = null): PaymentResult
     {
-        $response = $this->http()->asForm()->post('/refunds', array_filter([
-            'payment_intent' => $payment->external_id,
-            'amount' => $amount?->amount,
-        ]))->throw();
+        // A fresh key per call, not one derived from the payment: two deliberate partial refunds of
+        // the same amount must both go through, while http()'s retry (which fires on a timeout too,
+        // when Stripe may already have refunded) must not return the money twice.
+        $response = $this->http()
+            ->withHeaders(['Idempotency-Key' => 'refund-' . Str::uuid()->toString()])
+            ->asForm()
+            ->post('/refunds', array_filter([
+                'payment_intent' => $payment->external_id,
+                'amount' => $amount?->amount,
+            ]))->throw();
 
         return new PaymentResult(externalId: $payment->external_id, raw: $response->json());
     }
@@ -234,9 +241,15 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
     public function chargePaymentMethod(Payment $payment, PaymentMethod $method, ChargeOptions $options = new ChargeOptions()): PaymentResult
     {
         // retry(1) overrides http()'s default retry(2, 200) — a card decline is a normal business
-        // outcome to inspect below, not a transient failure worth retrying (and retrying a charge
-        // attempt at all is a bad idea without an idempotency key, which this call doesn't send).
-        $response = $this->http()->retry(1)->asForm()->post('/payment_intents', array_filter([
+        // outcome to inspect below, not a transient failure worth retrying. The idempotency key is
+        // the payment's own id: every renewal attempt gets a fresh Payment row, so it never
+        // collapses two intended charges, but a caller retrying the same row after a timeout gets
+        // Stripe's original PaymentIntent back instead of a second debit.
+        $response = $this->http()
+            ->withHeaders(['Idempotency-Key' => 'charge-' . $payment->id])
+            ->retry(1)
+            ->asForm()
+            ->post('/payment_intents', array_filter([
             'amount' => $payment->amount,
             'currency' => strtolower($payment->currency),
             'customer' => $method->external_customer_id,

@@ -151,7 +151,7 @@ class LiqPayGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             'action' => 'refund',
             'order_id' => (string) $payment->id,
             'amount' => $amount !== null ? $this->formatAmount($amount->amount) : null,
-        ]);
+        ], retries: 1);
 
         return new PaymentResult(externalId: $payment->external_id, raw: $response);
     }
@@ -207,7 +207,7 @@ class LiqPayGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             'ip' => $options->raw['ip'] ?? '127.0.0.1',
             'is_recurring' => true,
             'server_url' => route('billing.webhook', ['gateway' => $this->gatewayName]),
-        ]);
+        ], retries: 1);
 
         return new PaymentResult(externalId: (string) ($response['payment_id'] ?? null), raw: $response);
     }
@@ -294,7 +294,12 @@ class LiqPayGateway extends AbstractGateway implements RefundsPayments, ChecksPa
         return ['UAH', 'USD', 'EUR'];
     }
 
-    protected function api(array $params): array
+    /**
+     * $retries = 1 (no retry) for anything that moves money: Laravel retries a ConnectionException
+     * too, and a timeout says nothing about whether LiqPay already debited the card — without a
+     * gateway-side idempotency key a second attempt is a second debit.
+     */
+    protected function api(array $params, int $retries = 2): array
     {
         $params = array_filter(['version' => 3, 'public_key' => $this->publicKey(), ...$params], static fn ($v) => $v !== null);
 
@@ -302,7 +307,7 @@ class LiqPayGateway extends AbstractGateway implements RefundsPayments, ChecksPa
 
         return Http::asForm()
             ->timeout(15)
-            ->retry(2, 200)
+            ->retry($retries, 200)
             ->post(self::API_URL, ['data' => $data, 'signature' => $this->sign($data)])
             ->throw()
             ->json();

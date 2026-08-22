@@ -203,9 +203,11 @@ class HutkoGateway extends AbstractGateway implements TokenizesPaymentMethod, \F
         $fields['merchant_id'] = $this->merchantId();
         $fields['signature'] = $this->sign($fields);
 
+        // retry(1): Laravel retries a ConnectionException too, and a timeout says nothing about
+        // whether Hutko already debited the card — a second attempt can be a second debit.
         $data = Http::baseUrl(self::BASE_URL)
             ->timeout(15)
-            ->retry(2, 200)
+            ->retry(1)
             ->post('recurring', ['request' => $fields])
             ->throw()
             ->json('response');

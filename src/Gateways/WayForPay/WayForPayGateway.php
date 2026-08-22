@@ -226,7 +226,10 @@ class WayForPayGateway extends AbstractGateway implements ChecksPaymentStatus, T
             ...$fields['productName'], ...$fields['productCount'], ...$fields['productPrice'],
         ]);
 
-        $data = Http::timeout(15)->retry(2, 200)->post(self::API_URL, $fields)->throw()->json();
+        // retry(1): Laravel retries a ConnectionException too, and a timeout says nothing about
+        // whether WayForPay already debited the card. A repeated CHARGE on the same orderReference
+        // is not guaranteed to be rejected, so a second attempt can be a second debit.
+        $data = Http::timeout(15)->retry(1)->post(self::API_URL, $fields)->throw()->json();
 
         return new PaymentResult(externalId: $data['orderReference'] ?? null, raw: $data);
     }

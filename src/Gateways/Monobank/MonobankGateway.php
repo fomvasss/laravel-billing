@@ -140,7 +140,9 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
 
     public function refund(Payment $payment, ?Money $amount = null): PaymentResult
     {
-        $response = $this->http()->post('/api/merchant/invoice/cancel', array_filter([
+        // retry(1): same reasoning as chargePaymentMethod() — a retried cancel after a timeout
+        // can return money twice.
+        $response = $this->http()->retry(1)->post('/api/merchant/invoice/cancel', array_filter([
             'invoiceId' => $payment->external_id,
             'amount' => $amount?->amount,
         ]))->throw();
@@ -191,7 +193,12 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
      */
     public function chargePaymentMethod(Payment $payment, PaymentMethod $method, ChargeOptions $options = new ChargeOptions()): PaymentResult
     {
-        $response = $this->http()->post('/api/merchant/wallet/payment', array_filter([
+        // retry(1) overrides http()'s default: Laravel retries a ConnectionException too, and a
+        // timeout says nothing about whether the bank already debited the card. Monobank has no
+        // idempotency key and does not deduplicate by `reference`, so a second attempt is a second
+        // debit — a failed initiation is written off by the caller instead (see
+        // ProcessRecurringChargesCommand).
+        $response = $this->http()->retry(1)->post('/api/merchant/wallet/payment', array_filter([
             ...$options->raw,
             'cardToken' => $method->external_id,
             'amount' => $payment->amount,

@@ -302,7 +302,16 @@ protected function http(): PendingRequest
 }
 ```
 
-One exception worth knowing: **don't retry a charge attempt** unless the gateway supports idempotency keys, or a network blip can double-charge a customer. `StripeGateway::chargePaymentMethod()` overrides the shared retry with `retry(1)` for exactly this reason.
+One exception worth knowing: **never retry anything that moves money** — a charge or a refund — unless the gateway supports idempotency keys. Laravel's `retry()` fires on a `ConnectionException` too, and a timeout tells you nothing about whether the bank already debited the card, so the second attempt is a second debit. Override the shared retry per call:
+
+```php
+$response = $this->http()->retry(1)->post('/charge', $fields);          // no idempotency key available
+$response = $this->http()                                              // key available — retrying is safe
+    ->withHeaders(['Idempotency-Key' => 'charge-' . $payment->id])
+    ->post('/charge', $fields);
+```
+
+All five built-in drivers do this; `StripeGateway` is the one that sends a key (a fresh one per `refund()` call, so two deliberate partial refunds of the same amount both go through).
 
 Relatedly, a declined card is a *business outcome*, not a transport failure — return it as a `PaymentResult` rather than throwing, so the caller can record the failure. Only genuine wiring errors (bad credentials, malformed request) should throw.
 
@@ -347,6 +356,7 @@ Add a tamper case (flip a byte in the body, expect rejection) and, if the gatewa
 - [ ] Paid callbacks checked against the payment's amount/currency (`paidAmountMismatch()`)
 - [ ] Gateway commission parsed into `fee` where the callback reports it (`feeFrom()`)
 - [ ] Credentials read from `$this->credentials`, not `config()`
+- [ ] Charges and refunds are sent exactly once (`retry(1)`) unless an idempotency key makes a retry safe
 - [ ] Validator fails closed on a missing secret; `hash_equals()` for comparison; rotating keys cached with one throttled retry
 - [ ] Checked whether the gateway needs a specific acknowledgment body
 - [ ] HTTP calls have `timeout()`; charge attempts aren't blindly retried

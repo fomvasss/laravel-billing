@@ -224,7 +224,7 @@ class WayForPayGateway extends AbstractGateway implements ChecksPaymentStatus, T
             'productCount' => $products['count'],
             'productPrice' => $products['price'],
             'recToken' => $method->external_id,
-            'serviceUrl' => route('billing.webhook', ['gateway' => $this->gatewayName]),
+            'serviceUrl' => $this->webhookUrl($options),
             'apiVersion' => 1,
         ], static fn ($value) => $value !== null && $value !== '');
 

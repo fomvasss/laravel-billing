@@ -134,6 +134,14 @@ Dynamic per-tenant credentials (instead of one static config array) — bind you
 $this->app->bind(\Fomvasss\Billing\Contracts\CredentialResolverContract::class, MyCredentialResolver::class);
 ```
 
+Multi-merchant setups work in both directions out of the box. Outgoing calls resolve credentials from the billable's `tenantId()`; incoming webhooks can't do that — a webhook has to pick a secret *before* it can verify anything — so the tenant rides in the callback URL as `?tenant={id}`, added automatically at charge time whenever the billable has one, and read back by every built-in validator. The hint is untrusted by construction and safe anyway: it only selects which secret to verify against, so a forged one picks the wrong secret and fails the signature check. Custom validators get it the same way:
+
+```php
+use Fomvasss\Billing\Support\WebhookTenant;
+
+$credentials = app(CredentialResolverContract::class)->resolve('mygateway', WebhookTenant::fromRequest($request));
+```
+
 ## `Payable` and `Billable`
 
 `payable` is what's being paid for (an `Order`, a `Subscription` renewal cycle); `billable` is who's paying. Both are polymorphic — any Eloquent model works with `payable`, but a `billable` model needs a `tenantId()` method (used for dynamic per-tenant credential resolution):

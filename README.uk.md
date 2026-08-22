@@ -130,6 +130,14 @@ php artisan billing:health monobank   # один конкретний
 $this->app->bind(\Fomvasss\Billing\Contracts\CredentialResolverContract::class, MyCredentialResolver::class);
 ```
 
+Мульти-мерчант працює в обидва боки з коробки. Вихідні виклики резолвлять креди з `tenantId()` білейбла; вхідні вебхуки так не можуть — вебхук має обрати секрет ще ДО того, як зможе щось перевірити — тож тенант їде в callback-URL як `?tenant={id}`, додається автоматично при списанні, коли в білейбла він є, і читається всіма вбудованими валідаторами. Хінт недовірений за побудовою і при цьому безпечний: він лише обирає, проти якого секрету перевіряти, тож підроблений обере не той секрет і не пройде перевірку підпису. Кастомні валідатори беруть його так само:
+
+```php
+use Fomvasss\Billing\Support\WebhookTenant;
+
+$credentials = app(CredentialResolverContract::class)->resolve('mygateway', WebhookTenant::fromRequest($request));
+```
+
 ## `Payable` і `Billable`
 
 `payable` — за що платять (`Order`, цикл підписки `Subscription`); `billable` — хто платить. Обидва поліморфні — будь-яка Eloquent-модель годиться для `payable`, а `billable`-моделі потрібен метод `tenantId()` (використовується для резолвингу динамічних per-tenant кредів):

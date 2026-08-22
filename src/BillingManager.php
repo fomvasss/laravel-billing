@@ -24,6 +24,7 @@ use Fomvasss\Billing\Models\PaymentMethod;
 use Fomvasss\Billing\Models\Price;
 use Fomvasss\Billing\Support\DefaultWebhookResponder;
 use Fomvasss\Billing\Support\Money;
+use Fomvasss\Billing\Support\WebhookTenant;
 use Illuminate\Support\Facades\Cache;
 
 class BillingManager
@@ -163,6 +164,7 @@ class BillingManager
         }
 
         $this->assertReceiptItemsMatchAmount($payment, $options);
+        $options = $this->withTenantHint($payment, $options);
 
         $result = $driver->charge($payment, $options);
 
@@ -219,6 +221,7 @@ class BillingManager
         }
 
         $this->assertReceiptItemsMatchAmount($payment, $options);
+        $options = $this->withTenantHint($payment, $options);
 
         $result = $driver->chargePaymentMethod($payment, $method, $options);
 
@@ -233,6 +236,26 @@ class BillingManager
         ])->save();
 
         return $result;
+    }
+
+    /**
+     * Stamps the billable's tenant onto the callback URL the gateway is about to be given, unless
+     * the caller already set one. Without it a multi-tenant app works in one direction only:
+     * outgoing calls resolve credentials by tenant, while the incoming webhook — which has to pick
+     * a secret BEFORE it can verify anything — falls back to the default tenant and answers 403.
+     * Apps on the default resolver never notice: it ignores the tenant either way.
+     */
+    protected function withTenantHint(Payment $payment, ChargeOptions $options): ChargeOptions
+    {
+        $tenantId = $payment->billable?->tenantId();
+
+        if ($tenantId === null || isset($options->webhookUrlParams[WebhookTenant::QUERY_KEY])) {
+            return $options;
+        }
+
+        return new ChargeOptions(...[
+            'webhookUrlParams' => [...$options->webhookUrlParams, WebhookTenant::QUERY_KEY => $tenantId],
+        ] + get_object_vars($options));
     }
 
     /**

@@ -8,6 +8,7 @@ use Fomvasss\Billing\Contracts\CredentialResolverContract;
 use Fomvasss\Billing\Support\WebhookPayload;
 use Illuminate\Http\Request;
 use Fomvasss\Billing\Contracts\SignatureValidator;
+use Fomvasss\Billing\Support\WebhookTenant;
 
 /**
  * merchantAccount;orderReference;amount;currency;authCode;cardPan;transactionStatus;reasonCode,
@@ -20,7 +21,7 @@ class WayForPaySignatureValidator implements SignatureValidator
 {
     public function isValid(Request $request): bool
     {
-        $secret = app(CredentialResolverContract::class)->resolve('wayforpay', null)['secret_key'] ?? null;
+        $secret = app(CredentialResolverContract::class)->resolve('wayforpay', WebhookTenant::fromRequest($request))['secret_key'] ?? null;
 
         // Fail closed — an unconfigured gateway's webhook route must reject, not verify against ''.
         if (! is_string($secret) || $secret === '') {

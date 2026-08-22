@@ -8,6 +8,7 @@ use Fomvasss\Billing\Contracts\CredentialResolverContract;
 use Fomvasss\Billing\Support\WebhookPayload;
 use Illuminate\Http\Request;
 use Fomvasss\Billing\Contracts\SignatureValidator;
+use Fomvasss\Billing\Support\WebhookTenant;
 
 /**
  * Same algorithm as HutkoGateway::sign(): drop `signature` from the body, ksort the rest, prepend
@@ -21,7 +22,7 @@ class HutkoSignatureValidator implements SignatureValidator
 {
     public function isValid(Request $request): bool
     {
-        $secretKey = app(CredentialResolverContract::class)->resolve('hutko', null)['secret_key'] ?? null;
+        $secretKey = app(CredentialResolverContract::class)->resolve('hutko', WebhookTenant::fromRequest($request))['secret_key'] ?? null;
 
         // Fail closed — an unconfigured gateway's webhook route must reject, not verify against ''.
         if (! is_string($secretKey) || $secretKey === '') {

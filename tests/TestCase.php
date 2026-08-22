@@ -12,6 +12,18 @@ abstract class TestCase extends OrchestraTestCase
 {
     use RefreshDatabase;
 
+    /**
+     * A gateway test whose Http::fake() pattern doesn't match the URL the driver actually calls
+     * would otherwise hit the real API and pass (or fail) for reasons that have nothing to do with
+     * the code under test. Anything unfaked is a bug in the test or in the URL.
+     */
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        \Illuminate\Support\Facades\Http::preventStrayRequests();
+    }
+
     protected function getPackageProviders($app): array
     {
         return [

@@ -213,7 +213,7 @@ class LiqPayGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             'order_id' => (string) $payment->id,
             'ip' => $options->raw['ip'] ?? '127.0.0.1',
             'is_recurring' => true,
-            'server_url' => route('billing.webhook', ['gateway' => $this->gatewayName]),
+            'server_url' => $this->webhookUrl($options),
         ], retries: 1);
 
         return new PaymentResult(externalId: (string) ($response['payment_id'] ?? null), raw: $response);

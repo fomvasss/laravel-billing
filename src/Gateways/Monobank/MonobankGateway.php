@@ -224,7 +224,7 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
                 'reference' => (string) $payment->id,
                 'basketOrder' => $this->basketOrder($options->receiptItems),
             ]),
-            'webHookUrl' => route('billing.webhook', ['gateway' => $this->gatewayName]),
+            'webHookUrl' => $this->webhookUrl($options),
         ]))->throw();
 
         $data = $response->json();

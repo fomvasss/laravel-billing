@@ -6,6 +6,7 @@ namespace Fomvasss\Billing\Gateways\Monobank;
 
 use Fomvasss\Billing\Contracts\CredentialResolverContract;
 use Fomvasss\Billing\Contracts\SignatureValidator;
+use Fomvasss\Billing\Support\WebhookTenant;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
@@ -15,17 +16,15 @@ use Illuminate\Support\Facades\Http;
  * retry with a fresh one only when verification with the cached key fails (never fetch per webhook
  * — the docs explicitly call that out).
  *
- * Credentials come through CredentialResolverContract with tenantId=null (same as the other
- * validators) — the incoming webhook has no tenant identifier of its own to look one up by before
- * the payload is verified. Fine for a single-merchant setup; a genuinely multi-merchant Monobank
- * integration needs a per-tenant webhook URL to know which token to use before verifying — not
- * built until a real consumer needs it.
+ * Credentials come through CredentialResolverContract, with the tenant taken from the callback
+ * URL's own hint (Support\WebhookTenant) — a multi-merchant setup caches a separate public key per
+ * merchant token, since each merchant has its own.
  */
 class MonobankSignatureValidator implements SignatureValidator
 {
     public function isValid(Request $request): bool
     {
-        $token = app(CredentialResolverContract::class)->resolve('monobank', null)['token'] ?? null;
+        $token = app(CredentialResolverContract::class)->resolve('monobank', WebhookTenant::fromRequest($request))['token'] ?? null;
 
         // Fail closed — without a token there's no way to fetch the pubkey to verify against.
         if (! is_string($token) || $token === '') {
@@ -45,7 +44,7 @@ class MonobankSignatureValidator implements SignatureValidator
 
         // Key may have rotated — refetch once and retry before rejecting. Throttled: without the
         // lock, a flood of garbage-signature requests would hit Monobank's API on every single one.
-        if (! Cache::add('billing:monobank:pubkey:refetch-lock', true, 300)) {
+        if (! Cache::add($this->cacheKey($token) . ':refetch-lock', true, 300)) {
             return false;
         }
 
@@ -90,11 +89,13 @@ class MonobankSignatureValidator implements SignatureValidator
 
     protected function publicKey(string $token, bool $forceRefresh = false): ?string
     {
+        $cacheKey = $this->cacheKey($token);
+
         if ($forceRefresh) {
-            Cache::forget('billing:monobank:pubkey');
+            Cache::forget($cacheKey);
         }
 
-        $key = Cache::get('billing:monobank:pubkey');
+        $key = Cache::get($cacheKey);
 
         if ($key !== null) {
             return $key;
@@ -105,9 +106,19 @@ class MonobankSignatureValidator implements SignatureValidator
         // Only a real key is cached — caching the null would keep answering 403 for a week after
         // one blip.
         if ($key !== null) {
-            Cache::put('billing:monobank:pubkey', $key, now()->addWeek());
+            Cache::put($cacheKey, $key, now()->addWeek());
         }
 
         return $key;
+    }
+
+    /**
+     * Per merchant token, not global: each merchant account has its own key pair, so a shared cache
+     * entry would have one tenant's webhooks verified against another tenant's key. Hashed — the
+     * token is a credential and cache keys end up in logs and dashboards.
+     */
+    protected function cacheKey(string $token): string
+    {
+        return 'billing:monobank:pubkey:' . hash('sha256', $token);
     }
 }

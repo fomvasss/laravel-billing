@@ -191,7 +191,7 @@ class HutkoGateway extends AbstractGateway implements TokenizesPaymentMethod, \F
             'amount' => $payment->amount,
             'currency' => $payment->currency,
             'rectoken' => $method->external_id,
-            'server_callback_url' => route('billing.webhook', ['gateway' => $this->gatewayName]),
+            'server_callback_url' => $this->webhookUrl($options),
             'client_ip' => $options->raw['ip'] ?? '127.0.0.1',
             // Same key/shape as charge()'s checkout/url request — NOT independently live-verified
             // against /api/recurring's own schema (only checkout/url's fiscalization was, see the

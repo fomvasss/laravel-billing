@@ -4,22 +4,19 @@ declare(strict_types=1);
 
 namespace Fomvasss\Billing\Listeners;
 
-use Fomvasss\Billing\Enums\Interval;
-use Fomvasss\Billing\Enums\PricingType;
 use Fomvasss\Billing\Enums\SubscriptionStatus;
+use Fomvasss\Billing\Events\PaymentCanceled;
 use Fomvasss\Billing\Events\PaymentFailed;
 use Fomvasss\Billing\Events\PaymentSucceeded;
 use Fomvasss\Billing\Events\SubscriptionCancelled;
-use Fomvasss\Billing\Events\SubscriptionRenewed;
-use Fomvasss\Billing\Models\Price;
 use Fomvasss\Billing\Models\Subscription;
-use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Log;
 
 /**
- * Reacts to PaymentSucceeded/PaymentFailed only when the Payment's payable is a Subscription —
- * i.e. a renewal charge (see ProcessRecurringChargesCommand), not an unrelated one-off Order
- * payment. Advances the period on success; on failure, applies the grace/dunning rules from
- * "Ідеї з support" in the package plan.
+ * Reacts to PaymentSucceeded/PaymentFailed/PaymentCanceled only when the Payment's payable is a
+ * Subscription — i.e. a renewal charge (see ProcessRecurringChargesCommand), not an unrelated
+ * one-off Order payment. Advances the period on success; on failure, applies the grace/dunning
+ * rules from "Ідеї з support" in the package plan.
  */
 class HandleSubscriptionPaymentOutcome
 {
@@ -31,34 +28,30 @@ class HandleSubscriptionPaymentOutcome
             return;
         }
 
-        $price = $subscription->price;
-
-        $subscription->update([
-            'status' => SubscriptionStatus::Active,
-            // A trial subscription is created before anyone knows how it will be paid
-            // (gateway=null) — the first successful payment is what decides it, and without this
-            // stamp process-recurring-charges (whereNotNull gateway) would never renew it.
-            'gateway' => $subscription->gateway ?? $event->payment->gateway,
-            'current_period_ends_at' => $this->nextPeriodEnd($subscription, $price),
-            'recurring_attempts' => 0,
-            'grace_ends_at' => null,
-            'next_retry_at' => null,
-            // usage resets on a successful renewal when it drove the bill (metered) OR when the
-            // price carries a period quota (included_units) — a fresh paid period means a fresh
-            // allowance either way. Quota-less flat/licensed usage is left alone: there it's just
-            // a counter the consumer owns.
-            'current_usage' => $price !== null && ($price->pricing_type === PricingType::Metered || $price->included_units !== null)
-                ? 0
-                : $subscription->current_usage,
-        ]);
-
-        SubscriptionRenewed::dispatch($subscription);
+        // Refuses (and logs) on a canceled/ended/paused subscription — see recordRenewalSuccess().
+        $subscription->recordRenewalSuccess($event->payment->gateway);
     }
 
     public function handlePaymentFailed(PaymentFailed $event): void
     {
-        $subscription = $event->payment->payable;
+        $this->recordFailure($event->payment->payable);
+    }
 
+    /**
+     * A renewal charge that ended canceled/expired rather than declined — an off-session
+     * PaymentIntent the gateway voided, a recurring order left to expire, or an attempt written
+     * off by reconciliation. For the subscription it is the same outcome as a decline: the period
+     * wasn't paid for. Without this it counted as nothing at all — the subscription kept its stale
+     * current_period_ends_at and got re-charged on every run, never advancing dunning and never
+     * hitting max_recurring_attempts.
+     */
+    public function handlePaymentCanceled(PaymentCanceled $event): void
+    {
+        $this->recordFailure($event->payment->payable);
+    }
+
+    protected function recordFailure(mixed $subscription): void
+    {
         if (! $subscription instanceof Subscription) {
             return;
         }
@@ -67,6 +60,18 @@ class HandleSubscriptionPaymentOutcome
         // checkout, not a failed renewal — dunning here would cancel the trial after a few
         // declined cards. The trial keeps running; expire-trials ends it if nobody converts.
         if ($subscription->status === SubscriptionStatus::Trialing) {
+            return;
+        }
+
+        // Dunning only applies while the subscription is still running. A late failure for a
+        // canceled/ended one has nothing left to cancel, and on a paused one it would resurrect
+        // the row as past_due — i.e. isActive() again, for a subscription the customer paused.
+        if (! in_array($subscription->status, [SubscriptionStatus::Active, SubscriptionStatus::PastDue], true)) {
+            Log::warning('Billing: ignored a renewal failure for a subscription that is no longer running', [
+                'subscription_id' => $subscription->id,
+                'status' => $subscription->status->value,
+            ]);
+
             return;
         }
 
@@ -80,28 +85,5 @@ class HandleSubscriptionPaymentOutcome
         }
 
         $subscription->recordRenewalFailure();
-    }
-
-    protected function nextPeriodEnd(Subscription $subscription, ?Price $price): ?Carbon
-    {
-        if ($price?->interval === null) {
-            return null; // one-off/lifetime price — no recurring cycle to advance
-        }
-
-        $base = $subscription->current_period_ends_at ?? now();
-        $count = $price->interval_count;
-
-        return match ($price->interval) {
-            Interval::Minute => $base->copy()->addMinutes($count),
-            Interval::Hour => $base->copy()->addHours($count),
-            Interval::Day => $base->copy()->addDays($count),
-            Interval::Week => $base->copy()->addWeeks($count),
-            // NoOverflow: Jan 30 + 1 month is Feb 28, not "Feb 30" spilling into Mar 2 (Carbon
-            // overflows by default). Known simplification: after one clamp the anchor day stays
-            // clamped (Jan 31 → Feb 28 → Mar 28), we don't keep the original day-of-month the way
-            // Stripe's billing anchor does.
-            Interval::Month => $base->copy()->addMonthsNoOverflow($count),
-            Interval::Year => $base->copy()->addYearsNoOverflow($count),
-        };
     }
 }

@@ -16,7 +16,7 @@ final readonly class WebhookResult
         /**
          * Value within $type — the exact vocabulary ProcessWebhookJob matches on to dispatch a core
          * event:
-         *  - Payment: 'succeeded' | 'failed' | 'refunded' | 'canceled' (canceled dispatches nothing)
+         *  - Payment: 'succeeded' | 'failed' | 'refunded' | 'canceled'
          *  - Subscription: 'created' | 'renewed' | 'payment_failed' | 'canceled' | 'trial_will_end'
          *  - PaymentMethod: 'attached' | 'detached'
          *  - Ignored: unused

@@ -6,6 +6,7 @@ namespace Fomvasss\Billing\Support;
 
 use Fomvasss\Billing\DTO\WebhookResult;
 use Fomvasss\Billing\Enums\WebhookEventType;
+use Fomvasss\Billing\Events\PaymentCanceled;
 use Fomvasss\Billing\Events\PaymentFailed;
 use Fomvasss\Billing\Events\PaymentMethodAttached;
 use Fomvasss\Billing\Events\PaymentMethodDetached;
@@ -32,7 +33,8 @@ final class WebhookResultDispatcher
                 'succeeded' => PaymentSucceeded::dispatch($result->payment),
                 'failed' => PaymentFailed::dispatch($result->payment),
                 'refunded' => PaymentRefunded::dispatch($result->payment),
-                default => null, // 'canceled' and anything else — nothing to notify
+                'canceled' => PaymentCanceled::dispatch($result->payment),
+                default => null,
             },
             WebhookEventType::Subscription => match ($result->status) {
                 'created' => SubscriptionCreated::dispatch($result->subscription),

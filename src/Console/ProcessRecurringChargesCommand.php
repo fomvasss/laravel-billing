@@ -9,6 +9,7 @@ use Fomvasss\Billing\Contracts\TokenizesPaymentMethod;
 use Fomvasss\Billing\Enums\PaymentStatus;
 use Fomvasss\Billing\Enums\PaymentType;
 use Fomvasss\Billing\Enums\SubscriptionStatus;
+use Fomvasss\Billing\Events\PaymentFailed;
 use Fomvasss\Billing\Events\SubscriptionCancelled;
 use Fomvasss\Billing\Models\Payment;
 use Fomvasss\Billing\Models\PaymentMethod;
@@ -135,6 +136,16 @@ class ProcessRecurringChargesCommand extends Command
 
         $amount = new Money((int) round($resolved->money->amount * $multiplier), $resolved->money->currency);
 
+        // Nothing to charge — a metered period nobody used, or a licensed one down to zero seats.
+        // Every gateway rejects a zero/negative debit, and the rejected attempt would leave a
+        // pending Payment behind that blocks this subscription's renewals for good. The period is
+        // still owed to the customer, so advance it directly.
+        if ($amount->amount <= 0) {
+            $subscription->recordRenewalSuccess();
+
+            return false;
+        }
+
         $payment = Payment::create([
             'status' => PaymentStatus::Pending,
             'type' => PaymentType::Charge,
@@ -151,7 +162,21 @@ class ProcessRecurringChargesCommand extends Command
             'billable_id' => $subscription->billable_id,
         ]);
 
-        $billing->chargeWithMethod($payment, $method);
+        try {
+            $billing->chargeWithMethod($payment, $method);
+        } catch (\Throwable $exception) {
+            // The attempt never got off the ground (network timeout, rejected request, a gateway
+            // 5xx). Leaving the row pending would be the worst outcome: the pending-renewal guard
+            // above would block this subscription's renewals forever, while reconciliation can't
+            // resolve a row that never got an external_id. Writing it off as failed feeds the
+            // normal dunning path instead — and if the charge did reach the bank after all, its
+            // webhook still lands well within retry_interval_hours and flips the row to paid.
+            $payment->transitionTo(PaymentStatus::Failed, ['raw_response' => ['exception' => $exception->getMessage()]]);
+
+            PaymentFailed::dispatch($payment);
+
+            throw $exception;
+        }
 
         return true;
     }

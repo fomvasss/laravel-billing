@@ -4,11 +4,14 @@ declare(strict_types=1);
 
 namespace Fomvasss\Billing\Models;
 
+use Fomvasss\Billing\Enums\Interval;
+use Fomvasss\Billing\Enums\PricingType;
 use Fomvasss\Billing\Enums\SubscriptionStatus;
 use Fomvasss\Billing\Events\SubscriptionAccessSuspended;
 use Fomvasss\Billing\Events\SubscriptionCancelled;
 use Fomvasss\Billing\Events\SubscriptionPaused;
 use Fomvasss\Billing\Events\SubscriptionPaymentFailed;
+use Fomvasss\Billing\Events\SubscriptionRenewed;
 use Fomvasss\Billing\Events\SubscriptionResumed;
 use Fomvasss\Billing\Events\UsageLimitReached;
 use Illuminate\Database\Eloquent\Builder;
@@ -16,7 +19,9 @@ use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 
 class Subscription extends Model
 {
@@ -133,6 +138,80 @@ class Subscription extends Model
     public function swapPlan(Price $newPrice): void
     {
         $this->update(['price_id' => $newPrice->id]);
+    }
+
+    /**
+     * The successful counterpart of recordRenewalFailure(): moves into the next period and clears
+     * the whole dunning state. Shared by a paid renewal (HandleSubscriptionPaymentOutcome) and by a
+     * renewal that owed nothing at all and so never reached a gateway (ProcessRecurringChargesCommand
+     * on a metered period with zero consumption).
+     *
+     * Returns false, changing nothing, for a subscription that is no longer running: a late or
+     * replayed success must not silently revive a canceled/ended one, nor cut a pause short and
+     * strand pause_ends_at. Reviving those is a product decision the consumer makes from its own
+     * PaymentSucceeded listener, not something a stray webhook should do on its own.
+     */
+    public function recordRenewalSuccess(?string $gateway = null): bool
+    {
+        if (! in_array($this->status, [SubscriptionStatus::Trialing, SubscriptionStatus::Active, SubscriptionStatus::PastDue], true)) {
+            Log::warning('Billing: ignored a renewal success for a subscription that is no longer running', [
+                'subscription_id' => $this->id,
+                'status' => $this->status->value,
+            ]);
+
+            return false;
+        }
+
+        $price = $this->price;
+
+        $this->update([
+            'status' => SubscriptionStatus::Active,
+            // A trial subscription is created before anyone knows how it will be paid
+            // (gateway=null) — the first successful payment is what decides it, and without this
+            // stamp process-recurring-charges (whereNotNull gateway) would never renew it.
+            'gateway' => $this->gateway ?? $gateway,
+            'current_period_ends_at' => $this->nextPeriodEnd(),
+            'recurring_attempts' => 0,
+            'grace_ends_at' => null,
+            'next_retry_at' => null,
+            // usage resets on a successful renewal when it drove the bill (metered) OR when the
+            // price carries a period quota (included_units) — a fresh paid period means a fresh
+            // allowance either way. Quota-less flat/licensed usage is left alone: there it's just
+            // a counter the consumer owns.
+            'current_usage' => $price !== null && ($price->pricing_type === PricingType::Metered || $price->included_units !== null)
+                ? 0
+                : $this->current_usage,
+        ]);
+
+        SubscriptionRenewed::dispatch($this);
+
+        return true;
+    }
+
+    /** Null for a one-off/lifetime price — there is no recurring cycle to advance. */
+    public function nextPeriodEnd(): ?Carbon
+    {
+        $price = $this->price;
+
+        if ($price?->interval === null) {
+            return null;
+        }
+
+        $base = $this->current_period_ends_at ?? now();
+        $count = $price->interval_count;
+
+        return match ($price->interval) {
+            Interval::Minute => $base->copy()->addMinutes($count),
+            Interval::Hour => $base->copy()->addHours($count),
+            Interval::Day => $base->copy()->addDays($count),
+            Interval::Week => $base->copy()->addWeeks($count),
+            // NoOverflow: Jan 30 + 1 month is Feb 28, not "Feb 30" spilling into Mar 2 (Carbon
+            // overflows by default). Known simplification: after one clamp the anchor day stays
+            // clamped (Jan 31 → Feb 28 → Mar 28), we don't keep the original day-of-month the way
+            // Stripe's billing anchor does.
+            Interval::Month => $base->copy()->addMonthsNoOverflow($count),
+            Interval::Year => $base->copy()->addYearsNoOverflow($count),
+        };
     }
 
     /**

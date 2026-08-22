@@ -9,6 +9,7 @@ use Fomvasss\Billing\Console\ExpireTrialsCommand;
 use Fomvasss\Billing\Console\ProcessRecurringChargesCommand;
 use Fomvasss\Billing\Console\ReconcilePendingPaymentsCommand;
 use Fomvasss\Billing\Contracts\CredentialResolverContract;
+use Fomvasss\Billing\Events\PaymentCanceled;
 use Fomvasss\Billing\Events\PaymentFailed;
 use Fomvasss\Billing\Events\PaymentSucceeded;
 use Fomvasss\Billing\Exceptions\BillingException;
@@ -175,6 +176,7 @@ class BillingServiceProvider extends ServiceProvider
     {
         Event::listen(PaymentSucceeded::class, [HandleSubscriptionPaymentOutcome::class, 'handlePaymentSucceeded']);
         Event::listen(PaymentFailed::class, [HandleSubscriptionPaymentOutcome::class, 'handlePaymentFailed']);
+        Event::listen(PaymentCanceled::class, [HandleSubscriptionPaymentOutcome::class, 'handlePaymentCanceled']);
     }
 
     /**

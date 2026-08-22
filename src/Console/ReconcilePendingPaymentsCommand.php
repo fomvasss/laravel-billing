@@ -6,9 +6,12 @@ namespace Fomvasss\Billing\Console;
 
 use Fomvasss\Billing\BillingManager;
 use Fomvasss\Billing\Contracts\ChecksPaymentStatus;
+use Fomvasss\Billing\DTO\WebhookResult;
 use Fomvasss\Billing\Enums\PaymentStatus;
+use Fomvasss\Billing\Enums\WebhookEventType;
 use Fomvasss\Billing\Exceptions\BillingException;
 use Fomvasss\Billing\Models\Payment;
+use Fomvasss\Billing\Models\Subscription;
 use Fomvasss\Billing\Support\WebhookResultDispatcher;
 use Illuminate\Console\Command;
 
@@ -63,6 +66,22 @@ class ReconcilePendingPaymentsCommand extends Command
             return; // gateway no longer registered — leave it pending rather than guess
         }
 
+        // Nothing to poll WITH: a renewal charge whose initiation never returned a gateway
+        // reference (the process died mid-call). Polling by a null external_id either throws every
+        // run or looks up a nonexistent order forever, while the row keeps blocking this
+        // subscription's renewals through the pending guard. Past the cutoff it's a dead attempt —
+        // write it off so the canceled outcome reaches dunning.
+        //
+        // Renewals only: a Payment the consumer created up front and charges later (the emailed
+        // billing.pay link) legitimately sits pending with neither reference nor checkout URL.
+        if ($payment->external_id === null
+            && $payment->payment_url === null
+            && $payment->payable instanceof Subscription) {
+            $this->writeOff($payment);
+
+            return;
+        }
+
         if ($driver instanceof ChecksPaymentStatus) {
             WebhookResultDispatcher::dispatchOnce($payment->gateway, $driver->checkStatus($payment));
 
@@ -70,7 +89,25 @@ class ReconcilePendingPaymentsCommand extends Command
         }
 
         // No status-polling endpoint on this gateway — a TTL-expired pending payment is a dead checkout.
-        // transitionTo(), not update(): a webhook may have paid this row between the query and here.
-        $payment->transitionTo(PaymentStatus::Canceled);
+        $this->writeOff($payment);
+    }
+
+    /**
+     * transitionTo(), not update(): a webhook may have paid this row between the query and here.
+     * Dispatched through the shared dedup so a late webhook carrying the same outcome can't fire
+     * PaymentCanceled a second time.
+     */
+    protected function writeOff(Payment $payment): void
+    {
+        if (! $payment->transitionTo(PaymentStatus::Canceled)) {
+            return;
+        }
+
+        WebhookResultDispatcher::dispatchOnce($payment->gateway, new WebhookResult(
+            type: WebhookEventType::Payment,
+            status: 'canceled',
+            payment: $payment,
+            externalId: $payment->external_id ?? (string) $payment->id,
+        ));
     }
 }

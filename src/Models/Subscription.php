@@ -48,6 +48,28 @@ class Subscription extends Model
         ];
     }
 
+    /**
+     * Fills trial_ends_at from the Price's trial_days when a subscription is created as `trialing`
+     * without an explicit end date — otherwise the column would have to be restated at every call
+     * site that already picked the price. Deliberately narrow: only for a row that says it is a
+     * trial (a trial_ends_at on an `active` row is dead data — `onTrial()` and `billing:expire-trials`
+     * both key off the status), and never overriding a date the caller passed itself.
+     */
+    protected static function booted(): void
+    {
+        static::creating(function (self $subscription) {
+            if ($subscription->trial_ends_at !== null || $subscription->status !== SubscriptionStatus::Trialing) {
+                return;
+            }
+
+            $trialDays = $subscription->price?->trial_days ?? 0;
+
+            if ($trialDays > 0) {
+                $subscription->trial_ends_at = now()->addDays($trialDays);
+            }
+        });
+    }
+
     public function billable(): MorphTo
     {
         return $this->morphTo();

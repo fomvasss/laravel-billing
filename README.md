@@ -548,7 +548,7 @@ $subscription = Subscription::create([
     'price_id' => $price->id,
     'billable_type' => $organization::class,
     'billable_id' => $organization->id,
-    'trial_ends_at' => now()->addDays(14),
+    // trial_ends_at comes from the price's trial_days — pass it explicitly to override.
 ]);
 ```
 

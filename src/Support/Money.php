@@ -13,7 +13,14 @@ final readonly class Money
     public function __construct(
         public int $amount,
         public string $currency,
-    ) {}
+    ) {
+        // The column is `unsignedBigInteger`, which Postgres implements as a plain signed bigint —
+        // so this is the only place a negative amount is actually stopped. A refund is its own row
+        // with a positive amount, never a negative charge.
+        if ($amount < 0) {
+            throw new \InvalidArgumentException("Money amount cannot be negative, got {$amount} {$currency}.");
+        }
+    }
 
     /**
      * Bridge from however your own app stores prices — a `decimal:2` cast (a string, in Eloquent),

@@ -25,7 +25,10 @@ return new class extends Migration
             // String morph id — billables with int and UUID keys both fit (same as billing_payments).
             $table->string('billable_type');
             $table->string('billable_id', 64);
-            $table->string('external_customer_id')->nullable();
+            // Not nullable: NULLs don't collide in a unique index, so a nullable column would let
+            // the token uniqueness below be bypassed. Drivers without a gateway-side customer
+            // object derive a stable id of their own (see MonobankGateway::walletId()).
+            $table->string('external_customer_id');
             $table->string('external_id');
 
             $table->index(['billable_type', 'billable_id']);

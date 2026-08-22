@@ -46,6 +46,8 @@ return new class extends Migration
             $table->uuid('parent_payment_id')->nullable();
 
             $table->index(['tenant_id', 'status']);
+            // billing:reconcile-pending-payments' own lookup — pending rows older than the cutoff.
+            $table->index(['status', 'created_at']);
             $table->index(['gateway', 'external_id']);
             $table->index(['payable_type', 'payable_id']);
             $table->index(['billable_type', 'billable_id']);

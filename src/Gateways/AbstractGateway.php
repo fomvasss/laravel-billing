@@ -9,6 +9,7 @@ use Fomvasss\Billing\DTO\ChargeOptions;
 use Fomvasss\Billing\Exceptions\BillingException;
 use Fomvasss\Billing\Models\Payment;
 use Fomvasss\Billing\Models\PaymentMethod;
+use Fomvasss\Billing\Support\Money;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -159,6 +160,56 @@ abstract class AbstractGateway implements PaymentGatewayContract
         }
 
         return $mismatch;
+    }
+
+    /**
+     * Records a refund the gateway carried out without us asking — issued from its dashboard, or
+     * forced by a cardholder dispute. Without this `refundedAmount()` reports 0 for money that has
+     * already left the merchant account, and every "is this order still paid for" check built on it
+     * silently answers wrong.
+     *
+     * $cumulativeRefunded is the gateway's own running total for this charge, so a re-delivered or
+     * out-of-order callback settles to the same number instead of stacking: what gets recorded is
+     * the difference from what we already know about, capped at what's still refundable. Pass null
+     * when the gateway reports a full reversal without a figure. Returns null when there is nothing
+     * new to record — which is the normal case for the callback that echoes our own refund() call.
+     */
+    protected function recordExternalRefund(
+        Payment $charge,
+        ?int $cumulativeRefunded,
+        ?string $refundExternalId = null,
+        array $raw = [],
+    ): ?Payment {
+        if ($refundExternalId !== null && $charge->refunds()->withTrashed()->where('external_id', $refundExternalId)->exists()) {
+            return null; // already recorded, by us or by an earlier delivery of this same callback
+        }
+
+        $remainder = $charge->refundableRemainder();
+
+        $amount = $cumulativeRefunded === null
+            ? $remainder
+            : min($cumulativeRefunded - $charge->refundedAmount(), $remainder);
+
+        if ($amount <= 0) {
+            return null;
+        }
+
+        return Payment::recordRefundOf($charge, new Money($amount, $charge->currency), $refundExternalId, $raw);
+    }
+
+    /**
+     * A reversal this driver recognizes but can't put a trustworthy number on — logged loudly
+     * rather than swallowed, because refundedAmount() is about to disagree with the merchant
+     * account. Turning one of these into a real refund row needs the gateway's reversal payload
+     * verified against a live account first: recording the wrong figure is worse than recording
+     * nothing (see "Refunds issued outside the package" in the README).
+     */
+    protected function reportUnrecordedReversal(Payment $charge, array $payload): void
+    {
+        Log::warning("Billing [{$this->gatewayName}]: a reversal was reported for a payment but not recorded — refundedAmount() will understate it", [
+            'payment_id' => $charge->id,
+            'payload' => $payload,
+        ]);
     }
 
     /**

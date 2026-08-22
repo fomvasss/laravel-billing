@@ -13,6 +13,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Fomvasss\Billing\Support\Money;
 use Illuminate\Support\Facades\Log;
 
 class Payment extends Model
@@ -137,6 +138,36 @@ class Payment extends Model
     public function refundedAmount(): int
     {
         return (int) $this->refunds()->withTrashed()->where('status', PaymentStatus::Paid)->sum('amount');
+    }
+
+    /**
+     * The one place a refund row is built, whether it came from our own Billing::refund() call or
+     * from the gateway telling us about one issued elsewhere (its dashboard, a cardholder dispute).
+     * A refund is always its own row with a positive amount — the original charge is immutable.
+     */
+    public static function recordRefundOf(self $charge, Money $money, ?string $externalId = null, array $raw = []): self
+    {
+        return static::create([
+            'status' => PaymentStatus::Paid,
+            'type' => PaymentType::Refund,
+            'gateway' => $charge->gateway,
+            'amount' => $money->amount,
+            'currency' => $money->currency,
+            'external_id' => $externalId,
+            'raw_response' => $raw,
+            'tenant_id' => $charge->tenant_id,
+            'payable_type' => $charge->payable_type,
+            'payable_id' => $charge->payable_id,
+            'billable_type' => $charge->billable_type,
+            'billable_id' => $charge->billable_id,
+            'parent_payment_id' => $charge->id,
+        ]);
+    }
+
+    /** What can still be refunded against this charge, minor units. */
+    public function refundableRemainder(): int
+    {
+        return $this->amount - $this->refundedAmount();
     }
 
     /**

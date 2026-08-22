@@ -115,6 +115,15 @@ class WayForPayGateway extends AbstractGateway implements ChecksPaymentStatus, T
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
         }
 
+        // Refunded/Voided — a reversal carried out on WayForPay's side. Recognized and reported,
+        // but not turned into a refund row for the same reason as LiqPay's 'reversed': the payload's
+        // amount semantics for a partial refund aren't live-verified. See reportUnrecordedReversal().
+        if (in_array($payload['transactionStatus'] ?? null, ['Refunded', 'Voided'], true)) {
+            $this->reportUnrecordedReversal($payment, $payload);
+
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
+        }
+
         $status = match ($payload['transactionStatus'] ?? null) {
             'Approved' => PaymentStatus::Paid,
             'Declined' => PaymentStatus::Failed,
@@ -122,8 +131,7 @@ class WayForPayGateway extends AbstractGateway implements ChecksPaymentStatus, T
             // refused, the customer just never finished the checkout, and calling that a failure
             // puts a subscription into dunning over an abandoned link.
             'Expired' => PaymentStatus::Canceled,
-            // Pending/InProcessing/RefundInProcessing/Refunded/Voided — not a Payment-status
-            // transition here, same "recognized, no consumer yet" reasoning as LiqPay's 'reversed'
+            // Pending/InProcessing/RefundInProcessing — not terminal
             default => null,
         };
 

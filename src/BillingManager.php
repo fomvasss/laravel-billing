@@ -338,7 +338,7 @@ class BillingManager
             throw new BillingException("Only a paid charge can be refunded (payment {$payment->id} is {$payment->type->value}/{$payment->status->value}).");
         }
 
-        $money = $amount ?? new Money($payment->amount - $payment->refundedAmount(), $payment->currency);
+        $money = $amount ?? new Money($payment->refundableRemainder(), $payment->currency);
 
         if ($money->currency !== $payment->currency) {
             throw new BillingException("Refund currency \"{$money->currency}\" does not match the charge's \"{$payment->currency}\".");
@@ -354,21 +354,7 @@ class BillingManager
         // actually on its way back.
         $result = $driver->refund($payment, $money);
 
-        $refund = Payment::create([
-            'status' => PaymentStatus::Paid,
-            'type' => PaymentType::Refund,
-            'gateway' => $payment->gateway,
-            'amount' => $money->amount,
-            'currency' => $money->currency,
-            'external_id' => $result->externalId,
-            'raw_response' => $result->raw,
-            'tenant_id' => $payment->tenant_id,
-            'payable_type' => $payment->payable_type,
-            'payable_id' => $payment->payable_id,
-            'billable_type' => $payment->billable_type,
-            'billable_id' => $payment->billable_id,
-            'parent_payment_id' => $payment->id,
-        ]);
+        $refund = Payment::recordRefundOf($payment, $money, $result->externalId, $result->raw);
 
         PaymentRefunded::dispatch($refund);
 

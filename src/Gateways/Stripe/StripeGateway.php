@@ -110,10 +110,15 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             // while the original one is still live. checkout.session.expired is that flow's
             // terminal signal; see paymentIntentIsCheckoutBound().
             'payment_intent.payment_failed' => $this->paymentIntentIsCheckoutBound($object) ? null : PaymentStatus::Failed,
-            // charge.refunded etc. — same "explicit refund() is the supported path, webhook-driven
-            // refund tracking is a later nuance" reasoning as the other built-in drivers
             default => null,
         };
+
+        // A refund issued from the Stripe dashboard, or forced by a dispute — money that left the
+        // account without going through Billing::refund(). `amount_refunded` on the Charge is
+        // Stripe's own running total, which is what makes a re-delivery settle instead of stack.
+        if (($event['type'] ?? null) === 'charge.refunded') {
+            return $this->recordRefundFromWebhook($object, $event);
+        }
 
         if ($status === null) {
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $event);
@@ -160,6 +165,35 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             },
             payment: $payment,
             externalId: $externalId ?? (string) $payment->id,
+            raw: $event,
+        );
+    }
+
+    protected function recordRefundFromWebhook(array $object, array $event): WebhookResult
+    {
+        $paymentId = $object['metadata']['payment_id'] ?? null;
+        $charge = $paymentId === null ? null : $this->findPaymentByReference($paymentId);
+
+        if ($charge === null) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $event);
+        }
+
+        $refund = $this->recordExternalRefund(
+            $charge,
+            isset($object['amount_refunded']) ? (int) $object['amount_refunded'] : null,
+            $object['refunds']['data'][0]['id'] ?? null,
+            $event,
+        );
+
+        if ($refund === null) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $event);
+        }
+
+        return new WebhookResult(
+            type: WebhookEventType::Payment,
+            status: 'refunded',
+            payment: $refund,
+            externalId: $refund->external_id ?? "refund:{$charge->id}:{$refund->amount}",
             raw: $event,
         );
     }

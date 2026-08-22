@@ -97,12 +97,19 @@ class LiqPayGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $decoded);
         }
 
+        // 'reversed' — a refund/chargeback carried out on LiqPay's side. Recognized and reported,
+        // but not turned into a refund row: which field of this callback carries the reversed sum
+        // (and whether it's the single reversal or a running total) hasn't been verified against a
+        // live account, and a wrong figure here is worse than a gap. See reportUnrecordedReversal().
+        if (($decoded['status'] ?? null) === 'reversed') {
+            $this->reportUnrecordedReversal($payment, $decoded);
+
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $decoded);
+        }
+
         $status = match ($decoded['status']) {
             'success', 'sandbox' => PaymentStatus::Paid,
             'failure', 'error' => PaymentStatus::Failed,
-            // 'reversed' (chargeback/refund via LiqPay's own dashboard, not our refund() call) —
-            // a v3+ nuance same as the rest of the "recognized but no consumer yet" list in the
-            // plan; explicit RefundsPayments::refund() below is the primary, supported path.
             default => null,
         };
 

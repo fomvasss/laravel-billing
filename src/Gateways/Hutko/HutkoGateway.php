@@ -77,18 +77,18 @@ class HutkoGateway extends AbstractGateway implements TokenizesPaymentMethod, \F
     {
         $payload = $webhookCall->payload;
 
-        // Reversals/refunds surface here too (reversal_amount present, or tran_type=reverse) — the
-        // plugin ignores these silently rather than mutating the original order; same "explicit
-        // refund is the supported path" reasoning as the other built-in drivers.
-        if (! empty($payload['reversal_amount']) || ($payload['tran_type'] ?? null) === 'reverse') {
-            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
-        }
-
         // A callback for a payment this package didn't create is Ignored, not a failed job.
         $payment = $this->findPaymentByReference($payload['order_id'] ?? null);
 
         if ($payment === null) {
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
+        }
+
+        // A reversal, ours or one issued from Hutko's dashboard: reversal_amount is the order's
+        // running reversed total (minor units, like every Hutko amount), so a re-delivery settles
+        // instead of stacking.
+        if (! empty($payload['reversal_amount']) || ($payload['tran_type'] ?? null) === 'reverse') {
+            return $this->recordRefundFromWebhook($payment, $payload);
         }
 
         $status = match ($payload['order_status'] ?? null) {
@@ -143,6 +143,32 @@ class HutkoGateway extends AbstractGateway implements TokenizesPaymentMethod, \F
             },
             payment: $payment,
             externalId: $externalId ?? (string) $payload['order_id'],
+            raw: $payload,
+        );
+    }
+
+    protected function recordRefundFromWebhook(Payment $charge, array $payload): WebhookResult
+    {
+        $cumulative = isset($payload['reversal_amount']) && $payload['reversal_amount'] !== ''
+            ? (int) $payload['reversal_amount']
+            : null;
+
+        $refund = $this->recordExternalRefund(
+            $charge,
+            $cumulative,
+            isset($payload['payment_id']) ? 'reverse-' . $payload['payment_id'] : null,
+            $payload,
+        );
+
+        if ($refund === null) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
+        }
+
+        return new WebhookResult(
+            type: WebhookEventType::Payment,
+            status: 'refunded',
+            payment: $refund,
+            externalId: $refund->external_id ?? "refund:{$charge->id}:" . ($cumulative ?? $refund->amount),
             raw: $payload,
         );
     }

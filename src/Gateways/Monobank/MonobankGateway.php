@@ -92,6 +92,12 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
         }
 
+        // A reversal issued from Monobank's own dashboard (or one of ours echoing back): the invoice
+        // flips to `reversed` and carries cancelList — the running total of what has been returned.
+        if (($payload['status'] ?? null) === 'reversed') {
+            return $this->recordRefundFromWebhook($payment, $payload);
+        }
+
         $status = match ($payload['status'] ?? null) {
             'success' => PaymentStatus::Paid,
             'failure' => PaymentStatus::Failed,
@@ -341,6 +347,36 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
      * (walletData.status="created") into a persisted PaymentMethod, no attachPaymentMethod() call
      * needed for the common "charge once with saveCard, tokenize as a side effect" flow.
      */
+    /**
+     * cancelList holds one entry per reversal attempt; only the successful ones actually moved
+     * money, and their sum is the invoice's running refunded total.
+     */
+    protected function recordRefundFromWebhook(Payment $charge, array $payload): WebhookResult
+    {
+        $cancelList = $payload['cancelList'] ?? null;
+
+        $cumulative = is_array($cancelList)
+            ? array_sum(array_map(
+                static fn (array $item) => ($item['status'] ?? null) === 'success' ? (int) ($item['amount'] ?? 0) : 0,
+                $cancelList,
+            ))
+            : null;
+
+        $refund = $this->recordExternalRefund($charge, $cumulative, null, $payload);
+
+        if ($refund === null) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
+        }
+
+        return new WebhookResult(
+            type: WebhookEventType::Payment,
+            status: 'refunded',
+            payment: $refund,
+            externalId: "refund:{$charge->id}:" . ($cumulative ?? $refund->amount),
+            raw: $payload,
+        );
+    }
+
     /** Persisted as a side effect and dispatched directly — same shape as LiqPay/WayForPay/Hutko's. */
     protected function attachFromWebhook(Payment $payment, array $payload): void
     {

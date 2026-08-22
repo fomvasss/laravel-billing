@@ -310,7 +310,21 @@ A refund row is only ever written for money that is actually on its way back: a 
 
 Concurrent calls are serialized with a cache lock (`billing:refund:{id}`): the remainder is read, checked and written by three separate statements, so two calls racing on the same payment would otherwise both pass the check against the same stale total. The second caller gets a `BillingException` rather than sending money. **This needs a shared cache store** (redis/memcached/database) — with the `array`/`file` driver the lock only covers one process.
 
-Supported where the gateway has a refund API: Monobank, LiqPay, Stripe (`RefundsPayments` — check `Billing::gateways()[$name]['capabilities']['refunds']`). WayForPay/Hutko refunds happen in the bank's own dashboard; record them as a manual refund row if you need them in your books.
+Supported where the gateway has a refund API: Monobank, LiqPay, Stripe (`RefundsPayments` — check `Billing::gateways()[$name]['capabilities']['refunds']`). WayForPay/Hutko refunds happen in the bank's own dashboard.
+
+#### Refunds issued outside the package
+
+Money also goes back without `Billing::refund()` — someone refunds from the gateway's dashboard, or a cardholder disputes the charge. Those arrive as webhooks, and where the payload is unambiguous the package records them exactly like its own refunds: a child row, `PaymentRefunded`, `refundedAmount()` kept honest. The gateway's own running total is what's used, so a re-delivered or out-of-order callback settles to the same number instead of stacking, and the callback echoing a refund *you* issued adds nothing.
+
+| Gateway | Reversal webhook | Recorded |
+|---|---|---|
+| Stripe | `charge.refunded` | yes, from `amount_refunded` |
+| Monobank | invoice `reversed` | yes, from `cancelList` |
+| Hutko | `tran_type=reverse` | yes, from `reversal_amount` |
+| LiqPay | `reversed` | **no** — logged as a warning |
+| WayForPay | `Refunded` / `Voided` | **no** — logged as a warning |
+
+The last two are recognized and logged loudly, not silently dropped, but no row is written: which field of their callback carries the reversed sum (and whether it's one reversal or a running total) isn't verified against a live account, and recording a wrong figure is worse than a documented gap. Watch for `a reversal was reported for a payment but not recorded` in your logs, and record those by hand until it is.
 
 ## Flow
 

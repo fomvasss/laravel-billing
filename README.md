@@ -323,9 +323,11 @@ Money also goes back without `Billing::refund()` — someone refunds from the ga
 | Monobank | invoice `reversed` | yes, from `cancelList` |
 | Hutko | `tran_type=reverse` | yes, from `reversal_amount` |
 | LiqPay | `reversed` | yes, from `refund_amount` |
-| WayForPay | `Refunded` / `Voided` | **no** — logged as a warning |
+| WayForPay | `Refunded` / `Voided` | yes, from `amount` (per reversal, not a total) |
 
-WayForPay is the exception, and not by choice: its serviceUrl callback documents no refunded-amount field at all — `amount` is specified as "Amount of order", with nothing said about what it holds for a reversal — so there is no figure to record that wouldn't be a guess. Those reversals are logged loudly rather than dropped: watch for `a reversal was reported for a payment but not recorded` and record them by hand.
+WayForPay is the odd one out: its callback reports each reversal's own amount rather than a running total (verified against a live test merchant — a 2 UAH order refunded 1 UAH twice produced two callbacks reading `amount: 1`, while the purchase itself read `amount: 2`; the wiki only ever describes the field as "Amount of order"). With no total to settle against, a re-delivery is caught by the reversal's identity instead — and the only field distinguishing those two callbacks was `processingDate`, so that's what identifies one. Known edge: two reversals of the same amount inside one second are indistinguishable and collapse into a single recorded row.
+
+Anything a driver recognizes as a reversal but can't put an amount on is logged rather than dropped — watch for `a reversal was reported for a payment but not recorded` and record those by hand.
 
 One caveat on LiqPay: its docs describe `refund_amount` only as "Сума повернення". The field beside it is `refund_date_last` — explicitly the *last* refund's date — and this one carries no such qualifier, so it's read as the order's running total. For a single refund (the usual dashboard case) both readings give the same number; if it turns out to be per-reversal after all, a second partial refund would be under-recorded rather than double-counted.
 

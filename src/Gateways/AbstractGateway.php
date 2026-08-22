@@ -196,11 +196,32 @@ abstract class AbstractGateway implements PaymentGatewayContract
             ? $remainder
             : min($cumulativeRefunded - $charge->refundedAmount(), $remainder);
 
+        return $this->writeRefundRow($charge, $amount, $refundExternalId ?? $reference, $raw);
+    }
+
+    /**
+     * The other shape of reversal callback: one that reports THIS reversal's own amount rather than
+     * the order's running total (WayForPay). There's no total to settle against, so idempotency
+     * rests entirely on $dedupId — it must be stable across re-deliveries and distinct per reversal,
+     * or a re-delivery is recorded twice.
+     */
+    protected function recordExternalReversal(Payment $charge, int $amount, string $dedupId, array $raw = []): ?Payment
+    {
+        if ($charge->refunds()->withTrashed()->where('external_id', $dedupId)->exists()) {
+            return null; // an earlier delivery of this same reversal
+        }
+
+        return $this->writeRefundRow($charge, min($amount, $charge->refundableRemainder()), $dedupId, $raw);
+    }
+
+    /** Nothing left to refund (or nothing new) is a no-op, never a negative or over-refunding row. */
+    private function writeRefundRow(Payment $charge, int $amount, ?string $externalId, array $raw): ?Payment
+    {
         if ($amount <= 0) {
             return null;
         }
 
-        return Payment::recordRefundOf($charge, new Money($amount, $charge->currency), $refundExternalId ?? $reference, $raw);
+        return Payment::recordRefundOf($charge, new Money($amount, $charge->currency), $externalId, $raw);
     }
 
     /**

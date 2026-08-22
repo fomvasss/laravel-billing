@@ -127,6 +127,31 @@ class ExternalRefundTest extends TestCase
         $this->assertSame(4000, $charge->refundedAmount());
     }
 
+    /**
+     * WayForPay reports each reversal's own amount, not a running total — so two partials add up,
+     * and only the dedup key stops a re-delivery. Payload shape taken from a live test merchant.
+     */
+    public function test_wayforpay_reversals_add_up_and_a_redelivery_does_not(): void
+    {
+        config([
+            'billing.gateways.wayforpay.merchant_account' => 'test_merch_n1',
+            'billing.gateways.wayforpay.merchant_domain' => 'example.test',
+            'billing.gateways.wayforpay.secret_key' => 'secret',
+        ]);
+
+        $charge = $this->paidPayment('wayforpay', 'ord_1');
+
+        $first = $this->wayforpayReversal($charge, 40.0, 1787421259);
+        Billing::driver('wayforpay')->handleWebhook($first);
+        Billing::driver('wayforpay')->handleWebhook($this->wayforpayReversal($charge, 25.0, 1787421260));
+
+        $this->assertSame(6500, $charge->refundedAmount());
+
+        // Same reversal delivered again — identical processingDate, so it is the same event.
+        $this->assertSame('ignored', Billing::driver('wayforpay')->handleWebhook($first)->status);
+        $this->assertSame(6500, $charge->refundedAmount());
+    }
+
     /** A refund can never exceed the charge, however the gateway words it. */
     public function test_a_reversal_larger_than_the_charge_is_capped(): void
     {
@@ -135,6 +160,18 @@ class ExternalRefundTest extends TestCase
         Billing::driver('stripe')->handleWebhook($this->stripeRefund($charge, 999999, 're_1'));
 
         $this->assertSame(10000, $charge->refundedAmount());
+    }
+
+    private function wayforpayReversal(Payment $charge, float $amount, int $processingDate): BillingWebhookCall
+    {
+        return new BillingWebhookCall(['name' => 'wayforpay', 'url' => 'https://example.test/billing/webhooks/wayforpay', 'payload' => [
+            'orderReference' => (string) $charge->id,
+            'transactionStatus' => 'Refunded',
+            'amount' => $amount,
+            'currency' => 'UAH',
+            'reasonCode' => 1100,
+            'processingDate' => $processingDate,
+        ]]);
     }
 
     private function liqpayReversal(Payment $charge, string $refundAmount): BillingWebhookCall

@@ -115,15 +115,9 @@ class WayForPayGateway extends AbstractGateway implements ChecksPaymentStatus, T
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
         }
 
-        // Refunded/Voided — a reversal carried out on WayForPay's side. Recognized and reported,
-        // but not turned into a refund row: unlike every other gateway here, WayForPay's serviceUrl
-        // callback documents no refunded-amount field at all (wiki.wayforpay.com/en/view/852102
-        // lists `amount` as "Amount of order", and says nothing about what it holds for a reversal),
-        // so there is no figure to record that wouldn't be a guess. See reportUnrecordedReversal().
+        // A reversal carried out on WayForPay's side (its dashboard, or a chargeback).
         if (in_array($payload['transactionStatus'] ?? null, ['Refunded', 'Voided'], true)) {
-            $this->reportUnrecordedReversal($payment, $payload);
-
-            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
+            return $this->recordRefundFromWebhook($payment, $payload);
         }
 
         $status = match ($payload['transactionStatus'] ?? null) {
@@ -172,6 +166,45 @@ class WayForPayGateway extends AbstractGateway implements ChecksPaymentStatus, T
             },
             payment: $payment,
             externalId: (string) $payload['orderReference'],
+            raw: $payload,
+        );
+    }
+
+    /**
+     * `amount` on a reversal callback is THIS reversal's own sum, not the order total and not a
+     * running total — live-verified: a 2 UAH order refunded 1 UAH twice produced two callbacks
+     * reading `amount: 1`, against `amount: 2` on the purchase itself. (The wiki describes the
+     * field only as "Amount of order", which is what it means on a purchase.)
+     *
+     * That leaves nothing to settle against, so idempotency rests on the dedup key. The two
+     * callbacks above differed in exactly one field — `processingDate`, a unix timestamp — so
+     * that's what identifies a reversal here. Known edge: two reversals of the same amount within
+     * one second are indistinguishable and collapse into one recorded row. That's a far smaller
+     * error than the alternative, which was recording nothing at all.
+     */
+    protected function recordRefundFromWebhook(Payment $charge, array $payload): WebhookResult
+    {
+        $amount = isset($payload['amount']) ? (int) round((float) $payload['amount'] * 100) : null;
+
+        if ($amount === null || $amount <= 0) {
+            $this->reportUnrecordedReversal($charge, $payload);
+
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
+        }
+
+        $dedupId = 'reversal:' . $payload['orderReference'] . ':' . ($payload['processingDate'] ?? 'unknown');
+
+        $refund = $this->recordExternalReversal($charge, $amount, $dedupId, $payload);
+
+        if ($refund === null) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
+        }
+
+        return new WebhookResult(
+            type: WebhookEventType::Payment,
+            status: 'refunded',
+            payment: $refund,
+            externalId: $dedupId,
             raw: $payload,
         );
     }

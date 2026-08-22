@@ -317,8 +317,9 @@ class BillingManager
         // "How much is left to refund" is read, checked and then written by a THIRD statement (the
         // child row) — two concurrent calls (an impatient double click, a retried job) would both
         // pass the remainder check against the same stale total and both send money back. The lock
-        // lives in the app's cache store: give the app a shared one (redis/memcached/database), an
-        // array/file store only serializes calls within a single process.
+        // is only as wide as the app's cache store: redis/memcached/database reach every process on
+        // every server, `file` reaches every process on one machine (it locks with flock()) but not
+        // across app servers, and `array` protects nothing.
         $lock = Cache::lock("billing:refund:{$payment->id}", 60);
 
         if (! $lock->get()) {

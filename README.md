@@ -235,7 +235,7 @@ A per-charge `ChargeOptions(successUrl: ..., failUrl: ...)` bypasses the whole m
 
 Every visit fires `PaymentLinkOpened($payment)` — an analytics/sales signal ("opened the invoice twice, never paid"), nothing more. Re-issuing uses default `ChargeOptions` (receipt items still auto-fill from a `HasReceiptItems` payable); per-charge extras from the original call (`saveCard`, `raw`, ...) are not remembered.
 
-Re-issues are serialized per payment with a cache lock: this URL is public and unauthenticated by design, so it does get opened concurrently (a double click, a mail client prefetching links), and two re-issues would leave two live invoices on the gateway for one row. The second visitor re-reads the link the first one stored rather than issuing its own. As with refunds, this wants a shared cache store to hold across processes.
+Re-issues are serialized per payment with a cache lock: this URL is public and unauthenticated by design, so it does get opened concurrently (a double click, a mail client prefetching links), and two re-issues would leave two live invoices on the gateway for one row. The second visitor re-reads the link the first one stored rather than issuing its own. Same cache-store caveat as refunds above.
 
 ### Manual/offline payments
 
@@ -309,7 +309,7 @@ $payment->refundedAmount(); // minor units, sums all paid refund rows
 
 A refund row is only ever written for money that is actually on its way back: a gateway that refuses the refund throws a `BillingException` (all three answer a refusal with HTTP 200 and a status field, so this isn't something `->throw()` would catch), and `refundedAmount()` counts soft-deleted rows too — hiding a refund row must not re-open room to refund the same amount twice.
 
-Concurrent calls are serialized with a cache lock (`billing:refund:{id}`): the remainder is read, checked and written by three separate statements, so two calls racing on the same payment would otherwise both pass the check against the same stale total. The second caller gets a `BillingException` rather than sending money. **This needs a shared cache store** (redis/memcached/database) — with the `array`/`file` driver the lock only covers one process.
+Concurrent calls are serialized with a cache lock (`billing:refund:{id}`): the remainder is read, checked and written by three separate statements, so two calls racing on the same payment would otherwise both pass the check against the same stale total. The second caller gets a `BillingException` rather than sending money. **The lock is only as wide as your cache store**: `redis`/`memcached`/`database` cover every process on every server; `file` locks properly across processes on *one* machine (it uses `flock()`) but not across app servers, each of which has its own cache directory; `array` is per-process and protects nothing (it's the testing store).
 
 Supported where the gateway has a refund API: Monobank, LiqPay, Stripe (`RefundsPayments` — check `Billing::gateways()[$name]['capabilities']['refunds']`). WayForPay/Hutko refunds happen in the bank's own dashboard.
 

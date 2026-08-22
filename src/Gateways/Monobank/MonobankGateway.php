@@ -147,7 +147,17 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
             'amount' => $amount?->amount,
         ]))->throw();
 
-        return new PaymentResult(externalId: $payment->external_id, raw: $response->json());
+        $data = $response->json();
+
+        // HTTP 200 with status=failure is Monobank's way of refusing a cancellation (nothing left
+        // to return, the invoice is too old, ...). Without this check the caller would record a
+        // refund row for money that never moved. `processing` is accepted: the reversal is queued
+        // and will settle.
+        if (($data['status'] ?? null) === 'failure') {
+            throw new BillingException('Monobank: refund was refused: ' . json_encode($data));
+        }
+
+        return new PaymentResult(externalId: $payment->external_id, raw: $data);
     }
 
     /** No API call — Monobank has no "create wallet" endpoint, walletId is ours to pick and stable per billable. */

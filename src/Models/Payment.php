@@ -129,10 +129,14 @@ class Payment extends Model
         return true;
     }
 
-    /** Total refunded against this charge, in minor units — 0 when nothing was refunded. */
+    /**
+     * Total refunded against this charge, in minor units — 0 when nothing was refunded. Counts
+     * soft-deleted refund rows too: the money left the merchant account whether or not the row was
+     * later hidden, and dropping them would re-open room to refund the same amount twice.
+     */
     public function refundedAmount(): int
     {
-        return (int) $this->refunds()->where('status', PaymentStatus::Paid)->sum('amount');
+        return (int) $this->refunds()->withTrashed()->where('status', PaymentStatus::Paid)->sum('amount');
     }
 
     /**

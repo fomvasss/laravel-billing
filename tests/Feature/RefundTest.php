@@ -13,6 +13,7 @@ use Fomvasss\Billing\Models\Payment;
 use Fomvasss\Billing\Support\Money;
 use Fomvasss\Billing\Tests\Fixtures\TestUser;
 use Fomvasss\Billing\Tests\TestCase;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
 
@@ -30,6 +31,8 @@ class RefundTest extends TestCase
         $app['config']->set('billing.gateways.wayforpay.merchant_account', 'test_merchant');
         $app['config']->set('billing.gateways.wayforpay.merchant_domain', 'example.test');
         $app['config']->set('billing.gateways.wayforpay.secret_key', 'secret_test');
+        $app['config']->set('billing.gateways.liqpay.public_key', 'pub_test');
+        $app['config']->set('billing.gateways.liqpay.private_key', 'priv_test');
     }
 
     public function test_a_full_refund_creates_a_child_payment_row_and_fires_the_event(): void
@@ -78,6 +81,67 @@ class RefundTest extends TestCase
         $this->expectException(NotSupportedException::class);
 
         Billing::refund($charge);
+    }
+
+    public function test_a_refund_the_gateway_refuses_is_not_recorded(): void
+    {
+        Event::fake([PaymentRefunded::class]);
+        // LiqPay answers a refused refund with HTTP 200 and result=error.
+        Http::fake(['https://www.liqpay.ua/api/request' => Http::response([
+            'result' => 'error',
+            'err_code' => 'payment_err_status',
+            'err_description' => 'Wrong payment status',
+        ])]);
+
+        $charge = $this->paidStripePayment(['gateway' => 'liqpay', 'currency' => 'UAH']);
+
+        try {
+            Billing::refund($charge, new Money(10000, 'UAH'));
+            $this->fail('a refused refund must not be swallowed');
+        } catch (BillingException) {
+            // the refusal under test
+        }
+
+        $this->assertSame(0, $charge->refundedAmount(), 'no money moved, so nothing may be recorded');
+        $this->assertSame(0, Payment::query()->where('type', PaymentType::Refund)->count());
+        Event::assertNotDispatched(PaymentRefunded::class);
+    }
+
+    public function test_a_concurrent_refund_of_the_same_payment_is_refused(): void
+    {
+        Http::fake(['https://api.stripe.com/v1/refunds' => Http::response(['id' => 're_1'])]);
+
+        $charge = $this->paidStripePayment();
+
+        // Whatever holds the lock — the click that got there first, a still-running job — the
+        // second caller must not get as far as the remainder check with a stale total.
+        Cache::lock("billing:refund:{$charge->id}", 60)->get();
+
+        $this->expectException(BillingException::class);
+
+        Billing::refund($charge, new Money(4000, 'USD'));
+    }
+
+    public function test_a_soft_deleted_refund_row_still_counts_against_the_remainder(): void
+    {
+        Http::fake(['https://api.stripe.com/v1/refunds' => Http::response(['id' => 're_1'])]);
+
+        $charge = $this->paidStripePayment();
+
+        Billing::refund($charge, new Money(7000, 'USD'))->delete();
+
+        $this->expectException(BillingException::class);
+
+        Billing::refund($charge, new Money(4000, 'USD'));
+    }
+
+    public function test_the_refund_row_carries_the_refunds_own_reference(): void
+    {
+        Http::fake(['https://api.stripe.com/v1/refunds' => Http::response(['id' => 're_42', 'status' => 'succeeded'])]);
+
+        $refund = Billing::refund($this->paidStripePayment());
+
+        $this->assertSame('re_42', $refund->external_id);
     }
 
     private function paidStripePayment(array $attributes = []): Payment

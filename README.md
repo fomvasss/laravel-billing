@@ -296,6 +296,10 @@ $refund = Billing::refund($payment, new Money(2500, 'UAH'));  // partial
 $payment->refundedAmount(); // minor units, sums all paid refund rows
 ```
 
+A refund row is only ever written for money that is actually on its way back: a gateway that refuses the refund throws a `BillingException` (all three answer a refusal with HTTP 200 and a status field, so this isn't something `->throw()` would catch), and `refundedAmount()` counts soft-deleted rows too — hiding a refund row must not re-open room to refund the same amount twice.
+
+Concurrent calls are serialized with a cache lock (`billing:refund:{id}`): the remainder is read, checked and written by three separate statements, so two calls racing on the same payment would otherwise both pass the check against the same stale total. The second caller gets a `BillingException` rather than sending money. **This needs a shared cache store** (redis/memcached/database) — with the `array`/`file` driver the lock only covers one process.
+
 Supported where the gateway has a refund API: Monobank, LiqPay, Stripe (`RefundsPayments` — check `Billing::gateways()[$name]['capabilities']['refunds']`). WayForPay/Hutko refunds happen in the bank's own dashboard; record them as a manual refund row if you need them in your books.
 
 ## Flow

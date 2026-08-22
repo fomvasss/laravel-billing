@@ -254,6 +254,26 @@ class BillingManager
             throw NotSupportedException::forCapability($payment->gateway, RefundsPayments::class);
         }
 
+        // "How much is left to refund" is read, checked and then written by a THIRD statement (the
+        // child row) — two concurrent calls (an impatient double click, a retried job) would both
+        // pass the remainder check against the same stale total and both send money back. The lock
+        // lives in the app's cache store: give the app a shared one (redis/memcached/database), an
+        // array/file store only serializes calls within a single process.
+        $lock = Cache::lock("billing:refund:{$payment->id}", 60);
+
+        if (! $lock->get()) {
+            throw new BillingException("Another refund for payment {$payment->id} is already in progress.");
+        }
+
+        try {
+            return $this->processRefund($driver, $payment->fresh(), $amount);
+        } finally {
+            $lock->release();
+        }
+    }
+
+    protected function processRefund(RefundsPayments $driver, Payment $payment, ?Money $amount): Payment
+    {
         if (! $payment->isPaid() || $payment->isRefund()) {
             throw new BillingException("Only a paid charge can be refunded (payment {$payment->id} is {$payment->type->value}/{$payment->status->value}).");
         }
@@ -269,7 +289,9 @@ class BillingManager
         }
 
         // Always an explicit amount, even for "full": with earlier partial refunds, a null/full
-        // gateway-side refund and our computed remainder would disagree.
+        // gateway-side refund and our computed remainder would disagree. A gateway that refuses the
+        // refund throws from here — the child row below is only ever written for money that is
+        // actually on its way back.
         $result = $driver->refund($payment, $money);
 
         $refund = Payment::create([

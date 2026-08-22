@@ -171,7 +171,15 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
                 'amount' => $amount?->amount,
             ]))->throw();
 
-        return new PaymentResult(externalId: $payment->external_id, raw: $response->json());
+        $data = $response->json();
+
+        if (in_array($data['status'] ?? null, ['failed', 'canceled'], true)) {
+            throw new BillingException('Stripe: refund was refused: ' . json_encode($data));
+        }
+
+        // The refund's own id (re_...), not the charge's PaymentIntent — the child row's
+        // external_id has to identify the refund for a support lookup to land anywhere useful.
+        return new PaymentResult(externalId: $data['id'] ?? $payment->external_id, raw: $data);
     }
 
     public function createCustomer(Model&Billable $billable): string

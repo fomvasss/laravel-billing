@@ -153,6 +153,13 @@ class LiqPayGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             'amount' => $amount !== null ? $this->formatAmount($amount->amount) : null,
         ], retries: 1);
 
+        // LiqPay answers a refused refund with HTTP 200 and result=error (err_code/err_description
+        // carry the reason). Without this check the caller would record a refund row for money that
+        // never moved.
+        if (($response['result'] ?? null) !== 'ok') {
+            throw new BillingException('LiqPay: refund was refused: ' . json_encode($response));
+        }
+
         return new PaymentResult(externalId: $payment->external_id, raw: $response);
     }
 

@@ -100,7 +100,7 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             // A raw off-session PaymentIntent (chargePaymentMethod()) never goes through Checkout,
             // so it has no checkout.session.* counterpart — payment_intent.succeeded is the only
             // signal for it. Also fires alongside checkout.session.completed for the redirect flow
-            // (Payment::update() below is idempotent, so processing both is harmless).
+            // (the transitionTo() below is idempotent, so processing both is harmless).
             'payment_intent.succeeded' => PaymentStatus::Paid,
             'payment_intent.payment_failed' => PaymentStatus::Failed,
             // charge.refunded etc. — same "explicit refund() is the supported path, webhook-driven
@@ -140,10 +140,9 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
 
         $externalId = $object['payment_intent'] ?? $object['id'] ?? null;
 
-        $payment->update(array_filter([
-            'status' => $status,
-            'external_id' => $externalId,
-        ]));
+        if (! $payment->transitionTo($status, array_filter(['external_id' => $externalId]))) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $event);
+        }
 
         return new WebhookResult(
             type: WebhookEventType::Payment,
@@ -289,7 +288,10 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
         }
 
         $externalId = $data['payment_intent'] ?? $data['id'];
-        $payment->update(['status' => $status, 'external_id' => $externalId]);
+
+        if (! $payment->transitionTo($status, ['external_id' => $externalId])) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $data);
+        }
 
         return new WebhookResult(
             type: WebhookEventType::Payment,
@@ -317,7 +319,9 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $data);
         }
 
-        $payment->update(['status' => $status]);
+        if (! $payment->transitionTo($status)) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $data);
+        }
 
         return new WebhookResult(
             type: WebhookEventType::Payment,

@@ -13,6 +13,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Facades\Log;
 
 class Payment extends Model
 {
@@ -96,6 +97,36 @@ class Payment extends Model
     public function isRefund(): bool
     {
         return $this->type === PaymentType::Refund;
+    }
+
+    /**
+     * Applies a status change with one invariant: once Paid, a webhook/reconcile-driven transition
+     * can never move this row away from it — a delayed or out-of-order delivery (an earlier decline
+     * arriving after a later success, or a re-issued reference's stale "expired" landing after the
+     * new one already paid) must not revert an already-paid Payment. Paid -> Paid (a duplicate
+     * success delivery) is allowed as a no-op. Reissuing a failed/canceled Payment back to Paid
+     * (PaymentLinkController's "old link expired, the new one paid") is allowed — Paid is the only
+     * terminal value here.
+     *
+     * $attributes are merged into the same update() call (external_id, fee, ...) so callers don't
+     * need a second write. Returns false — no write happens — when the transition is rejected; the
+     * caller should treat the webhook/poll result as Ignored rather than as this outcome.
+     */
+    public function transitionTo(PaymentStatus $status, array $attributes = []): bool
+    {
+        if ($this->status === PaymentStatus::Paid && $status !== PaymentStatus::Paid) {
+            Log::warning('Billing: ignored a payment status transition away from Paid', [
+                'payment_id' => $this->id,
+                'from' => $this->status->value,
+                'to' => $status->value,
+            ]);
+
+            return false;
+        }
+
+        $this->update([...$attributes, 'status' => $status]);
+
+        return true;
     }
 
     /** Total refunded against this charge, in minor units — 0 when nothing was refunded. */

@@ -115,15 +115,19 @@ public function handleWebhook(BillingWebhookCall $webhookCall): WebhookResult
         return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
     }
 
-    $payment->update([
-        'status' => $status,
+    // transitionTo(), not update(): it refuses to move an already-paid row to any other status,
+    // so a late/out-of-order delivery can't revert a paid payment. It returns false when it
+    // refuses — report that delivery as Ignored.
+    if (! $payment->transitionTo($status, [
         'external_id' => $payload['id'],
         // Optional: if the callback reports the gateway's commission, record it. feeFrom()
         // returns ['fee' => <minor units>] when the value is numeric, [] otherwise — an
         // unreported fee stays null ("unknown"), never a guessed 0. Pass decimal: true when
         // your gateway sends decimal amounts.
         ...$this->feeFrom($payload['fee'] ?? null),
-    ]);
+    ])) {
+        return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
+    }
 
     return new WebhookResult(
         type: WebhookEventType::Payment,
@@ -137,7 +141,7 @@ public function handleWebhook(BillingWebhookCall $webhookCall): WebhookResult
 
 Things worth getting right:
 
-- **Update the `Payment` yourself.** The dispatcher fires events from your `WebhookResult`, but it doesn't write the status — the driver does.
+- **Update the `Payment` yourself, through `transitionTo()`.** The dispatcher fires events from your `WebhookResult`, but it doesn't write the status — the driver does. Use `Payment::transitionTo($status, $attributes)` rather than a bare `update()`: gateway deliveries are neither ordered nor unique, and it enforces the one invariant that matters — a `paid` row is never moved to `failed`/`canceled` by a late callback. It writes nothing and returns `false` when it refuses, which is your cue to return an `Ignored` result.
 - **`externalId` feeds the dedup key.** Return the gateway's own reference for this event; the pipeline combines it with the event's type+status (`WebhookResult::dedupKey()`) and claims it against a `unique(name, external_id)` index on `billing_webhook_calls`. Net effect: a re-delivered "paid" callback never fires `PaymentSucceeded` twice, but "declined, then the customer retried the same checkout and paid" — the same reference with a *different* outcome — dispatches both events. You don't have to make the reference unique per attempt.
 - **Unknown/intermediate statuses are `Ignored`, not errors.** Gateways send more states than the package's four (`pending`/`paid`/`failed`/`canceled`); anything non-terminal just means "nothing to do yet".
 - **Verify the paid amount** (`paidAmountMismatch()`, shown above) whenever the callback carries one.

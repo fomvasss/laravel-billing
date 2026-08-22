@@ -47,7 +47,7 @@ All five built-in gateways are live-verified end to end (checkout, webhooks, tok
 
 ### Webhooks
 - One route (`POST /billing/webhooks/{gateway}`, path/middleware configurable), per-gateway signature validators (fail-closed when unconfigured), durable storage with pruning (`webhook.prune_after_days`), queued processing on a configurable connection/queue (`billing.queue.*`), custom acknowledgment bodies where a gateway requires one.
-- Guarantees: a paid callback must match the payment's amount/currency; events are deduplicated per outcome (a re-delivery never double-fires, a declined-then-paid retry fires both); callbacks for unknown payments are ignored, not failed jobs.
+- Guarantees: a paid callback must match the payment's amount/currency; a paid payment is never reverted by a late or out-of-order callback (an earlier decline, or a stale link's expiry arriving after a re-issued checkout was paid) — that delivery is ignored and logged; events are deduplicated per outcome (a re-delivery never double-fires, a declined-then-paid retry fires both); callbacks for unknown payments are ignored, not failed jobs.
 - Events: `PaymentSucceeded`/`PaymentFailed`/`PaymentRefunded`, `SubscriptionCreated`/`Renewed`/`PaymentFailed`/`Cancelled`/`Paused`/`Resumed`, `TrialWillEnd`, `PaymentMethodAttached`/`Detached`, `UsageLimitReached`, `CheckoutReturned`, `PaymentLinkOpened`.
 - `billing:reconcile-pending-payments` (every 15 min) polls gateways for payments whose webhook never arrived — same events, same dedup, so a late webhook can't double-dispatch.
 

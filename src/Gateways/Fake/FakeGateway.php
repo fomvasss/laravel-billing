@@ -46,7 +46,9 @@ class FakeGateway extends AbstractGateway implements \Fomvasss\Billing\Contracts
 
         $succeeded = ($payload['result'] ?? null) === 'success';
 
-        $payment->update(['status' => $succeeded ? PaymentStatus::Paid : PaymentStatus::Failed]);
+        if (! $payment->transitionTo($succeeded ? PaymentStatus::Paid : PaymentStatus::Failed)) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
+        }
 
         return new WebhookResult(
             type: WebhookEventType::Payment,

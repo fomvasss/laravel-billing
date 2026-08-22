@@ -70,6 +70,7 @@ class ReconcilePendingPaymentsCommand extends Command
         }
 
         // No status-polling endpoint on this gateway — a TTL-expired pending payment is a dead checkout.
-        $payment->update(['status' => PaymentStatus::Canceled]);
+        // transitionTo(), not update(): a webhook may have paid this row between the query and here.
+        $payment->transitionTo(PaymentStatus::Canceled);
     }
 }

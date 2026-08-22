@@ -127,10 +127,12 @@ class HutkoGateway extends AbstractGateway implements TokenizesPaymentMethod, \F
 
         // fee — Hutko's commission, minor units like every Hutko amount (the test merchant sends
         // ""); spread AFTER the array_filter so a real fee=0 isn't dropped by it.
-        $payment->update([
-            ...array_filter(['status' => $status, 'external_id' => $externalId]),
+        if (! $payment->transitionTo($status, [
+            ...array_filter(['external_id' => $externalId]),
             ...$this->feeFrom($payload['fee'] ?? null),
-        ]);
+        ])) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
+        }
 
         return new WebhookResult(
             type: WebhookEventType::Payment,
@@ -251,10 +253,12 @@ class HutkoGateway extends AbstractGateway implements TokenizesPaymentMethod, \F
 
         $externalId = isset($data['payment_id']) ? (string) $data['payment_id'] : null;
 
-        $payment->update([
-            ...array_filter(['status' => $status, 'external_id' => $externalId]),
+        if (! $payment->transitionTo($status, [
+            ...array_filter(['external_id' => $externalId]),
             ...$this->feeFrom($data['fee'] ?? null),
-        ]);
+        ])) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $data ?? []);
+        }
 
         return new WebhookResult(
             type: WebhookEventType::Payment,

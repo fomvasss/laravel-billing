@@ -122,11 +122,12 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
 
         // paymentInfo.fee — the bank's commission, minor units in `ccy` (live-verified: 72 on a
         // 5500 charge ≈ 1.31%). Only some deliveries carry paymentInfo.
-        $payment->update([
-            'status' => $status,
+        if (! $payment->transitionTo($status, [
             'external_id' => $payload['invoiceId'],
             ...$this->feeFrom($payload['paymentInfo']['fee'] ?? null),
-        ]);
+        ])) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
+        }
 
         return new WebhookResult(
             type: WebhookEventType::Payment,
@@ -235,11 +236,12 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $data);
         }
 
-        $payment->update([
-            'status' => $status,
+        if (! $payment->transitionTo($status, [
             'external_id' => $data['invoiceId'],
             ...$this->feeFrom($data['paymentInfo']['fee'] ?? null),
-        ]);
+        ])) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $data);
+        }
 
         return new WebhookResult(
             type: WebhookEventType::Payment,

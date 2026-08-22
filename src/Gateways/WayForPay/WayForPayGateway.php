@@ -117,7 +117,11 @@ class WayForPayGateway extends AbstractGateway implements ChecksPaymentStatus, T
 
         $status = match ($payload['transactionStatus'] ?? null) {
             'Approved' => PaymentStatus::Paid,
-            'Declined', 'Expired' => PaymentStatus::Failed,
+            'Declined' => PaymentStatus::Failed,
+            // Canceled, not Failed — same as every other driver's `expired`: nobody's card was
+            // refused, the customer just never finished the checkout, and calling that a failure
+            // puts a subscription into dunning over an abandoned link.
+            'Expired' => PaymentStatus::Canceled,
             // Pending/InProcessing/RefundInProcessing/Refunded/Voided — not a Payment-status
             // transition here, same "recognized, no consumer yet" reasoning as LiqPay's 'reversed'
             default => null,
@@ -151,7 +155,11 @@ class WayForPayGateway extends AbstractGateway implements ChecksPaymentStatus, T
 
         return new WebhookResult(
             type: WebhookEventType::Payment,
-            status: $status === PaymentStatus::Paid ? 'succeeded' : 'failed',
+            status: match ($status) {
+                PaymentStatus::Paid => 'succeeded',
+                PaymentStatus::Failed => 'failed',
+                default => 'canceled',
+            },
             payment: $payment,
             externalId: (string) $payload['orderReference'],
             raw: $payload,
@@ -254,7 +262,8 @@ class WayForPayGateway extends AbstractGateway implements ChecksPaymentStatus, T
 
         $status = match ($data['transactionStatus'] ?? null) {
             'Approved' => PaymentStatus::Paid,
-            'Declined', 'Expired' => PaymentStatus::Failed,
+            'Declined' => PaymentStatus::Failed,
+            'Expired' => PaymentStatus::Canceled,
             default => null,
         };
 
@@ -276,7 +285,11 @@ class WayForPayGateway extends AbstractGateway implements ChecksPaymentStatus, T
 
         return new WebhookResult(
             type: WebhookEventType::Payment,
-            status: $status === PaymentStatus::Paid ? 'succeeded' : 'failed',
+            status: match ($status) {
+                PaymentStatus::Paid => 'succeeded',
+                PaymentStatus::Failed => 'failed',
+                default => 'canceled',
+            },
             payment: $payment,
             externalId: (string) $payment->id,
             raw: $data,

@@ -710,7 +710,7 @@ $method = Billing::driver('stripe')->attachPaymentMethod($user, ['payment_method
 Billing::chargeWithMethod($payment, $method);
 ```
 
-Уже маєте токен звідкись іншим шляхом? `attachPaymentMethod($billable, [...])` бере його напряму — ключ масиву різний для кожного гейтвея: `payment_method_id` (Stripe), `card_token` (Monobank/LiqPay), `rec_token` (WayForPay), `rectoken` (Hutko). `detachPaymentMethod($method)` видаляє збережену картку — лише Monobank реально відкликає її й на боці банку, решта три просто перестають нею користуватись локально.
+Уже маєте токен звідкись іншим шляхом? `attachPaymentMethod($billable, [...])` бере його напряму — ключ масиву різний для кожного гейтвея: `payment_method_id` (Stripe), `card_token` (Monobank/LiqPay), `rec_token` (WayForPay), `rectoken` (Hutko). `detachPaymentMethod($method)` видаляє збережену картку — Monobank і Stripe відкликають її й на боці провайдера, LiqPay/WayForPay/Hutko просто перестають нею користуватись локально (жоден із них не документує ендпоінт відкликання окремого токена).
 
 У будь-якому разі `chargeWithMethod()`/`chargePaymentMethod()` лише ІНІЦІЮЮТЬ списання — результат завжди приходить через звичайний webhook pipeline, так само як `charge()`.
 
@@ -981,7 +981,7 @@ Billing::charge($payment, new ChargeOptions(saveCard: true));
 return redirect($payment->payment_url);
 ```
 
-Клієнт платить новою карткою → `PaymentSucceeded` реактивує підписку (період посунуто, лічильники dunning скинуто), а новий `PaymentMethod` **автоматично стає дефолтним** — `is_default` зі старої картки знімається, тож усі наступні продовження списуються з нової. Стару за бажання прибери: `Billing::driver($gateway)->detachPaymentMethod($old)` (Monobank ще й відкличе токен у банку; решта забувають локально). На Stripe картку можна замінити взагалі без списання — `attachPaymentMethod()` з новим `pm_...` так само стає дефолтом.
+Клієнт платить новою карткою → `PaymentSucceeded` реактивує підписку (період посунуто, лічильники dunning скинуто), а новий `PaymentMethod` **автоматично стає дефолтним** — `is_default` зі старої картки знімається, тож усі наступні продовження списуються з нової. Стару за бажання прибери: `Billing::driver($gateway)->detachPaymentMethod($old)` (Monobank і Stripe ще й відкличуть токен у провайдера; решта забувають локально). На Stripe картку можна замінити взагалі без списання — `attachPaymentMethod()` з новим `pm_...` так само стає дефолтом.
 
 Проактивно, до того як зламалось: `PaymentMethod::$expires_at` заповнюється там, де гейтвей віддає термін дії картки (Stripe віддає; колбеки українських гейтвеїв — ні), тож щомісячний скан `paymentMethods()->where('expires_at', '<', now()->addMonth())` працює для Stripe. Для решти перша невдала спроба продовження — *і є* сигнал, а grace тримає доступ клієнта живим, поки він розбирається.
 

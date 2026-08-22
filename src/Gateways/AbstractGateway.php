@@ -9,6 +9,7 @@ use Fomvasss\Billing\DTO\ChargeOptions;
 use Fomvasss\Billing\Exceptions\BillingException;
 use Fomvasss\Billing\Models\Payment;
 use Fomvasss\Billing\Models\PaymentMethod;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
@@ -178,24 +179,44 @@ abstract class AbstractGateway implements PaymentGatewayContract
         ?string $brand = null,
         ?\DateTimeInterface $expiresAt = null,
     ): PaymentMethod {
-        PaymentMethod::query()
-            ->where('billable_type', $billableType)
-            ->where('billable_id', $billableId)
-            ->where('gateway', $this->gatewayName)
-            ->update(['is_default' => false]);
+        // One transaction: demote-then-upsert is two statements, and gateways do deliver two
+        // webhooks for one checkout close enough together to interleave them (Stripe's
+        // checkout.session.completed and payment_intent.succeeded) — which lands either two rows
+        // flagged default or none.
+        return DB::transaction(function () use (
+            $billableType, $billableId, $tenantId, $externalCustomerId, $externalId, $last4, $brand, $expiresAt
+        ) {
+            $method = PaymentMethod::updateOrCreate(
+                ['gateway' => $this->gatewayName, 'external_customer_id' => $externalCustomerId, 'external_id' => $externalId],
+                [
+                    'type' => 'card',
+                    'brand' => $brand,
+                    'last4' => $last4,
+                    'expires_at' => $expiresAt,
+                    'tenant_id' => $tenantId,
+                    'billable_type' => $billableType,
+                    'billable_id' => $billableId,
+                ],
+            );
 
-        return PaymentMethod::updateOrCreate(
-            ['gateway' => $this->gatewayName, 'external_customer_id' => $externalCustomerId, 'external_id' => $externalId],
-            [
-                'type' => 'card',
-                'brand' => $brand,
-                'last4' => $last4,
-                'expires_at' => $expiresAt,
-                'is_default' => true,
-                'tenant_id' => $tenantId,
-                'billable_type' => $billableType,
-                'billable_id' => $billableId,
-            ],
-        );
+            // Only a newly saved card takes over as default. Re-delivered webhooks are a fact of
+            // life (WayForPay retries for up to four days), and promoting on every delivery means
+            // an old one arriving after the customer saved a new card silently moves their default
+            // back to the card they replaced.
+            if (! $method->wasRecentlyCreated && ! $method->is_default) {
+                return $method;
+            }
+
+            PaymentMethod::query()
+                ->where('billable_type', $billableType)
+                ->where('billable_id', $billableId)
+                ->where('gateway', $this->gatewayName)
+                ->whereKeyNot($method->getKey())
+                ->update(['is_default' => false]);
+
+            $method->forceFill(['is_default' => true])->save();
+
+            return $method;
+        });
     }
 }

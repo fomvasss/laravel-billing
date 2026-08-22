@@ -179,6 +179,9 @@ class BillingManager
             'external_id' => $result->externalId ?? $payment->external_id,
             'payment_url' => $url,
             'payment_url_expires_at' => $urlExpiresAt,
+            // Kept for support/debugging: without it the gateway's own account of what it did with
+            // this charge exists nowhere (a webhook only ever reports the outcome).
+            'raw_response' => $result->raw !== [] ? $result->raw : $payment->raw_response,
         ])->save();
 
         return $result;
@@ -223,6 +226,10 @@ class BillingManager
             'external_id' => $result->externalId ?? $payment->external_id,
             'payment_url' => $result->url,
             'payment_url_expires_at' => $result->expiresAt,
+            // The decline reason lives here and nowhere else: an off-session charge the gateway
+            // refuses synchronously (Stripe's error.code, Hutko's error_message, WayForPay's
+            // reasonCode) never produces a webhook to carry it.
+            'raw_response' => $result->raw !== [] ? $result->raw : $payment->raw_response,
         ])->save();
 
         return $result;

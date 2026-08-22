@@ -714,7 +714,7 @@ $method = Billing::driver('stripe')->attachPaymentMethod($user, ['payment_method
 Billing::chargeWithMethod($payment, $method);
 ```
 
-Already have a token from somewhere else? `attachPaymentMethod($billable, [...])` takes it directly — the array key differs per gateway: `payment_method_id` (Stripe), `card_token` (Monobank/LiqPay), `rec_token` (WayForPay), `rectoken` (Hutko). `detachPaymentMethod($method)` removes the saved card — only Monobank also revokes it at the bank, the other three just stop using it locally.
+Already have a token from somewhere else? `attachPaymentMethod($billable, [...])` takes it directly — the array key differs per gateway: `payment_method_id` (Stripe), `card_token` (Monobank/LiqPay), `rec_token` (WayForPay), `rectoken` (Hutko). `detachPaymentMethod($method)` removes the saved card — Monobank and Stripe also revoke it at the provider, LiqPay/WayForPay/Hutko just stop using it locally (none of them documents a revocation endpoint for a standalone token).
 
 Either way, `chargeWithMethod()`/`chargePaymentMethod()` only *initiate* the charge — the outcome always arrives through the normal webhook pipeline, same as `charge()`.
 
@@ -985,7 +985,7 @@ Billing::charge($payment, new ChargeOptions(saveCard: true));
 return redirect($payment->payment_url);
 ```
 
-The customer pays with the new card → `PaymentSucceeded` reactivates the subscription (period advanced, dunning counters reset), and the new `PaymentMethod` **automatically becomes the default** — the previous card's `is_default` is demoted, so every later renewal charges the new one. Clean up the old card if you like: `Billing::driver($gateway)->detachPaymentMethod($old)` (Monobank also revokes the token at the bank; the others forget it locally). On Stripe the card can also be replaced without charging at all — `attachPaymentMethod()` with a new `pm_...` becomes the default the same way.
+The customer pays with the new card → `PaymentSucceeded` reactivates the subscription (period advanced, dunning counters reset), and the new `PaymentMethod` **automatically becomes the default** — the previous card's `is_default` is demoted, so every later renewal charges the new one. Clean up the old card if you like: `Billing::driver($gateway)->detachPaymentMethod($old)` (Monobank and Stripe also revoke the token at the provider; the others forget it locally). On Stripe the card can also be replaced without charging at all — `attachPaymentMethod()` with a new `pm_...` becomes the default the same way.
 
 Proactively, before it breaks: `PaymentMethod::$expires_at` is filled where the gateway reports card expiry (Stripe does; the Ukrainian gateways' callbacks don't), so a monthly scan of `paymentMethods()->where('expires_at', '<', now()->addMonth())` works for Stripe. For the rest, the first failed renewal *is* the signal — and grace keeps the customer's access alive while they fix it.
 

@@ -52,8 +52,33 @@ class MonobankSignatureValidator implements SignatureValidator
         return $this->verify($this->publicKey($token, forceRefresh: true), $body, $signature);
     }
 
-    protected function verify(string $base64Key, string $body, string $signature): bool
+    /**
+     * Never lets a pubkey fetch take the webhook route down with it: this runs inside the incoming
+     * request, so an unreachable api.monobank.ua would otherwise hold the request open for the
+     * default 30s and then answer 500 — where the honest answer is "couldn't verify" (403), which
+     * leaves Monobank free to re-deliver.
+     */
+    protected function fetchPublicKey(string $token): ?string
     {
+        try {
+            return Http::withHeaders(['X-Token' => $token])
+                ->timeout(5)
+                ->get('https://api.monobank.ua/api/merchant/pubkey')
+                ->throw()
+                ->json('key');
+        } catch (\Throwable $exception) {
+            report($exception);
+
+            return null;
+        }
+    }
+
+    protected function verify(?string $base64Key, string $body, string $signature): bool
+    {
+        if ($base64Key === null) {
+            return false; // couldn't fetch the key — fail closed, same as a missing token
+        }
+
         $publicKeyResource = openssl_pkey_get_public(base64_decode($base64Key));
 
         if ($publicKeyResource === false) {
@@ -63,14 +88,26 @@ class MonobankSignatureValidator implements SignatureValidator
         return openssl_verify($body, $signature, $publicKeyResource, OPENSSL_ALGO_SHA256) === 1;
     }
 
-    protected function publicKey(string $token, bool $forceRefresh = false): string
+    protected function publicKey(string $token, bool $forceRefresh = false): ?string
     {
         if ($forceRefresh) {
             Cache::forget('billing:monobank:pubkey');
         }
 
-        return Cache::remember('billing:monobank:pubkey', now()->addWeek(), fn () => Http::withHeaders([
-            'X-Token' => $token,
-        ])->get('https://api.monobank.ua/api/merchant/pubkey')->throw()->json('key'));
+        $key = Cache::get('billing:monobank:pubkey');
+
+        if ($key !== null) {
+            return $key;
+        }
+
+        $key = $this->fetchPublicKey($token);
+
+        // Only a real key is cached — caching the null would keep answering 403 for a week after
+        // one blip.
+        if ($key !== null) {
+            Cache::put('billing:monobank:pubkey', $key, now()->addWeek());
+        }
+
+        return $key;
     }
 }

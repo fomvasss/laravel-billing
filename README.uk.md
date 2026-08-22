@@ -456,7 +456,7 @@ Stripe — пакет може зареєструвати ендпоінт за 
 
 ```bash
 php artisan billing:stripe-register-webhook          # створює ендпоінт, друкує STRIPE_WEBHOOK_SECRET
-php artisan billing:stripe-register-webhook --fresh  # змінився домен/тунель — видалити і створити заново (новий секрет)
+php artisan billing:stripe-register-webhook --fresh  # змінився домен/тунель або розширився перелік подій — видалити і створити заново (новий секрет)
 ```
 
 Секрет показується **лише при створенні** (Stripe ніколи не повертає його повторно) — одразу вставляй у `.env`. Рівнозначні ручні способи, якщо зручніше:

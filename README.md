@@ -460,7 +460,7 @@ Stripe — the package can register the endpoint for you:
 
 ```bash
 php artisan billing:stripe-register-webhook          # creates the endpoint, prints STRIPE_WEBHOOK_SECRET
-php artisan billing:stripe-register-webhook --fresh  # domain/tunnel changed — delete & re-create (new secret)
+php artisan billing:stripe-register-webhook --fresh  # domain/tunnel changed, or the event list grew — delete & re-create (new secret)
 ```
 
 The secret is shown **only at creation** (Stripe never returns it again) — paste it into `.env` right away. Equivalent manual ways, if you prefer:

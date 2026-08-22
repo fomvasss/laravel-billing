@@ -70,7 +70,7 @@ All five built-in gateways are live-verified end to end (checkout, webhooks, tok
 - Credential-bearing headers (`Stripe-Signature`, `Authorization`, `Cookie`, ...) are redacted before the webhook call is stored — the table outlives the request and ends up in backups.
 - `reportUsage()` rejects a negative quantity: usage only goes up within a period, and a "correction" would silently undo metered billing.
 - A renewal whose saved card has already expired goes straight to dunning instead of spending an attempt on a charge the bank will refuse.
-- `billing:stripe-register-webhook` pages through all endpoints instead of looking at the first 100, so a busy account doesn't get duplicates.
+- `billing:stripe-register-webhook` subscribes the endpoint to `charge.refunded` too (dashboard refunds) and pages through all endpoints instead of looking at the first 100, so a busy account doesn't get duplicates. An endpoint registered earlier keeps its old event list — re-run with `--fresh` to widen it.
 - LiqPay's `language` is narrowed to the `uk`/`en` it actually accepts, so a full locale in `ChargeOptions::$locale` doesn't break the checkout.
 
 ### Setup & docs

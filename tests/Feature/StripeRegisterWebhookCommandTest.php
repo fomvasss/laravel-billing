@@ -27,10 +27,32 @@ class StripeRegisterWebhookCommandTest extends TestCase
             ->expectsOutputToContain('STRIPE_WEBHOOK_SECRET=whsec_new')
             ->assertSuccessful();
 
-        Http::assertSent(fn ($request) => $request->method() === 'POST'
-            && str_ends_with($request->url(), '/webhook_endpoints')
-            && $request['url'] === route('billing.webhook', ['gateway' => 'stripe'])
-            && $request['enabled_events[0]'] === 'checkout.session.completed');
+        Http::assertSent(function ($request) {
+            if ($request->method() !== 'POST' || ! str_ends_with($request->url(), '/webhook_endpoints')) {
+                return false;
+            }
+
+            $this->assertSame(route('billing.webhook', ['gateway' => 'stripe']), $request['url']);
+
+            $events = [];
+
+            for ($i = 0; isset($request["enabled_events[{$i}]"]); $i++) {
+                $events[] = $request["enabled_events[{$i}]"];
+            }
+
+            // Every event the driver acts on has to be subscribed to, or it simply never arrives —
+            // charge.refunded was handled for a while before it was registered, which meant a
+            // dashboard refund silently never reached refundedAmount().
+            $this->assertEqualsCanonicalizing([
+                'checkout.session.completed',
+                'checkout.session.expired',
+                'payment_intent.succeeded',
+                'payment_intent.payment_failed',
+                'charge.refunded',
+            ], $events);
+
+            return true;
+        });
     }
 
     public function test_refuses_to_reregister_without_fresh_because_the_secret_is_unrecoverable(): void

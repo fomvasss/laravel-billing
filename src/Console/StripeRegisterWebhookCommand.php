@@ -19,11 +19,19 @@ use Illuminate\Support\Facades\Http;
 class StripeRegisterWebhookCommand extends Command
 {
     /** Must stay in sync with the event types StripeGateway::handleWebhook() actually handles. */
+    /**
+     * Every event StripeGateway::handleWebhook() acts on. An endpoint registered before this list
+     * grew keeps its old subscription — Stripe doesn't update it retroactively, so re-run with
+     * --fresh (and swap in the new signing secret) to pick up additions.
+     */
     protected const EVENTS = [
         'checkout.session.completed',
         'checkout.session.expired',
         'payment_intent.succeeded',
         'payment_intent.payment_failed',
+        // Refunds issued from the Stripe dashboard, and chargebacks — without this a refund that
+        // didn't go through Billing::refund() never reaches us and refundedAmount() understates it.
+        'charge.refunded',
     ];
 
     protected $signature = 'billing:stripe-register-webhook

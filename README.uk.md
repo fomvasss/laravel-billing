@@ -739,6 +739,12 @@ Billing::chargeWithMethod($payment, $method);
 
 У будь-якому разі `chargeWithMethod()`/`chargePaymentMethod()` лише ІНІЦІЮЮТЬ списання — результат завжди приходить через звичайний webhook pipeline, так само як `charge()`.
 
+Передавай `customerIp` для off-session списання, якщо є звідки: LiqPay документує його як обов'язковий для `paytoken` (за продовженням не стоїть браузер, з якого його взяти), а Hutko шле його як `client_ip`. Без нього обидва підставляють заглушку.
+
+```php
+Billing::chargeWithMethod($payment, $method, new ChargeOptions(customerIp: $user->last_login_ip));
+```
+
 ## Практичні приклади
 
 Усе вище — будівельні блоки; ось як вони складаються в кілька реальних сценаріїв. Ширші, наскрізні дизайни систем (SaaS з токен-гаманцем, магазин із витратами, погодинна оренда, вітрина тарифів) — у **[docs/use-cases.md](docs/use-cases.md)** (англійською).

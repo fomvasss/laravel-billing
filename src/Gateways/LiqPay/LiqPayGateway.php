@@ -201,8 +201,8 @@ class LiqPayGateway extends AbstractGateway implements RefundsPayments, ChecksPa
      * action=paytoken — the outcome still resolves through handleWebhook() same as any other
      * Payment; this only initiates it. `ip` is documented Required for paytoken (fraud-prevention,
      * since no card is re-entered) — there's no live request in a scheduled/background charge, so
-     * pass $options['ip'] when you track the customer's last known IP; falls back to a placeholder
-     * otherwise (LiqPay accepts it, this is a known, documented limitation of off-session use).
+     * pass ChargeOptions::$customerIp when you track the customer's last known address; falls back
+     * to a placeholder otherwise (LiqPay accepts it, a known limitation of off-session use).
      */
     public function chargePaymentMethod(Payment $payment, PaymentMethod $method, ChargeOptions $options = new ChargeOptions()): PaymentResult
     {
@@ -216,7 +216,7 @@ class LiqPayGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             'currency' => $payment->currency,
             'description' => $options->description ?? "Payment #{$payment->id}",
             'order_id' => (string) $payment->id,
-            'ip' => $options->raw['ip'] ?? '127.0.0.1',
+            'ip' => $options->customerIp ?? '127.0.0.1',
             'is_recurring' => true,
             'server_url' => $this->webhookUrl($options),
         ], retries: 1);

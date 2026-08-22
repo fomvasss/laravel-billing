@@ -210,6 +210,10 @@ class HutkoGateway extends AbstractGateway implements TokenizesPaymentMethod, \F
      */
     public function chargePaymentMethod(Payment $payment, PaymentMethod $method, ChargeOptions $options = new ChargeOptions()): PaymentResult
     {
+        // NB on $options->raw here: Hutko's signature is computed over the fields it recognizes, so
+        // a key it doesn't know breaks it — Hutko signs 8 fields, we'd sign 9, and the charge comes
+        // back "Invalid signature" (live-found). Only pass real Hutko request fields through raw;
+        // the customer's IP has its own option (ChargeOptions::$customerIp → client_ip below).
         $fields = array_filter([
             ...$options->raw,
             'order_id' => (string) $payment->id,
@@ -218,7 +222,7 @@ class HutkoGateway extends AbstractGateway implements TokenizesPaymentMethod, \F
             'currency' => $payment->currency,
             'rectoken' => $method->external_id,
             'server_callback_url' => $this->webhookUrl($options),
-            'client_ip' => $options->raw['ip'] ?? '127.0.0.1',
+            'client_ip' => $options->customerIp ?? '127.0.0.1',
             // Same key/shape as charge()'s checkout/url request — NOT independently live-verified
             // against /api/recurring's own schema (only checkout/url's fiscalization was, see the
             // class docblock). Verify against a real recurring charge before relying on it; drop

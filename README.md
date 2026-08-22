@@ -743,6 +743,12 @@ Already have a token from somewhere else? `attachPaymentMethod($billable, [...])
 
 Either way, `chargeWithMethod()`/`chargePaymentMethod()` only *initiate* the charge — the outcome always arrives through the normal webhook pipeline, same as `charge()`.
 
+Pass `customerIp` with an off-session charge where you can: LiqPay documents it as required for a `paytoken` charge (there's no browser behind a renewal to take it from), and Hutko sends it as `client_ip`. Both fall back to a placeholder without it.
+
+```php
+Billing::chargeWithMethod($payment, $method, new ChargeOptions(customerIp: $user->last_login_ip));
+```
+
 ## Recipes
 
 Everything above is the building blocks; here's how they combine for a few real scenarios. Wider, end-to-end system designs (a SaaS with a token wallet, a store with expenses, hourly rentals, a tariff storefront) live in **[docs/use-cases.md](docs/use-cases.md)**.

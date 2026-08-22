@@ -10,6 +10,12 @@ final readonly class ChargeOptions
         /** Fiscal basket — filled from Payable::receiptItems() when it implements HasReceiptItems. */
         public array $receiptItems = [],
         public ?string $customerEmail = null,
+        /**
+         * The customer's IP. Required by LiqPay for an off-session `paytoken` charge and used by
+         * Hutko as `client_ip`; there's no live request behind a scheduled renewal, so pass the
+         * last address you saw. Drivers that don't take one ignore it.
+         */
+        public ?string $customerIp = null,
         public ?string $locale = null,
         public ?string $description = null,
         /** Tokenize the card during this very charge (future recurring charges). */

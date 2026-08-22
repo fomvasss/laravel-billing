@@ -242,6 +242,14 @@ class LiqPayGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $data);
         }
 
+        if ($status === PaymentStatus::Paid && $this->paidAmountMismatch(
+            $payment,
+            isset($data['amount']) ? (int) round((float) $data['amount'] * 100) : null,
+            $data['currency'] ?? null,
+        )) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $data);
+        }
+
         $externalId = (string) ($data['payment_id'] ?? $data['order_id']);
 
         if (! $payment->transitionTo($status, [

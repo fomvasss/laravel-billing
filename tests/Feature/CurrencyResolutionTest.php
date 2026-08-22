@@ -42,6 +42,39 @@ class CurrencyResolutionTest extends TestCase
         $this->assertNull($resolved->convertedFromCurrency);
     }
 
+    public function test_a_sibling_price_must_match_the_billing_cycle_and_pricing_model(): void
+    {
+        $plan = $this->plan();
+        $monthly = $plan->prices()->create([
+            'currency' => 'GBP', 'amount' => 3000, 'gateway' => 'fake', 'pricing_type' => 'flat',
+            'interval' => 'month', 'interval_count' => 1,
+        ]);
+        // Same plan, accepted currency — but a yearly price. Billing the monthly subscription this
+        // amount would charge a year's money for a month.
+        $plan->prices()->create([
+            'currency' => 'UAH', 'amount' => 120000, 'gateway' => 'fake', 'pricing_type' => 'flat',
+            'interval' => 'year', 'interval_count' => 1,
+        ]);
+
+        $this->expectException(\Fomvasss\Billing\Exceptions\BillingException::class);
+
+        app(BillingManager::class)->resolveChargeAmount($monthly, 'fake');
+    }
+
+    public function test_a_retired_sibling_price_is_not_used(): void
+    {
+        $plan = $this->plan();
+        $unsupported = $plan->prices()->create(['currency' => 'GBP', 'amount' => 3000, 'gateway' => 'fake', 'pricing_type' => 'flat']);
+        $plan->prices()->create([
+            'currency' => 'UAH', 'amount' => 12000, 'gateway' => 'fake', 'pricing_type' => 'flat',
+            'is_active' => false,
+        ]);
+
+        $this->expectException(\Fomvasss\Billing\Exceptions\BillingException::class);
+
+        app(BillingManager::class)->resolveChargeAmount($unsupported, 'fake');
+    }
+
     public function test_config_override_extends_or_narrows_a_drivers_currency_list(): void
     {
         // Extend: GBP isn't in the fake driver's list, the config override says the merchant

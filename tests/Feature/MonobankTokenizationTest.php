@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Fomvasss\Billing\Tests\Feature;
 
 use Fomvasss\Billing\Events\PaymentMethodAttached;
+use Fomvasss\Billing\Events\PaymentSucceeded;
 use Fomvasss\Billing\Events\PaymentMethodDetached;
 use Fomvasss\Billing\Facades\Billing;
 use Fomvasss\Billing\Jobs\ProcessWebhookJob;
@@ -57,6 +58,36 @@ class MonobankTokenizationTest extends TestCase
         $this->assertSame('1902', $method->last4);
         $this->assertTrue($method->is_default);
 
+        Event::assertDispatchedTimes(PaymentMethodAttached::class, 1);
+
+        // The same delivery carries status=success — the card being attached must not swallow it,
+        // or the payment sits pending until reconciliation an hour later.
+        $this->assertSame('paid', $payment->fresh()->status->value);
+    }
+
+    public function test_a_card_attach_and_a_payment_outcome_in_one_delivery_both_take_effect(): void
+    {
+        Event::fake([PaymentMethodAttached::class, PaymentSucceeded::class]);
+
+        $user = TestUser::create(['name' => 'Buyer']);
+        $payment = $this->pendingMonobankPayment($user);
+
+        ProcessWebhookJob::dispatch(BillingWebhookCall::create([
+            'name' => 'monobank',
+            'url' => 'https://example.test/billing/webhooks/monobank',
+            'payload' => [
+                'invoiceId' => 'inv_2',
+                'status' => 'success',
+                'amount' => $payment->amount,
+                'ccy' => 980,
+                'reference' => (string) $payment->id,
+                'walletData' => ['walletId' => 'wallet_2', 'cardToken' => 'card_tok_3', 'status' => 'created'],
+            ],
+        ]));
+
+        $this->assertSame('paid', $payment->fresh()->status->value);
+        $this->assertSame('inv_2', $payment->fresh()->external_id);
+        Event::assertDispatchedTimes(PaymentSucceeded::class, 1);
         Event::assertDispatchedTimes(PaymentMethodAttached::class, 1);
     }
 

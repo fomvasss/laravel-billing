@@ -253,6 +253,14 @@ class HutkoGateway extends AbstractGateway implements TokenizesPaymentMethod, \F
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $data ?? []);
         }
 
+        if ($status === PaymentStatus::Paid && $this->paidAmountMismatch(
+            $payment,
+            isset($data['amount']) ? (int) $data['amount'] : null,
+            $data['currency'] ?? null,
+        )) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $data);
+        }
+
         $externalId = isset($data['payment_id']) ? (string) $data['payment_id'] : null;
 
         if (! $payment->transitionTo($status, [

@@ -94,6 +94,32 @@ class ReconcilePendingPaymentsTest extends TestCase
         $this->assertSame(PaymentStatus::Canceled, $payment->fresh()->status);
     }
 
+    /**
+     * The webhook path refuses a "paid" callback whose sum doesn't match the row — polling has to
+     * refuse the same evidence, or reconciliation quietly marks paid an hour later exactly what the
+     * webhook just rejected.
+     */
+    public function test_polling_refuses_a_paid_status_whose_amount_does_not_match(): void
+    {
+        Event::fake([PaymentSucceeded::class]);
+
+        $payment = $this->stalePendingPayment('pi_123');
+
+        Http::fake([
+            'https://api.stripe.com/v1/payment_intents/pi_123' => Http::response([
+                'id' => 'pi_123',
+                'status' => 'succeeded',
+                'amount' => 5000, // the row says 10000
+                'currency' => 'uah',
+            ]),
+        ]);
+
+        $this->artisan('billing:reconcile-pending-payments')->assertSuccessful();
+
+        $this->assertSame(PaymentStatus::Pending, $payment->fresh()->status);
+        Event::assertNotDispatched(PaymentSucceeded::class);
+    }
+
     private function stalePendingPayment(?string $externalId, string $gateway = 'stripe'): Payment
     {
         $user = TestUser::create(['name' => 'Buyer']);

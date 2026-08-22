@@ -332,17 +332,22 @@ class BillingManager
         }
 
         // A gateway-specific sibling wins; a generic (gateway=null) price in an accepted currency
-        // is still better than paying for a conversion.
-        $sibling = $price->plan
+        // is still better than paying for a conversion. "Sibling" means the SAME offer in another
+        // currency, so the billing cycle and pricing model have to match: without that, a plan
+        // priced monthly in UAH and yearly in USD would quietly bill a monthly subscription the
+        // yearly amount. Retired prices are excluded for the same reason.
+        $siblings = fn () => $price->plan
             ->prices()
-            ->where('gateway', $gateway)
             ->whereIn('currency', $supported)
-            ->first()
-            ?? $price->plan
-                ->prices()
-                ->whereNull('gateway')
-                ->whereIn('currency', $supported)
-                ->first();
+            ->where('interval', $price->interval)
+            // ?? 1 mirrors the column default: a Price created and used without a round trip to
+            // the database still carries null here, and null would match nothing.
+            ->where('interval_count', $price->interval_count ?? 1)
+            ->where('pricing_type', $price->pricing_type)
+            ->where('is_active', true);
+
+        $sibling = $siblings()->where('gateway', $gateway)->first()
+            ?? $siblings()->whereNull('gateway')->first();
 
         if ($sibling !== null) {
             return new ResolvedAmount(new Money($sibling->amount, $sibling->currency));

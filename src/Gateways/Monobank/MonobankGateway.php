@@ -83,15 +83,6 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
     {
         $payload = $webhookCall->payload;
 
-        // Card tokenization completes asynchronously relative to the payment itself — Monobank
-        // re-delivers this same invoice-status webhook once walletData.status flips "new" →
-        // "created", even when the top-level payment `status` hasn't changed since the previous
-        // delivery (confirmed against `support`'s production integration, which observes the same
-        // two-delivery pattern). Only reachable when charge() ran with ChargeOptions::$saveCard.
-        if (($payload['walletData']['status'] ?? null) === 'created' && ! empty($payload['walletData']['cardToken'])) {
-            return $this->handleWalletData($payload);
-        }
-
         // Same schema as GET /invoice/status — "reference" is exactly what we set to $payment->id on charge().
         // A webhook for a payment this package didn't create (another integration on the same
         // merchant account, a row created before install) is Ignored, not a failed job.
@@ -108,15 +99,30 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
             default => null,
         };
 
-        if ($status === null) {
-            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
-        }
-
+        // Checked before anything is acted on, tokenization included: a delivery whose sum doesn't
+        // match this row isn't trustworthy evidence about it at all.
         if ($status === PaymentStatus::Paid && $this->paidAmountMismatch(
             $payment,
             isset($payload['amount']) ? (int) $payload['amount'] : null,
             isset($payload['ccy']) ? (string) array_search((int) $payload['ccy'], self::CURRENCY_CODES, true) : null,
         )) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
+        }
+
+        // Card tokenization completes asynchronously relative to the payment itself — Monobank
+        // re-delivers this same invoice-status webhook once walletData.status flips "new" →
+        // "created", even when the top-level payment `status` hasn't changed since the previous
+        // delivery (confirmed against `support`'s production integration, which observes the same
+        // two-delivery pattern). Handled as a side effect rather than instead of the payment
+        // status, the way LiqPay/WayForPay/Hutko's inline tokens are: nothing guarantees the two
+        // arrive in separate deliveries, and a single delivery carrying both used to leave the
+        // payment pending until reconciliation an hour later. Only reachable when charge() ran with
+        // ChargeOptions::$saveCard.
+        if (($payload['walletData']['status'] ?? null) === 'created' && ! empty($payload['walletData']['cardToken'])) {
+            $this->attachFromWebhook($payment, $payload);
+        }
+
+        if ($status === null) {
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
         }
 
@@ -253,6 +259,14 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $data);
         }
 
+        if ($status === PaymentStatus::Paid && $this->paidAmountMismatch(
+            $payment,
+            isset($data['amount']) ? (int) $data['amount'] : null,
+            isset($data['ccy']) ? (string) array_search((int) $data['ccy'], self::CURRENCY_CODES, true) : null,
+        )) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $data);
+        }
+
         if (! $payment->transitionTo($status, [
             'external_id' => $data['invoiceId'],
             ...$this->feeFrom($data['paymentInfo']['fee'] ?? null),
@@ -327,14 +341,9 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
      * (walletData.status="created") into a persisted PaymentMethod, no attachPaymentMethod() call
      * needed for the common "charge once with saveCard, tokenize as a side effect" flow.
      */
-    protected function handleWalletData(array $payload): WebhookResult
+    /** Persisted as a side effect and dispatched directly — same shape as LiqPay/WayForPay/Hutko's. */
+    protected function attachFromWebhook(Payment $payment, array $payload): void
     {
-        $payment = $this->findPaymentByReference($payload['reference'] ?? null);
-
-        if ($payment === null) {
-            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
-        }
-
         $billable = $payment->billable;
         $maskedPan = $payload['paymentInfo']['maskedPan'] ?? null;
 
@@ -348,15 +357,12 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
             $payload['paymentInfo']['paymentSystem'] ?? null,
         );
 
-        // No PaymentMethodAttached::dispatch() here — WebhookResultDispatcher does it for the
-        // webhook path (see ProcessWebhookJob); dispatching here too would fire it twice.
-        return new WebhookResult(
-            type: WebhookEventType::PaymentMethod,
-            status: 'attached',
-            paymentMethod: $method,
-            externalId: $payload['walletData']['cardToken'],
-            raw: $payload,
-        );
+        // Direct dispatch runs BEFORE ProcessWebhookJob's dedup claim, so a re-delivered callback
+        // would fire it again — wasRecentlyCreated is the dedup here: only a token not yet
+        // persisted counts as "attached".
+        if ($method->wasRecentlyCreated) {
+            PaymentMethodAttached::dispatch($method);
+        }
     }
 
     protected function basketOrder(array $receiptItems): ?array

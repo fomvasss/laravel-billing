@@ -137,10 +137,12 @@ abstract class AbstractGateway implements PaymentGatewayContract
     }
 
     /**
-     * A signed "paid" callback whose sum/currency doesn't match this Payment row is NOT proof this
-     * row was paid — the classic case is a stale checkout link paid after the amount was edited
-     * and charge() re-issued. The driver refuses to mark paid on a mismatch; the row stays pending
-     * for reconciliation/manual review (the stored webhook call keeps the full payload).
+     * A "paid" outcome whose sum/currency doesn't match this Payment row is NOT proof this row was
+     * paid — the classic case is a stale checkout link paid after the amount was edited and
+     * charge() re-issued. The driver refuses to mark paid on a mismatch; the row stays pending for
+     * manual review (the stored webhook call keeps the full payload). Every checkStatus() applies
+     * it too: otherwise reconciliation would quietly mark paid, an hour later, exactly what the
+     * webhook path just refused.
      */
     protected function paidAmountMismatch(Payment $payment, ?int $amountMinor, ?string $currency): bool
     {

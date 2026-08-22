@@ -308,6 +308,14 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $data);
         }
 
+        if ($status === PaymentStatus::Paid && $this->paidAmountMismatch(
+            $payment,
+            isset($data['amount_total']) ? (int) $data['amount_total'] : null,
+            $data['currency'] ?? null,
+        )) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $data);
+        }
+
         $externalId = $data['payment_intent'] ?? $data['id'];
 
         if (! $payment->transitionTo($status, ['external_id' => $externalId])) {
@@ -337,6 +345,14 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
         };
 
         if ($status === null) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $data);
+        }
+
+        if ($status === PaymentStatus::Paid && $this->paidAmountMismatch(
+            $payment,
+            isset($data['amount']) ? (int) $data['amount'] : null,
+            $data['currency'] ?? null,
+        )) {
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $data);
         }
 

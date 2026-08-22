@@ -174,7 +174,7 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
 
     /**
      * The uncommon path — see class docblock. $token = ['card_token' => '...'], already obtained
-     * some other way than this driver's own webhook auto-attach (handleWalletData()). Verifies the
+     * some other way than this driver's own webhook auto-attach (attachFromWebhook()). Verifies the
      * token is actually present in the wallet before persisting it.
      */
     public function attachPaymentMethod(Model&Billable $billable, array $token): PaymentMethod

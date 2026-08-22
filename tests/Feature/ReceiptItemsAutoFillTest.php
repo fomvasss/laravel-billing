@@ -71,7 +71,8 @@ class ReceiptItemsAutoFillTest extends TestCase
             'billable_id' => $user->id,
         ]);
 
-        $explicit = [['name' => 'Custom', 'qty' => 1, 'unitAmount' => 100, 'sku' => null]];
+        // Totals the payment's own amount — a basket that doesn't is refused (see assertReceiptItemsMatchAmount()).
+        $explicit = [['name' => 'Custom', 'qty' => 1, 'unitAmount' => 5000, 'sku' => null]];
 
         Billing::charge($payment, new ChargeOptions(receiptItems: $explicit));
 

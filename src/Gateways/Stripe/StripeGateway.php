@@ -103,7 +103,13 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             // signal for it. Also fires alongside checkout.session.completed for the redirect flow
             // (the transitionTo() below is idempotent, so processing both is harmless).
             'payment_intent.succeeded' => PaymentStatus::Paid,
-            'payment_intent.payment_failed' => PaymentStatus::Failed,
+            // Only terminal for a raw off-session intent. Inside a Checkout Session the customer is
+            // still on the page and free to try another card, so this fires on a declined FIRST
+            // attempt of a checkout that may well end up paid — treating it as failed would put the
+            // subscription into dunning (and let billing.pay issue a competing second session)
+            // while the original one is still live. checkout.session.expired is that flow's
+            // terminal signal; see paymentIntentIsCheckoutBound().
+            'payment_intent.payment_failed' => $this->paymentIntentIsCheckoutBound($object) ? null : PaymentStatus::Failed,
             // charge.refunded etc. — same "explicit refund() is the supported path, webhook-driven
             // refund tracking is a later nuance" reasoning as the other built-in drivers
             default => null,
@@ -156,6 +162,20 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             externalId: $externalId ?? (string) $payment->id,
             raw: $event,
         );
+    }
+
+    /**
+     * Whether this PaymentIntent belongs to a hosted Checkout Session rather than being one we
+     * created directly. Stripe doesn't put the session on the intent, so the tell is our own
+     * bookkeeping: chargePaymentMethod() is the only path that stores a `pi_` external_id up front
+     * — a row still holding its `cs_` session id (or nothing yet) is a checkout in progress.
+     */
+    protected function paymentIntentIsCheckoutBound(array $object): bool
+    {
+        $paymentId = $object['metadata']['payment_id'] ?? $object['client_reference_id'] ?? null;
+        $payment = $paymentId === null ? null : $this->findPaymentByReference($paymentId);
+
+        return $payment !== null && ! str_starts_with((string) $payment->external_id, 'pi_');
     }
 
     public function refund(Payment $payment, ?Money $amount = null): PaymentResult

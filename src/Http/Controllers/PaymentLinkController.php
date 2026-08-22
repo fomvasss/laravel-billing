@@ -8,6 +8,7 @@ use Fomvasss\Billing\BillingManager;
 use Fomvasss\Billing\Events\PaymentLinkOpened;
 use Fomvasss\Billing\Models\Payment;
 use Illuminate\Http\RedirectResponse;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
 
@@ -44,10 +45,30 @@ class PaymentLinkController extends Controller
         // Reuse the existing checkout only while it's genuinely usable — pending AND unexpired.
         // failed/canceled always get a fresh one: their old gateway page is a dead end.
         if (! $payment->isPending() || ! $payment->hasActivePaymentUrl()) {
-            app(BillingManager::class)->charge($payment);
-            $payment->refresh();
+            $this->reissue($payment);
         }
 
         return redirect()->away($payment->payment_url, 303);
+    }
+
+    /**
+     * Serialized per payment: this URL is public and unauthenticated by design, so it gets opened
+     * concurrently for real (a double click, a mail client prefetching links). Two re-issues would
+     * leave two live invoices on the gateway for one Payment row — pay both and the second lands as
+     * an unknown reference. The waiter re-reads instead of issuing its own: by the time the lock is
+     * free the first request has already stored a usable link.
+     */
+    protected function reissue(Payment $payment): void
+    {
+        Cache::lock("billing:reissue:{$payment->id}", 30)->block(15, function () use ($payment) {
+            $payment->refresh();
+
+            if ($payment->isPending() && $payment->hasActivePaymentUrl()) {
+                return;
+            }
+
+            app(BillingManager::class)->charge($payment);
+            $payment->refresh();
+        });
     }
 }

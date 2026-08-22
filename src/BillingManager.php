@@ -162,6 +162,8 @@ class BillingManager
             $options = $options->withReceiptItems($payment->payable->receiptItems());
         }
 
+        $this->assertReceiptItemsMatchAmount($payment, $options);
+
         $result = $driver->charge($payment, $options);
 
         $url = $result->url;
@@ -213,6 +215,8 @@ class BillingManager
             $options = $options->withReceiptItems($payment->payable->receiptItems());
         }
 
+        $this->assertReceiptItemsMatchAmount($payment, $options);
+
         $result = $driver->chargePaymentMethod($payment, $method, $options);
 
         $payment->fill([
@@ -222,6 +226,32 @@ class BillingManager
         ])->save();
 
         return $result;
+    }
+
+    /**
+     * A basket that doesn't add up to the Payment's own amount is a bug worth stopping the charge
+     * over, not a rounding curiosity: Stripe bills the sum of its line_items rather than our
+     * amount, so the customer would be charged something other than what the row says — and the
+     * webhook, checking the callback against amount, would then refuse to mark it paid, leaving a
+     * pending row for money that actually left the customer's card.
+     */
+    protected function assertReceiptItemsMatchAmount(Payment $payment, ChargeOptions $options): void
+    {
+        if ($options->receiptItems === []) {
+            return;
+        }
+
+        $total = 0;
+
+        foreach ($options->receiptItems as $item) {
+            $total += (int) round($item['unitAmount'] * $item['qty']);
+        }
+
+        if ($total !== $payment->amount) {
+            throw new BillingException(
+                "Receipt items for payment {$payment->id} total {$total}, the payment is {$payment->amount} {$payment->currency}."
+            );
+        }
     }
 
     /**

@@ -227,6 +227,8 @@ A per-charge `ChargeOptions(successUrl: ..., failUrl: ...)` bypasses the whole m
 
 Every visit fires `PaymentLinkOpened($payment)` — an analytics/sales signal ("opened the invoice twice, never paid"), nothing more. Re-issuing uses default `ChargeOptions` (receipt items still auto-fill from a `HasReceiptItems` payable); per-charge extras from the original call (`saveCard`, `raw`, ...) are not remembered.
 
+Re-issues are serialized per payment with a cache lock: this URL is public and unauthenticated by design, so it does get opened concurrently (a double click, a mail client prefetching links), and two re-issues would leave two live invoices on the gateway for one row. The second visitor re-reads the link the first one stored rather than issuing its own. As with refunds, this wants a shared cache store to hold across processes.
+
 ### Manual/offline payments
 
 No driver is required for cash or bank-transfer payments — just create the row directly:
@@ -742,6 +744,8 @@ class Order extends Model implements Payable, HasReceiptItems
 What each gateway does with it differs — **Monobank** (`basketOrder`), **WayForPay** (`productName[]`/`productPrice[]`/`productCount[]`), **Stripe** (`line_items`) and **Hutko** (`reservation_data`, its programmable-RRO fiscal basket) all take it as-is. The exception is **LiqPay**: its `rro_info` line items reference goods registered in your LiqPay account by their catalog id — a value this neutral shape has no field for — so pass that one explicitly via `ChargeOptions::$raw` (see below).
 
 The same auto-fill applies to `chargeWithMethod()` — an off-session charge (overage, a top-up, the postpaid-ride charge in use-case #7) is fiscalized exactly like a redirect checkout, as long as `$payment->payable` implements `HasReceiptItems`. The one place this doesn't reach is `billing:process-recurring-charges`: a subscription renewal's payable is always the package's own `Subscription` row, which deliberately does **not** implement `HasReceiptItems` — reconstructing the right basket total there would mean the package guessing at `pricing_type`/currency-conversion math for a fiscal document, which it won't do silently. Call `chargeWithMethod()` yourself with explicit `receiptItems` if a renewal needs one.
+
+Whatever the basket comes from, it has to add up to the payment's own `amount` — a mismatch throws before the gateway is called. This isn't pedantry about fiscal data: Stripe bills the sum of its line items rather than your `amount`, so a basket that disagrees charges the customer one number while the row says another, and the callback — checked against `amount` — then refuses to mark it paid.
 
 ```php
 $payment = Payment::create([

@@ -16,6 +16,8 @@ use Fomvasss\Billing\Models\PaymentMethod;
 use Fomvasss\Billing\Models\Subscription;
 use Fomvasss\Billing\Support\Money;
 use Illuminate\Console\Command;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Only INITIATES the charge (creates a pending Payment, calls chargePaymentMethod()) — the outcome
@@ -35,18 +37,7 @@ class ProcessRecurringChargesCommand extends Command
 
         $count = 0;
 
-        Subscription::query()
-            ->whereIn('status', [SubscriptionStatus::Active, SubscriptionStatus::PastDue])
-            ->whereNotNull('gateway')
-            // Provider-managed subscriptions (Subscription::isProviderManaged()) renew on the
-            // gateway's side — charging here would race the provider's own renewal (a late
-            // `renewed` webhook must not trigger a second debit from us).
-            ->whereNull('external_id')
-            ->whereNotNull('current_period_ends_at')
-            ->where('current_period_ends_at', '<=', now())
-            // Dunning pacing: a failed attempt stamps next_retry_at (retry_interval_hours ahead) —
-            // until then the hourly run leaves the subscription alone.
-            ->where(fn ($query) => $query->whereNull('next_retry_at')->orWhere('next_retry_at', '<=', now()))
+        $this->dueForRenewal(Subscription::query())
             ->chunkById(200, function ($subscriptions) use ($billing, &$count) {
                 foreach ($subscriptions as $subscription) {
                     try {
@@ -72,6 +63,26 @@ class ProcessRecurringChargesCommand extends Command
      * query below and be billed for another period. Runs for gateway-less (manual) subscriptions
      * too — their cancels_at has no other consumer.
      */
+    /**
+     * @param  Builder<Subscription>  $query
+     * @return Builder<Subscription>
+     */
+    protected function dueForRenewal(Builder $query): Builder
+    {
+        return $query
+            ->whereIn('status', [SubscriptionStatus::Active, SubscriptionStatus::PastDue])
+            ->whereNotNull('gateway')
+            // Provider-managed subscriptions (Subscription::isProviderManaged()) renew on the
+            // gateway's side — charging here would race the provider's own renewal (a late
+            // `renewed` webhook must not trigger a second debit from us).
+            ->whereNull('external_id')
+            ->whereNotNull('current_period_ends_at')
+            ->where('current_period_ends_at', '<=', now())
+            // Dunning pacing: a failed attempt stamps next_retry_at (retry_interval_hours ahead) —
+            // until then the hourly run leaves the subscription alone.
+            ->where(fn ($query) => $query->whereNull('next_retry_at')->orWhere('next_retry_at', '<=', now()));
+    }
+
     protected function finalizeDueCancellations(): void
     {
         Subscription::query()
@@ -98,69 +109,28 @@ class ProcessRecurringChargesCommand extends Command
             return false; // gateway can't do off-session charges — nothing this command can do
         }
 
-        // A pending renewal from a previous run whose webhook hasn't landed yet — initiating
-        // another charge now would debit the card twice for the same period. Reconciliation
-        // resolves the pending row (paid/failed/canceled) first, and only then may a new attempt
-        // happen.
-        $hasPendingRenewal = Payment::query()
-            ->where('payable_type', $subscription->getMorphClass())
-            ->where('payable_id', $subscription->id)
-            ->where('status', PaymentStatus::Pending)
-            ->exists();
+        // Deciding whether this period gets charged is a read (is a renewal already pending?)
+        // followed by a write (the Payment row) — two of these interleaving debit the card twice.
+        // The row lock serializes them: withoutOverlapping() only covers the scheduler's own runs,
+        // and only when the app's cache store is shared, so it can't be the thing standing between
+        // a manual `artisan billing:process-recurring-charges` and the scheduled one. The gateway
+        // call itself stays outside — a transaction must never span an HTTP round trip.
+        $claim = DB::transaction(function () use ($subscription, $billing) {
+            // Re-read under the lock and re-apply the same conditions the batch query used: by now
+            // a concurrent run may have advanced the period, stamped next_retry_at or cancelled it.
+            $subscription = $this->dueForRenewal(Subscription::query())
+                ->whereKey($subscription->getKey())
+                ->lockForUpdate()
+                ->first();
 
-        if ($hasPendingRenewal) {
+            return $subscription === null ? null : $this->claimRenewal($subscription, $billing);
+        });
+
+        if ($claim === null) {
             return false;
         }
 
-        $method = PaymentMethod::query()
-            ->where('billable_type', $subscription->billable_type)
-            ->where('billable_id', $subscription->billable_id)
-            ->where('gateway', $subscription->gateway)
-            ->where('is_default', true)
-            ->first();
-
-        if ($method === null) {
-            // No saved card to charge (never tokenized, or detached since the last renewal) — from
-            // the customer's perspective this is identical to a declined charge, so it gets the
-            // same grace/dunning treatment rather than silently stalling: without this the
-            // subscription would stay `active` on a stale current_period_ends_at and get re-picked
-            // by this command forever, never reaching past_due or ever cancelling.
-            $subscription->recordRenewalFailure();
-
-            return false;
-        }
-
-        $price = $subscription->price;
-        $resolved = $billing->resolveChargeAmount($price, $subscription->gateway);
-        $multiplier = $price->chargeMultiplier($subscription);
-
-        $amount = new Money((int) round($resolved->money->amount * $multiplier), $resolved->money->currency);
-
-        // Nothing to charge — a metered period nobody used, or a licensed one down to zero seats.
-        // Every gateway rejects a zero/negative debit, and the rejected attempt would leave a
-        // pending Payment behind that blocks this subscription's renewals for good. The period is
-        // still owed to the customer, so advance it directly.
-        if ($amount->amount <= 0) {
-            $subscription->recordRenewalSuccess();
-
-            return false;
-        }
-
-        $payment = Payment::create([
-            'status' => PaymentStatus::Pending,
-            'type' => PaymentType::Charge,
-            'gateway' => $subscription->gateway,
-            'amount' => $amount->amount,
-            'currency' => $amount->currency,
-            'converted_from_currency' => $resolved->convertedFromCurrency,
-            'exchange_rate' => $resolved->exchangeRate,
-            'exchange_rate_at' => $resolved->exchangeRateAt,
-            'tenant_id' => $subscription->tenant_id,
-            'payable_type' => $subscription->getMorphClass(),
-            'payable_id' => $subscription->id,
-            'billable_type' => $subscription->billable_type,
-            'billable_id' => $subscription->billable_id,
-        ]);
+        [$payment, $method] = $claim;
 
         try {
             $billing->chargeWithMethod($payment, $method);
@@ -179,5 +149,81 @@ class ProcessRecurringChargesCommand extends Command
         }
 
         return true;
+    }
+
+    /**
+     * Runs under the subscription's row lock. Returns the pending Payment and the card to charge
+     * it with, or null when this period needs no gateway call at all (already claimed, no card,
+     * nothing owed).
+     *
+     * @return array{Payment, PaymentMethod}|null
+     */
+    protected function claimRenewal(Subscription $subscription, BillingManager $billing): ?array
+    {
+        // A pending renewal from a previous run whose webhook hasn't landed yet — initiating
+        // another charge now would debit the card twice for the same period. Reconciliation
+        // resolves the pending row (paid/failed/canceled) first, and only then may a new attempt
+        // happen.
+        $hasPendingRenewal = Payment::query()
+            ->where('payable_type', $subscription->getMorphClass())
+            ->where('payable_id', $subscription->id)
+            ->where('status', PaymentStatus::Pending)
+            ->exists();
+
+        if ($hasPendingRenewal) {
+            return null;
+        }
+
+        $method = PaymentMethod::query()
+            ->where('billable_type', $subscription->billable_type)
+            ->where('billable_id', $subscription->billable_id)
+            ->where('gateway', $subscription->gateway)
+            ->where('is_default', true)
+            ->first();
+
+        if ($method === null) {
+            // No saved card to charge (never tokenized, or detached since the last renewal) — from
+            // the customer's perspective this is identical to a declined charge, so it gets the
+            // same grace/dunning treatment rather than silently stalling: without this the
+            // subscription would stay `active` on a stale current_period_ends_at and get re-picked
+            // by this command forever, never reaching past_due or ever cancelling.
+            $subscription->recordRenewalFailure();
+
+            return null;
+        }
+
+        $price = $subscription->price;
+        $resolved = $billing->resolveChargeAmount($price, $subscription->gateway);
+        $multiplier = $price->chargeMultiplier($subscription);
+
+        $amount = new Money((int) round($resolved->money->amount * $multiplier), $resolved->money->currency);
+
+        // Nothing to charge — a metered period nobody used, or a licensed one down to zero seats.
+        // Every gateway rejects a zero/negative debit, and the rejected attempt would leave a
+        // pending Payment behind that blocks this subscription's renewals for good. The period is
+        // still owed to the customer, so advance it directly.
+        if ($amount->amount <= 0) {
+            $subscription->recordRenewalSuccess();
+
+            return null;
+        }
+
+        $payment = Payment::create([
+            'status' => PaymentStatus::Pending,
+            'type' => PaymentType::Charge,
+            'gateway' => $subscription->gateway,
+            'amount' => $amount->amount,
+            'currency' => $amount->currency,
+            'converted_from_currency' => $resolved->convertedFromCurrency,
+            'exchange_rate' => $resolved->exchangeRate,
+            'exchange_rate_at' => $resolved->exchangeRateAt,
+            'tenant_id' => $subscription->tenant_id,
+            'payable_type' => $subscription->getMorphClass(),
+            'payable_id' => $subscription->id,
+            'billable_type' => $subscription->billable_type,
+            'billable_id' => $subscription->billable_id,
+        ]);
+
+        return [$payment, $method];
     }
 }

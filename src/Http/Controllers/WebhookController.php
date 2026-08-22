@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Fomvasss\Billing\Http\Controllers;
 
 use Fomvasss\Billing\BillingManager;
+use Fomvasss\Billing\Exceptions\BillingException;
 use Fomvasss\Billing\Jobs\ProcessWebhookJob;
 use Fomvasss\Billing\Webhooks\BillingWebhookCall;
 use Illuminate\Http\Request;
@@ -24,7 +25,13 @@ class WebhookController extends Controller
     {
         $manager = app(BillingManager::class);
 
-        $validator = app($manager->signatureValidatorFor($gateway));
+        try {
+            $validator = app($manager->signatureValidatorFor($gateway));
+        } catch (BillingException) {
+            // An unregistered {gateway} is a wrong URL, not a broken app — 404, not a 500 and a
+            // stack trace in the error tracker every time something probes the route.
+            abort(404);
+        }
 
         if (! $validator->isValid($request)) {
             abort(403, 'Invalid webhook signature.');

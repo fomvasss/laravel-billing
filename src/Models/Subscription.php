@@ -87,6 +87,12 @@ class Subscription extends Model
      */
     public function reportUsage(float $quantity, ?string $idempotencyKey = null): void
     {
+        // Usage only ever goes up within a period — a negative "correction" would silently undo
+        // metered billing. Reset it explicitly (or let a paid renewal do it) instead.
+        if ($quantity < 0) {
+            throw new \InvalidArgumentException("Usage quantity cannot be negative, got {$quantity}.");
+        }
+
         if ($idempotencyKey && ! Cache::add("billing:usage:{$this->id}:{$idempotencyKey}", true, now()->addDay())) {
             return;
         }

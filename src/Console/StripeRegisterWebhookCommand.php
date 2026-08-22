@@ -46,8 +46,7 @@ class StripeRegisterWebhookCommand extends Command
 
         $http = Http::baseUrl('https://api.stripe.com/v1')->withToken($secretKey)->timeout(15);
 
-        $existing = collect($http->get('/webhook_endpoints', ['limit' => 100])->throw()->json('data', []))
-            ->where('url', $url);
+        $existing = $this->allEndpoints($http)->where('url', $url);
 
         if ($existing->isNotEmpty() && ! $this->option('fresh')) {
             foreach ($existing as $endpoint) {
@@ -77,5 +76,30 @@ class StripeRegisterWebhookCommand extends Command
         $this->info("STRIPE_WEBHOOK_SECRET={$created['secret']}");
 
         return self::SUCCESS;
+    }
+
+    /**
+     * Paginated: Stripe caps a page at 100, and an account past that would look like it has no
+     * endpoint registered — this command would then keep creating duplicates, and --fresh would
+     * leave the real one behind.
+     *
+     * @return \Illuminate\Support\Collection<int, array<string, mixed>>
+     */
+    protected function allEndpoints(\Illuminate\Http\Client\PendingRequest $http): \Illuminate\Support\Collection
+    {
+        $endpoints = collect();
+        $startingAfter = null;
+
+        do {
+            $page = $http->get('/webhook_endpoints', array_filter([
+                'limit' => 100,
+                'starting_after' => $startingAfter,
+            ]))->throw()->json();
+
+            $endpoints = $endpoints->concat($page['data'] ?? []);
+            $startingAfter = $endpoints->last()['id'] ?? null;
+        } while (($page['has_more'] ?? false) && $startingAfter !== null);
+
+        return $endpoints;
     }
 }

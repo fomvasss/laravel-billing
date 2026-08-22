@@ -181,6 +181,12 @@ class ProcessRecurringChargesCommand extends Command
             ->where('is_default', true)
             ->first();
 
+        // An expired card is a decline the bank hasn't been asked about yet — same dunning
+        // treatment, without the round trip (and without the gateway logging a failure).
+        if ($method !== null && $method->expires_at !== null && $method->expires_at->isPast()) {
+            $method = null;
+        }
+
         if ($method === null) {
             // No saved card to charge (never tokenized, or detached since the last renewal) — from
             // the customer's perspective this is identical to a declined charge, so it gets the

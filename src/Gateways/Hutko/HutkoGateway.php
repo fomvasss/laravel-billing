@@ -422,7 +422,9 @@ class HutkoGateway extends AbstractGateway implements TokenizesPaymentMethod, \F
         $string = $this->secretKey();
 
         foreach ($fields as $value) {
-            $string .= '|' . $value;
+            // json_encode for arrays, same as HutkoSignatureValidator — anything nested passed
+            // through ChargeOptions::$raw would otherwise be "Array" in the signed string.
+            $string .= '|' . (is_array($value) ? json_encode($value) : $value);
         }
 
         return sha1($string);

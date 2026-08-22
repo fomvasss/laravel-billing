@@ -66,7 +66,9 @@ class LiqPayGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             'order_id' => (string) $payment->id,
             'result_url' => $this->successUrl($payment, $options),
             'server_url' => $this->webhookUrl($options),
-            'language' => $options->locale,
+            // LiqPay accepts "uk"/"en" only — a full locale ("uk-UA") or anything else is an error
+            // on its side, so a wider ChargeOptions::$locale is narrowed here rather than rejected.
+            'language' => $this->language($options->locale),
             'recurringbytoken' => $options->saveCard ? '1' : null,
         ], static fn ($value) => $value !== null && $value !== '');
 
@@ -333,6 +335,15 @@ class LiqPayGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             ->post(self::API_URL, ['data' => $data, 'signature' => $this->sign($data)])
             ->throw()
             ->json();
+    }
+
+    protected function language(?string $locale): ?string
+    {
+        if ($locale === null) {
+            return null;
+        }
+
+        return str_starts_with(strtolower($locale), 'uk') ? 'uk' : 'en';
     }
 
     /** base64_encode(sha1(private_key . data . private_key, true)) — confirmed from the official PHP SDK, not sha3 as an earlier (unreliable) doc fetch suggested. */

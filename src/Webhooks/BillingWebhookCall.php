@@ -35,12 +35,23 @@ class BillingWebhookCall extends Model
         ];
     }
 
+    /**
+     * Headers are stored for debugging, minus the ones that carry a credential: this table is
+     * long-lived, ends up in backups and admin screens, and a stored signature header is a replayable
+     * secret. The signature has already been verified by the time this runs.
+     */
+    protected const REDACTED_HEADERS = ['authorization', 'stripe-signature', 'x-sign', 'cookie', 'x-api-key'];
+
     public static function storeWebhook(string $gateway, Request $request): self
     {
+        $headers = collect($request->headers->all())
+            ->map(fn (array $values, string $name) => in_array(strtolower($name), self::REDACTED_HEADERS, true) ? ['[redacted]'] : $values)
+            ->all();
+
         return static::create([
             'name' => $gateway,
             'url' => $request->fullUrl(),
-            'headers' => $request->headers->all(),
+            'headers' => $headers,
             'payload' => WebhookPayload::fromRequest($request),
         ]);
     }

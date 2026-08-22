@@ -65,6 +65,14 @@ All five built-in gateways are live-verified end to end (checkout, webhooks, tok
 - `Money` refuses a negative amount: the columns are `unsignedBigInteger`, which Postgres implements as a plain signed bigint, so this is the only place it's actually enforced. A refund is its own row with a positive amount, never a negative charge.
 - Every amount is an integer in minor units; `Money::fromDecimal()`/`toDecimal()` bridge `decimal` columns safely. Two-decimal currencies only, by design.
 
+### Smaller guarantees
+- An unknown `{gateway}` in the webhook URL answers 404, not a 500 with a stack trace.
+- Credential-bearing headers (`Stripe-Signature`, `Authorization`, `Cookie`, ...) are redacted before the webhook call is stored — the table outlives the request and ends up in backups.
+- `reportUsage()` rejects a negative quantity: usage only goes up within a period, and a "correction" would silently undo metered billing.
+- A renewal whose saved card has already expired goes straight to dunning instead of spending an attempt on a charge the bank will refuse.
+- `billing:stripe-register-webhook` pages through all endpoints instead of looking at the first 100, so a busy account doesn't get duplicates.
+- LiqPay's `language` is narrowed to the `uk`/`en` it actually accepts, so a full locale in `ChargeOptions::$locale` doesn't break the checkout.
+
 ### Setup & docs
 - Octane-compatible (Swoole/RoadRunner/FrankenPHP): no per-request state survives in memory between requests — gateway instances and credentials (incl. per-tenant) are resolved per call.
 - Database-agnostic: MySQL/MariaDB, PostgreSQL and SQLite are all supported — webhook callbacks carrying a foreign (non-UUID) reference are safely ignored and duplicate-delivery handling works identically on every driver; the test suite runs against SQLite and PostgreSQL.

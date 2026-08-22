@@ -186,7 +186,7 @@ $result = app(BillingManager::class)->charge($payment, new ChargeOptions(
 return redirect($payment->payment_url);
 ```
 
-`charge()` записує `external_id`/`payment_url`/`payment_url_expires_at` назад у `$payment` — безпечно викликати повторно на тому самому `Payment`, коли посилання спливло (TTL визначає кожен драйвер сам, через свій ключ `link_ttl_minutes` — напр. `MONOBANK_LINK_TTL_MINUTES`, дефолт 60 хв, 1440 для WayForPay/Hutko). `payment_url` — завжди плоске, редіректабельне посилання, незалежно від гейтвея: навіть LiqPay, чия платіжна сторінка приймає лише клієнтський POST-форми, отримує таке — форма кешується й віддається через власну сторінку пакета, яка сама її сабмітить.
+`charge()` записує `external_id`/`payment_url`/`payment_url_expires_at` назад у `$payment` — безпечно викликати повторно на тому самому `Payment`, коли посилання спливло (TTL визначає кожен драйвер сам, через свій ключ `link_ttl_minutes` — напр. `MONOBANK_LINK_TTL_MINUTES`, дефолт 60 хв, 1440 для WayForPay/Hutko; у Stripe такого ключа нема — його Checkout Session сама повідомляє свій `expires_at`). `payment_url` — завжди плоске, редіректабельне посилання, незалежно від гейтвея: навіть LiqPay, чия платіжна сторінка приймає лише клієнтський POST-форми, отримує таке — форма кешується й віддається через власну сторінку пакета, яка сама її сабмітить.
 
 Якщо потрібен сирий результат драйвера напряму (власна API-відповідь для SPA, наприклад): `$result->url` заповнений для будь-якого гейтвея, крім LiqPay, де замість нього `$result->form` (`['action' => ..., 'fields' => [...]]`) — ці поля треба самим відправити POST-ом на вказаний `action`.
 
@@ -260,6 +260,7 @@ UUID неможливо продиктувати телефоном — `payment
 ```php
 // AppServiceProvider::boot()
 Payment::creating(function (Payment $payment) {
+    // PaymentSequence — твій власний клас, будь-що, чим проєкт роздає номери.
     $payment->number ??= 'PAY-' . now()->format('Y') . '-' . str_pad((string) PaymentSequence::next(), 6, '0', STR_PAD_LEFT);
 });
 ```
@@ -408,7 +409,7 @@ sequenceDiagram
     Note over Cmd: Payment оновлено, ТІ САМІ події через спільний дедуп —<br/>пізній реальний вебхук потім не продублює диспатч
 ```
 
-Гейтвеї без ендпоінта статусу пропускають опитування: pending-платіж зі спливлим TTL помічається `canceled` як мертвий чекаут.
+Гейтвеї без ендпоінта статусу пропускають опитування: pending-платіж, старший за `reconcile_after_minutes`, помічається `canceled` як мертвий чекаут (вирішує саме це значення конфіга, а не власний TTL посилання на оплату).
 
 ## Вебхуки
 
@@ -531,7 +532,7 @@ Job має власні `$tries = 3` і backoff `10с / 60с / 300с` — дед
 
 ### Власний гейтвей
 
-Чотири обов'язкові методи (`PaymentGatewayContract`), решта — опційно, і один виклик для реєстрації:
+Шість обов'язкових методів (`PaymentGatewayContract` — два робочі, чотири статичні з метаданими), решта — опційно, і один виклик для реєстрації:
 
 ```php
 // у власному ServiceProvider::boot() — проєкт-споживач або сателіт-пакет (fomvasss/laravel-billing-mygateway)

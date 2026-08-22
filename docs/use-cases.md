@@ -265,7 +265,7 @@ public function plans(Request $request)
             'is_current' => $current?->plan_id === $plan->id,
             'prices' => $plan->prices->map(fn (Price $price) => [
                 'interval' => $price->interval?->value,           // 'month' | 'year' → the toggle
-                'amount' => Money::toDecimal($price->amount),     // "49.00"
+                'amount' => (new Money($price->amount, $price->currency))->toDecimal(), // "49.00"
                 'currency' => $price->currency,
             ])->values(),
         ]);

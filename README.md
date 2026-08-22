@@ -190,7 +190,7 @@ $result = app(BillingManager::class)->charge($payment, new ChargeOptions(
 return redirect($payment->payment_url);
 ```
 
-`charge()` writes `external_id`/`payment_url`/`payment_url_expires_at` back onto `$payment` — safe to call again on the same `Payment` once the link expires (each driver decides its own TTL, via its `link_ttl_minutes` config key — e.g. `MONOBANK_LINK_TTL_MINUTES`, default 60 min, 1440 for WayForPay/Hutko). `payment_url` is always a plain, redirectable link, no matter which gateway: even LiqPay, whose checkout page only accepts a client-submitted form, gets one — the form is cached and served through a package-owned page that submits it for you.
+`charge()` writes `external_id`/`payment_url`/`payment_url_expires_at` back onto `$payment` — safe to call again on the same `Payment` once the link expires (each driver decides its own TTL, via its `link_ttl_minutes` config key — e.g. `MONOBANK_LINK_TTL_MINUTES`, default 60 min, 1440 for WayForPay/Hutko; Stripe has no such key, its Checkout Session reports its own `expires_at`). `payment_url` is always a plain, redirectable link, no matter which gateway: even LiqPay, whose checkout page only accepts a client-submitted form, gets one — the form is cached and served through a package-owned page that submits it for you.
 
 If you need the raw driver result instead (building your own API response for a SPA, say): `$result->url` is set for every gateway except LiqPay, which sets `$result->form` (`['action' => ..., 'fields' => [...]]`) instead — POST those fields to that action yourself.
 
@@ -264,6 +264,7 @@ A UUID is a terrible thing to read over the phone — `payments.number` is the h
 ```php
 // AppServiceProvider::boot()
 Payment::creating(function (Payment $payment) {
+    // PaymentSequence is yours — whatever your project uses to hand out numbers.
     $payment->number ??= 'PAY-' . now()->format('Y') . '-' . str_pad((string) PaymentSequence::next(), 6, '0', STR_PAD_LEFT);
 });
 ```
@@ -412,7 +413,7 @@ sequenceDiagram
     Note over Cmd: Payment updated, the SAME events fire through the shared<br/>dedup — a late real webhook can't double-dispatch afterwards
 ```
 
-Gateways without a status endpoint skip the poll: a TTL-expired pending payment is marked `canceled` as a dead checkout.
+Gateways without a status endpoint skip the poll: a pending payment older than `reconcile_after_minutes` is marked `canceled` as a dead checkout (that config value, not the checkout link's own TTL, is what decides).
 
 ## Webhooks
 
@@ -535,7 +536,7 @@ The route name (`billing.webhook`) never changes, so `AbstractGateway::webhookUr
 
 ### Writing your own gateway
 
-Four required methods (`PaymentGatewayContract`), everything else opt-in, and one call to register it:
+Six required methods (`PaymentGatewayContract` — two instance, four static metadata), everything else opt-in, and one call to register it:
 
 ```php
 // in your ServiceProvider::boot() — your own project or a satellite package (fomvasss/laravel-billing-mygateway)

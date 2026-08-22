@@ -9,7 +9,7 @@ flowchart TB
     subgraph Registration [boot — BillingServiceProvider]
         SP[BillingServiceProvider] -->|extend + registerWebhook| BM[BillingManager<br/>drivers / validators / responders registries]
         SP --> Routes["routes: billing.webhook (POST)<br/>billing.return (GET+POST) · billing.pay (GET)<br/>billing.checkout-form (GET) · fake (local only)"]
-        SP --> Sched["schedule (opt-in):<br/>process-recurring-charges · reconcile · expire-trials · prune"]
+        SP --> Sched["schedule (opt-in):<br/>process-recurring-charges · reconcile · expire-trials · expire-pauses · prune"]
         SP -->|"Event::listen"| L[HandleSubscriptionPaymentOutcome]
     end
 
@@ -90,6 +90,7 @@ The fastest debugging question is "who could have changed this column":
 ## Scheduled commands, internally
 
 - **`process-recurring-charges`** (every minute, `withoutOverlapping`): pass 1 finalizes due `cancels_at`; pass 2 charges due subscriptions unless a renewal `Payment` is still pending (double-charge guard) or `next_retry_at` is in the future (dunning pacing). Per-subscription try/catch — one broken gateway doesn't strand the batch. It only *initiates*; outcomes come back through the webhook pipeline.
-- **`reconcile-pending-payments`** (15 min, `withoutOverlapping`): the fallback path described above; per-payment try/catch; gateways without `ChecksPaymentStatus` get their stale pendings marked `canceled` as dead checkouts.
+- **`reconcile-pending-payments`** (15 min, `withoutOverlapping`): the fallback path described above; per-payment try/catch; gateways without `ChecksPaymentStatus` get pendings older than `reconcile_after_minutes` marked `canceled` as dead checkouts, and so do renewal charges whose initiation never returned a gateway reference.
+- **`expire-pauses`** (hourly): resumes `paused` subscriptions whose `pause_ends_at` has passed (`status` → `active`, `SubscriptionResumed`). Never touches money.
 - **`expire-trials`** (daily): trial notices (per-price `trial_ending_notices` override → global config; closest-only when several are due; `trial_notices_sent` marker) then expiry to `ended`. Never touches money.
 - **`model:prune`** (daily): webhook calls older than `prune_after_days` — which also drops their dedup claims, so the window deliberately exceeds every gateway's retry horizon.

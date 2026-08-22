@@ -17,7 +17,7 @@ Practical note: several Ukrainian gateway doc sites are JS-rendered and return a
 
 ## The required contract
 
-Four methods, `Fomvasss\Billing\Contracts\PaymentGatewayContract`. That's the whole entry ticket:
+Six methods, `Fomvasss\Billing\Contracts\PaymentGatewayContract` — two that do the work, four static ones that describe the gateway to a settings UI. That's the whole entry ticket:
 
 ```php
 use Fomvasss\Billing\Contracts\PaymentGatewayContract;
@@ -53,7 +53,7 @@ public function charge(Payment $payment, ChargeOptions $options = new ChargeOpti
         'currency' => $payment->currency,
         'reference' => (string) $payment->id,      // so the webhook can find this row again
         'callback_url' => $this->webhookUrl($options),
-        'return_url' => $this->successUrl($options),
+        'return_url' => $this->successUrl($payment, $options),
         'description' => $options->description,
     ])->throw()->json();
 

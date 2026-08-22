@@ -322,10 +322,12 @@ Money also goes back without `Billing::refund()` — someone refunds from the ga
 | Stripe | `charge.refunded` | yes, from `amount_refunded` |
 | Monobank | invoice `reversed` | yes, from `cancelList` |
 | Hutko | `tran_type=reverse` | yes, from `reversal_amount` |
-| LiqPay | `reversed` | **no** — logged as a warning |
+| LiqPay | `reversed` | yes, from `refund_amount` |
 | WayForPay | `Refunded` / `Voided` | **no** — logged as a warning |
 
-The last two are recognized and logged loudly, not silently dropped, but no row is written: which field of their callback carries the reversed sum (and whether it's one reversal or a running total) isn't verified against a live account, and recording a wrong figure is worse than a documented gap. Watch for `a reversal was reported for a payment but not recorded` in your logs, and record those by hand until it is.
+WayForPay is the exception, and not by choice: its serviceUrl callback documents no refunded-amount field at all — `amount` is specified as "Amount of order", with nothing said about what it holds for a reversal — so there is no figure to record that wouldn't be a guess. Those reversals are logged loudly rather than dropped: watch for `a reversal was reported for a payment but not recorded` and record them by hand.
+
+One caveat on LiqPay: its docs describe `refund_amount` only as "Сума повернення". The field beside it is `refund_date_last` — explicitly the *last* refund's date — and this one carries no such qualifier, so it's read as the order's running total. For a single refund (the usual dashboard case) both readings give the same number; if it turns out to be per-reversal after all, a second partial refund would be under-recorded rather than double-counted.
 
 ## Flow
 

@@ -99,14 +99,10 @@ class LiqPayGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $decoded);
         }
 
-        // 'reversed' — a refund/chargeback carried out on LiqPay's side. Recognized and reported,
-        // but not turned into a refund row: which field of this callback carries the reversed sum
-        // (and whether it's the single reversal or a running total) hasn't been verified against a
-        // live account, and a wrong figure here is worse than a gap. See reportUnrecordedReversal().
+        // A refund carried out on LiqPay's side (its dashboard, or a chargeback), or the callback
+        // echoing one of ours.
         if (($decoded['status'] ?? null) === 'reversed') {
-            $this->reportUnrecordedReversal($payment, $decoded);
-
-            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $decoded);
+            return $this->recordRefundFromWebhook($payment, $decoded);
         }
 
         $status = match ($decoded['status']) {
@@ -364,6 +360,37 @@ class LiqPayGateway extends AbstractGateway implements RefundsPayments, ChecksPa
      * (this webhook call's WebhookResult already reports the Payment outcome), so dispatched here
      * directly instead.
      */
+    /**
+     * `refund_amount` is documented only as "Сума повернення" — but the field beside it is
+     * `refund_date_last`, explicitly the date of the LAST refund, and this one carries no such
+     * qualifier, so it reads as the order's running total. Treated as one: on a single refund (the
+     * overwhelmingly common dashboard case) both readings give the same figure, and if it does turn
+     * out to be per-reversal, a second partial would be under-recorded rather than double-counted.
+     * Decimal major units, like every other LiqPay amount.
+     */
+    protected function recordRefundFromWebhook(Payment $charge, array $decoded): WebhookResult
+    {
+        $cumulative = isset($decoded['refund_amount'])
+            ? (int) round((float) $decoded['refund_amount'] * 100)
+            : null;
+
+        // No external id passed on purpose: LiqPay reuses the order's payment_id for the reversal,
+        // so the running total is what makes this idempotent — a re-delivery computes a zero delta.
+        $refund = $this->recordExternalRefund($charge, $cumulative, null, $decoded);
+
+        if ($refund === null) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $decoded);
+        }
+
+        return new WebhookResult(
+            type: WebhookEventType::Payment,
+            status: 'refunded',
+            payment: $refund,
+            externalId: "refund:{$charge->id}:" . ($cumulative ?? $refund->amount),
+            raw: $decoded,
+        );
+    }
+
     protected function attachFromWebhook(Payment $payment, array $decoded): void
     {
         $method = $this->persistPaymentMethod(

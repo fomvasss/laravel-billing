@@ -116,8 +116,10 @@ class WayForPayGateway extends AbstractGateway implements ChecksPaymentStatus, T
         }
 
         // Refunded/Voided — a reversal carried out on WayForPay's side. Recognized and reported,
-        // but not turned into a refund row for the same reason as LiqPay's 'reversed': the payload's
-        // amount semantics for a partial refund aren't live-verified. See reportUnrecordedReversal().
+        // but not turned into a refund row: unlike every other gateway here, WayForPay's serviceUrl
+        // callback documents no refunded-amount field at all (wiki.wayforpay.com/en/view/852102
+        // lists `amount` as "Amount of order", and says nothing about what it holds for a reversal),
+        // so there is no figure to record that wouldn't be a guess. See reportUnrecordedReversal().
         if (in_array($payload['transactionStatus'] ?? null, ['Refunded', 'Voided'], true)) {
             $this->reportUnrecordedReversal($payment, $payload);
 

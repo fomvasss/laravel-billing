@@ -106,6 +106,27 @@ class ExternalRefundTest extends TestCase
         $this->assertSame(4000, $charge->refundedAmount());
     }
 
+    public function test_a_liqpay_reversal_is_recorded_from_its_refund_amount(): void
+    {
+        config([
+            'billing.gateways.liqpay.public_key' => 'pub',
+            'billing.gateways.liqpay.private_key' => 'priv',
+        ]);
+
+        $charge = $this->paidPayment('liqpay', 'pay_1');
+
+        $result = Billing::driver('liqpay')->handleWebhook($this->liqpayReversal($charge, '40.00'));
+
+        $this->assertSame('refunded', $result->status);
+        $this->assertSame(4000, $charge->refundedAmount()); // decimal major units on the wire
+
+        // Re-delivered: the running total hasn't moved, so nothing is added.
+        $again = Billing::driver('liqpay')->handleWebhook($this->liqpayReversal($charge, '40.00'));
+
+        $this->assertSame('ignored', $again->status);
+        $this->assertSame(4000, $charge->refundedAmount());
+    }
+
     /** A refund can never exceed the charge, however the gateway words it. */
     public function test_a_reversal_larger_than_the_charge_is_capped(): void
     {
@@ -114,6 +135,20 @@ class ExternalRefundTest extends TestCase
         Billing::driver('stripe')->handleWebhook($this->stripeRefund($charge, 999999, 're_1'));
 
         $this->assertSame(10000, $charge->refundedAmount());
+    }
+
+    private function liqpayReversal(Payment $charge, string $refundAmount): BillingWebhookCall
+    {
+        return new BillingWebhookCall(['name' => 'liqpay', 'url' => 'https://example.test/billing/webhooks/liqpay', 'payload' => [
+            'data' => base64_encode(json_encode([
+                'order_id' => (string) $charge->id,
+                'status' => 'reversed',
+                'amount' => 100.0,
+                'currency' => 'UAH',
+                'refund_amount' => $refundAmount,
+                'payment_id' => 'pay_1',
+            ])),
+        ]]);
     }
 
     private function stripeRefund(Payment $charge, int $cumulative, string $refundId): BillingWebhookCall

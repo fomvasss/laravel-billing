@@ -200,9 +200,9 @@ abstract class AbstractGateway implements PaymentGatewayContract
     /**
      * A reversal this driver recognizes but can't put a trustworthy number on — logged loudly
      * rather than swallowed, because refundedAmount() is about to disagree with the merchant
-     * account. Turning one of these into a real refund row needs the gateway's reversal payload
-     * verified against a live account first: recording the wrong figure is worse than recording
-     * nothing (see "Refunds issued outside the package" in the README).
+     * account. Only WayForPay needs this: its callback documents no refunded-amount field, so there
+     * is nothing to record that wouldn't be a guess (see "Refunds issued outside the package" in
+     * the README).
      */
     protected function reportUnrecordedReversal(Payment $charge, array $payload): void
     {

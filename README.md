@@ -1094,6 +1094,9 @@ $subscription->onTrial();      // trialing and trial_ends_at hasn't passed
 $subscription->onGracePeriod();// a renewal failed but retries are still running
 $subscription->isCanceled();
 $subscription->isCancelling(); // cancel() was called for period end — still running until then
+$subscription->hasGraceAccess();// whether past_due keeps access on for this price
+$subscription->isProviderManaged(); // the gateway owns this subscription's lifecycle
+$subscription->nextPeriodEnd(); // where the period would move on a successful renewal
 
 Subscription::active()->get();               // same definition as isActive(): trialing + active
                                              // + past_due still inside the grace window
@@ -1109,6 +1112,10 @@ $payment->isRefund();               // this row is a refund (type=refund), not a
 $payment->refundedAmount();         // total refunded against this charge, minor units
 $payment->netAmount();              // amount minus the gateway's fee — null while fee is unknown
 $payment->hasActivePaymentUrl();    // checkout link still usable — no need to charge() again
+$payment->refundableRemainder();    // amount minus what's already been refunded
+$payment->refunds;                  // the child refund rows
+$payment->parentPayment;            // set on a refund row: the charge it belongs to
+Payment::findByNumber('PAY-2026-000123');
 
 Payment::paid()->get();
 Payment::pending()->get();
@@ -1198,6 +1205,46 @@ Billing::charge($payment);
 ```
 
 Everything downstream stays consistent for free: the webhook's amount check verifies the UAH sum, the gateway's fee arrives in UAH next to it (see "Gateway fee and net amount"), and the original USD price plus the exact rate used are on the row for any later report. For subscriptions this whole dance is automatic — `resolveChargeAmount()` above does the same thing and stamps the same three columns.
+
+## Configuration reference
+
+Every setting is a config key first; the env vars below are what `config/billing.php` reads by default. Publish the config (`--tag=billing-config`) to change anything the env doesn't cover.
+
+| Env | Default | What it does |
+|---|---|---|
+| `BILLING_SCHEDULE_ENABLED` | `false` | Master switch for the package's scheduled commands. **Off by default** — nothing is charged, reconciled or expired until you turn it on. |
+| `BILLING_QUEUE_CONNECTION` | app default | Queue connection for `ProcessWebhookJob`. |
+| `BILLING_QUEUE` | app default | Queue name for it — give webhooks their own so a busy default queue can't delay marking payments paid. |
+| `BILLING_MAX_RECURRING_ATTEMPTS` | `3` | Failed renewals before the subscription is cancelled. |
+| `BILLING_RETRY_INTERVAL_HOURS` | `24` | Spacing between renewal retries (not every scheduler run). |
+| `BILLING_GRACE_PERIOD_DAYS` | `3` | How long `past_due` keeps `onGracePeriod()` true. |
+| `BILLING_GRACE_ACCESS` | `true` | Whether `isActive()` stays true through that window, or access is cut on the first failed renewal. Per-`Price` override available. |
+| `BILLING_RECONCILE_AFTER_MINUTES` | `60` | How old a `pending` payment must be before reconciliation polls the gateway for it. |
+| `BILLING_WEBHOOK_PATH` | `billing/webhooks/{gateway}` | Webhook route path. `{gateway}` must stay somewhere in it. |
+| `BILLING_WEBHOOK_PRUNE_AFTER_DAYS` | `30` | How long stored webhook calls are kept. Lowering it below a gateway's retry horizon lets an old re-delivery fire its events again — 30 days is beyond all five (WayForPay's four days is the longest). |
+| `BILLING_RETURN_URL_SUCCESS` | — | Where the customer lands after a successful checkout. |
+| `BILLING_RETURN_URL_FAILED` | — | ...and after a failed one. |
+| `BILLING_DEBUG` | `false` | Verbose driver logging. Never on in production — payloads carry card data. |
+
+Per gateway, all optional until you use that gateway:
+
+| Env | Gateway |
+|---|---|
+| `MONOBANK_TOKEN`, `MONOBANK_LINK_TTL_MINUTES` (60) | Monobank |
+| `LIQPAY_PUBLIC_KEY`, `LIQPAY_PRIVATE_KEY`, `LIQPAY_LINK_TTL_MINUTES` (60) | LiqPay |
+| `WAYFORPAY_MERCHANT_ACCOUNT`, `WAYFORPAY_MERCHANT_DOMAIN`, `WAYFORPAY_SECRET_KEY`, `WAYFORPAY_LINK_TTL_MINUTES` (1440) | WayForPay |
+| `HUTKO_MERCHANT_ID`, `HUTKO_SECRET_KEY`, `HUTKO_LINK_TTL_MINUTES` (1440) | Hutko |
+| `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | Stripe (link TTL comes from the Checkout Session's own `expires_at`) |
+
+## Routes
+
+| Name | Method | Auth | Purpose |
+|---|---|---|---|
+| `billing.webhook` | POST | signature | The one webhook endpoint for every gateway (`{gateway}` segment). Path and middleware configurable. |
+| `billing.return` | GET + POST | public, no CSRF | Where gateways send the browser back; fires `CheckoutReturned`, 303s to your `return_urls.*`. POST because WayForPay/Hutko return the customer that way. |
+| `billing.pay` | GET | public | The permanent pay link for emails/invoices (see "Permanent payment link"). |
+| `billing.checkout-form` | GET | public | Renders a form-only gateway's cached checkout as an auto-submit page, so `payment_url` is always a plain link. LiqPay only. |
+| `billing.fake.show` | GET | local/testing only | The fake gateway's two-button checkout. |
 
 ## Testing
 

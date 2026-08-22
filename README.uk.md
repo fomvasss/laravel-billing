@@ -1090,6 +1090,9 @@ $subscription->onTrial();      // trialing і trial_ends_at ще не минув
 $subscription->onGracePeriod();// продовження не вдалось, але ретраї ще тривають
 $subscription->isCanceled();
 $subscription->isCancelling(); // викликали cancel() на кінець періоду — до того ще працює
+$subscription->hasGraceAccess();// чи тримає past_due доступ для цієї ціни
+$subscription->isProviderManaged(); // життєвим циклом підписки володіє гейтвей
+$subscription->nextPeriodEnd(); // куди зсунеться період при успішному продовженні
 
 Subscription::active()->get();               // те саме визначення, що isActive(): trialing + active
                                              // + past_due, що ще в межах grace-вікна
@@ -1105,6 +1108,10 @@ $payment->isRefund();               // цей рядок — рефанд (type=
 $payment->refundedAmount();         // сумарно повернуто за цим списанням, мінорні одиниці
 $payment->netAmount();              // amount мінус комісія гейтвея — null, поки комісія невідома
 $payment->hasActivePaymentUrl();    // посилання на оплату ще живе — не треба знову charge()
+$payment->refundableRemainder();    // сума мінус те, що вже повернуто
+$payment->refunds;                  // дочірні рядки повернень
+$payment->parentPayment;            // на рядку повернення: списання, до якого воно належить
+Payment::findByNumber('PAY-2026-000123');
 
 Payment::paid()->get();
 Payment::pending()->get();
@@ -1194,6 +1201,46 @@ Billing::charge($payment);
 ```
 
 Усе далі узгоджене само собою: перевірка суми на вебхуці звіряє саме гривневу суму, комісія гейтвея приходить у UAH поруч (див. "Комісія шлюзу і чиста сума"), а оригінальна ціна в USD і точний використаний курс лишаються на рядку для будь-якого пізнішого звіту. Для підписок увесь цей танець автоматичний — `resolveChargeAmount()` вище робить те саме і проставляє ті самі три колонки.
+
+## Довідник конфігурації
+
+Кожна опція — це передусім ключ конфіга; env-змінні нижче — те, що `config/billing.php` читає за замовчуванням. Щоб змінити те, чого нема в env, опублікуй конфіг (`--tag=billing-config`).
+
+| Env | Дефолт | Що робить |
+|---|---|---|
+| `BILLING_SCHEDULE_ENABLED` | `false` | Головний вимикач планових команд пакета. **Вимкнено за замовчуванням** — доки не увімкнеш, нічого не списується, не звіряється і не протерміновується. |
+| `BILLING_QUEUE_CONNECTION` | дефолт застосунку | Connection для `ProcessWebhookJob`. |
+| `BILLING_QUEUE` | дефолт застосунку | Черга для нього — виділи вебхукам власну, щоб завантажена дефолтна не відкладала помітку платежів оплаченими. |
+| `BILLING_MAX_RECURRING_ATTEMPTS` | `3` | Скільки невдалих продовжень до скасування підписки. |
+| `BILLING_RETRY_INTERVAL_HOURS` | `24` | Інтервал між ретраями продовження (а не кожен запуск планувальника). |
+| `BILLING_GRACE_PERIOD_DAYS` | `3` | Скільки `past_due` тримає `onGracePeriod()` істинним. |
+| `BILLING_GRACE_ACCESS` | `true` | Чи лишається `isActive()` істинним у цьому вікні, чи доступ обрізається на першій невдачі. Є override на рівні `Price`. |
+| `BILLING_RECONCILE_AFTER_MINUTES` | `60` | Скільки платіж має провисіти в `pending`, перш ніж реконсиляція опитає гейтвей. |
+| `BILLING_WEBHOOK_PATH` | `billing/webhooks/{gateway}` | Шлях webhook-маршруту. `{gateway}` має лишитись десь у ньому. |
+| `BILLING_WEBHOOK_PRUNE_AFTER_DAYS` | `30` | Скільки зберігаються збережені виклики вебхуків. Якщо опустити нижче горизонту ретраїв гейтвея, стара передоставка знову викличе свої події — 30 днів перекривають усі п'ять (найдовший — 4 дні у WayForPay). |
+| `BILLING_RETURN_URL_SUCCESS` | — | Куди потрапляє клієнт після успішної оплати. |
+| `BILLING_RETURN_URL_FAILED` | — | ...і після невдалої. |
+| `BILLING_DEBUG` | `false` | Детальне логування драйверів. Ніколи не вмикай у проді — у payload'ах дані карток. |
+
+По гейтвеях, усе опційне, доки не використовуєш цей гейтвей:
+
+| Env | Гейтвей |
+|---|---|
+| `MONOBANK_TOKEN`, `MONOBANK_LINK_TTL_MINUTES` (60) | Monobank |
+| `LIQPAY_PUBLIC_KEY`, `LIQPAY_PRIVATE_KEY`, `LIQPAY_LINK_TTL_MINUTES` (60) | LiqPay |
+| `WAYFORPAY_MERCHANT_ACCOUNT`, `WAYFORPAY_MERCHANT_DOMAIN`, `WAYFORPAY_SECRET_KEY`, `WAYFORPAY_LINK_TTL_MINUTES` (1440) | WayForPay |
+| `HUTKO_MERCHANT_ID`, `HUTKO_SECRET_KEY`, `HUTKO_LINK_TTL_MINUTES` (1440) | Hutko |
+| `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | Stripe (TTL лінка бере з власного `expires_at` Checkout Session) |
+
+## Маршрути
+
+| Ім'я | Метод | Доступ | Призначення |
+|---|---|---|---|
+| `billing.webhook` | POST | підпис | Єдиний webhook-ендпоінт для всіх гейтвеїв (сегмент `{gateway}`). Шлях і мідлвари конфігуровані. |
+| `billing.return` | GET + POST | публічний, без CSRF | Куди гейтвеї повертають браузер; фаєрить `CheckoutReturned`, робить 303 на твої `return_urls.*`. POST — бо WayForPay/Hutko повертають клієнта саме так. |
+| `billing.pay` | GET | публічний | Постійне посилання на оплату для листів/рахунків (див. "Постійне посилання"). |
+| `billing.checkout-form` | GET | публічний | Рендерить закешовану касу form-only гейтвея як авто-сабміт сторінку, щоб `payment_url` завжди був плоским лінком. Лише LiqPay. |
+| `billing.fake.show` | GET | лише local/testing | Каса fake-гейтвея з двома кнопками. |
 
 ## Тестування
 

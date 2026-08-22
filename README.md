@@ -466,7 +466,7 @@ BILLING_QUEUE_CONNECTION=redis
 BILLING_QUEUE=billing
 ```
 
-Example Horizon supervisor — the job is fast (no HTTP calls inside; the gateway API work happened before queueing), so a couple of processes with a short timeout are enough:
+Example Horizon supervisor — the job is short (the only gateway API call it can make is Stripe's saved-card lookup), so a couple of processes with a short timeout are enough:
 
 ```php
 'supervisor-billing' => [
@@ -481,6 +481,13 @@ Example Horizon supervisor — the job is fast (no HTTP calls inside; the gatewa
 ```
 
 If you set `BILLING_QUEUE`, make sure *some* worker/supervisor actually consumes that queue — otherwise webhooks are stored but never processed.
+
+The job carries its own `$tries = 3` with a `10s / 60s / 300s` backoff — a deadlock or a blipped Redis between marking a payment paid and firing `PaymentSucceeded` must not end as a paid row whose order was never fulfilled, and many apps run their workers at `--tries=1`. What this means for your listeners:
+
+- **The dedup claim and your listeners commit together.** They run inside one transaction, so a listener that throws rolls its own writes *and* the claim back, and the retry re-dispatches the event cleanly. Their DB work doesn't have to be idempotent for that path.
+- **Non-DB side effects still do.** An email sent or an external API called before the throw isn't rolled back, and the retry runs the listener again — guard those with your own idempotency key.
+- **A queued listener needs `after_commit`.** Set `'after_commit' => true` on the queue connection (or `ShouldQueue` + `$afterCommit` on the listener), or a worker can pick the listener job up before the transaction it was dispatched in commits.
+- **Exceptions are recorded.** After the last retry, the failure is written to `billing_webhook_calls.exception` alongside the raw payload.
 
 ### Customizing the webhook route
 

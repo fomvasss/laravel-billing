@@ -27,6 +27,18 @@ class ProcessWebhookJob implements ShouldQueue
     use Queueable;
     use SerializesModels;
 
+    /**
+     * Money outcomes are worth retrying: a deadlock or a blipped Redis between marking a payment
+     * paid and firing PaymentSucceeded would otherwise leave the row paid with the order never
+     * fulfilled (reconciliation only looks at pending rows, and the gateway's own re-delivery is
+     * dropped by the dedup claim). Set here rather than left to the worker's --tries, which many
+     * apps run at 1.
+     */
+    public int $tries = 3;
+
+    /** @var list<int> */
+    public array $backoff = [10, 60, 300];
+
     public function __construct(public BillingWebhookCall $webhookCall)
     {
         // null = the app's defaults; billing.queue.* lets payment webhooks run on their own
@@ -41,11 +53,29 @@ class ProcessWebhookJob implements ShouldQueue
             ->driver($this->webhookCall->name)
             ->handleWebhook($this->webhookCall);
 
-        if (! $this->claimDedup($result)) {
-            return; // a duplicate delivery already claimed this external_id — don't fire events twice
-        }
+        // The claim and the events it guards commit together. Without the transaction, a listener
+        // throwing after the claim was stamped would leave the outcome claimed but never
+        // dispatched: the retry's claim would find its own key already there, treat the delivery as
+        // a duplicate and drop it — a paid payment whose PaymentSucceeded never fires. Rolling the
+        // claim back with the listener's own writes makes the retry a clean re-run.
+        //
+        // The driver's own Payment write above stays outside on purpose: handleWebhook() may call
+        // the gateway's API (Stripe's saveCard flow), and a transaction must not span an HTTP
+        // round trip. Re-applying it on a retry is harmless — Payment::transitionTo() treats the
+        // same outcome twice as a no-op.
+        DB::transaction(function () use ($result) {
+            if (! $this->claimDedup($result)) {
+                return; // a duplicate delivery already claimed this external_id — don't fire events twice
+            }
 
-        WebhookResultDispatcher::dispatch($result);
+            WebhookResultDispatcher::dispatch($result);
+        });
+    }
+
+    /** Keeps the raw delivery debuggable: without this the column only ever caught dispatch-time failures. */
+    public function failed(\Throwable $exception): void
+    {
+        $this->webhookCall->saveException($exception);
     }
 
     /**
@@ -62,9 +92,12 @@ class ProcessWebhookJob implements ShouldQueue
         }
 
         try {
-            DB::table('billing_webhook_calls')
+            // Nested transaction = SAVEPOINT: Postgres aborts an entire transaction on a failed
+            // statement, so the violation has to be rolled back to a savepoint of its own for the
+            // surrounding transaction to stay usable.
+            DB::transaction(fn () => DB::table('billing_webhook_calls')
                 ->where('id', $this->webhookCall->id)
-                ->update(['external_id' => $key]);
+                ->update(['external_id' => $key]));
         } catch (UniqueConstraintViolationException) {
             // Laravel's cross-driver unique-violation type — a bare SQLSTATE check would miss
             // Postgres, which reports 23505 where MySQL/SQLite report 23000.

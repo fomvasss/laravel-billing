@@ -151,16 +151,45 @@ class ExternalRefundTest extends TestCase
         ]]);
     }
 
-    private function stripeRefund(Payment $charge, int $cumulative, string $refundId): BillingWebhookCall
+    /**
+     * Stripe's real charge.refunded, which carries the Charge and NO `refunds` list — live-verified
+     * against a test account, where the key is simply absent. Two partial refunds therefore look
+     * identical apart from `amount_refunded`.
+     */
+    public function test_stripes_real_payload_records_both_partials_and_keeps_the_charge_reference(): void
     {
+        $charge = $this->paidPayment('stripe', 'pi_1');
+
+        Billing::driver('stripe')->handleWebhook($this->stripeRefund($charge, 2500));
+        Billing::driver('stripe')->handleWebhook($this->stripeRefund($charge, 3800));
+
+        $this->assertSame(3800, $charge->refundedAmount());
+        $this->assertSame([2500, 1300], $charge->refunds()->orderBy('created_at')->pluck('amount')->all());
+
+        // The Charge id is stored so a support lookup lands somewhere, but it never dedups —
+        // both rows carry it, and deduping on it would have dropped the second refund.
+        $this->assertSame(['ch_1', 'ch_1'], $charge->refunds()->pluck('external_id')->all());
+
+        // A re-delivery of the latest total adds nothing.
+        $this->assertSame('ignored', Billing::driver('stripe')->handleWebhook($this->stripeRefund($charge, 3800))->status);
+        $this->assertSame(3800, $charge->refundedAmount());
+    }
+
+    private function stripeRefund(Payment $charge, int $cumulative, ?string $refundId = null): BillingWebhookCall
+    {
+        $object = [
+            'id' => 'ch_1',
+            'amount_refunded' => $cumulative,
+            'metadata' => ['payment_id' => (string) $charge->id],
+        ];
+
+        if ($refundId !== null) {
+            $object['refunds'] = ['data' => [['id' => $refundId]]];
+        }
+
         return new BillingWebhookCall(['name' => 'stripe', 'url' => 'https://example.test/billing/webhooks/stripe', 'payload' => [
             'type' => 'charge.refunded',
-            'data' => ['object' => [
-                'id' => 'ch_1',
-                'amount_refunded' => $cumulative,
-                'metadata' => ['payment_id' => (string) $charge->id],
-                'refunds' => ['data' => [['id' => $refundId]]],
-            ]],
+            'data' => ['object' => $object],
         ]]);
     }
 

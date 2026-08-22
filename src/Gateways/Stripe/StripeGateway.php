@@ -179,11 +179,17 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $event);
         }
 
+        // No per-refund id to be had: charge.refunded carries the Charge, and modern API versions
+        // don't expand its `refunds` list at all (live-verified — the key is simply absent). The
+        // Charge id goes on the row as the reference a support lookup needs, but deduping happens
+        // on `amount_refunded`, Stripe's running total: two partial refunds share one Charge id, so
+        // deduping on that would silently drop the second.
         $refund = $this->recordExternalRefund(
             $charge,
             isset($object['amount_refunded']) ? (int) $object['amount_refunded'] : null,
             $object['refunds']['data'][0]['id'] ?? null,
             $event,
+            reference: isset($object['id']) ? (string) $object['id'] : null,
         );
 
         if ($refund === null) {

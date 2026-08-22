@@ -173,12 +173,18 @@ abstract class AbstractGateway implements PaymentGatewayContract
      * the difference from what we already know about, capped at what's still refundable. Pass null
      * when the gateway reports a full reversal without a figure. Returns null when there is nothing
      * new to record — which is the normal case for the callback that echoes our own refund() call.
+     *
+     * $refundExternalId is the reversal's OWN gateway id where one exists: it both dedups and is
+     * stored. $reference is for gateways whose reversal callback carries no per-refund id — it is
+     * only stored, never used to dedup (several partial refunds share it, so deduping on it would
+     * drop the second one); there the running total is what keeps this idempotent.
      */
     protected function recordExternalRefund(
         Payment $charge,
         ?int $cumulativeRefunded,
         ?string $refundExternalId = null,
         array $raw = [],
+        ?string $reference = null,
     ): ?Payment {
         if ($refundExternalId !== null && $charge->refunds()->withTrashed()->where('external_id', $refundExternalId)->exists()) {
             return null; // already recorded, by us or by an earlier delivery of this same callback
@@ -194,7 +200,7 @@ abstract class AbstractGateway implements PaymentGatewayContract
             return null;
         }
 
-        return Payment::recordRefundOf($charge, new Money($amount, $charge->currency), $refundExternalId, $raw);
+        return Payment::recordRefundOf($charge, new Money($amount, $charge->currency), $refundExternalId ?? $reference, $raw);
     }
 
     /**

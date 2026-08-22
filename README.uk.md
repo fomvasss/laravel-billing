@@ -315,7 +315,7 @@ $payment->refundedAmount(); // мінорні одиниці, сума всіх 
 
 | Гейтвей | Вебхук реверсу | Записується |
 |---|---|---|
-| Stripe | `charge.refunded` | так, із `amount_refunded` |
+| Stripe | `charge.refunded` | так, із `amount_refunded` (рядок посилається на Charge — події не несуть id окремого повернення) |
 | Monobank | інвойс `reversed` | так, із `cancelList` |
 | Hutko | `tran_type=reverse` | так, із `reversal_amount` |
 | LiqPay | `reversed` | так, із `refund_amount` |

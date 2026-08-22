@@ -319,7 +319,7 @@ Money also goes back without `Billing::refund()` — someone refunds from the ga
 
 | Gateway | Reversal webhook | Recorded |
 |---|---|---|
-| Stripe | `charge.refunded` | yes, from `amount_refunded` |
+| Stripe | `charge.refunded` | yes, from `amount_refunded` (the row references the Charge — the event carries no per-refund id) |
 | Monobank | invoice `reversed` | yes, from `cancelList` |
 | Hutko | `tran_type=reverse` | yes, from `reversal_amount` |
 | LiqPay | `reversed` | yes, from `refund_amount` |

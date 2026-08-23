@@ -223,7 +223,7 @@ It also fires `CheckoutReturned($payment, $outcome, $data)` — an analytics/UX 
 
 One more reason the success page must check the DB: `success`/`failed` name the return **slot**, not the verdict — and only Stripe actually has two slots (`success_url`/`cancel_url`). Monobank, LiqPay, WayForPay and Hutko have a single return URL, so their customers come back through the `success` slot **whatever happened** — a declined card lands on your success page too. Show the real state (`isPaid()`/`isFailed()`/pending) there, or a declined customer reads "thank you for your purchase".
 
-A per-charge `ChargeOptions(successUrl: ..., failUrl: ...)` bypasses the whole mechanism — the URL (with any query params of your own, e.g. an order number) goes to the gateway as-is. If you do that with WayForPay/Hutko, remember their POST-style return is now yours to handle.
+A per-charge `ChargeOptions(successUrl: ..., failUrl: ...)` bypasses the whole mechanism — the URL (with any query params of your own, e.g. an order number) goes to the gateway as-is. If you do that with WayForPay/Hutko, remember their POST-style return is now yours to handle. Monobank has a single `redirectUrl` for both outcomes (its separate `successUrl`/`failUrl` are off by default and enabled per merchant by support), so there `failUrl` is ignored — the customer lands on `successUrl` either way, and the payment's real status comes from the webhook as always.
 
 ### Permanent payment link
 
@@ -315,7 +315,7 @@ Supported where the gateway has a refund API: Monobank, LiqPay, Stripe (`Refunds
 
 #### Refunds issued outside the package
 
-Money also goes back without `Billing::refund()` — someone refunds from the gateway's dashboard, or a cardholder disputes the charge. Those arrive as webhooks, and where the payload is unambiguous the package records them exactly like its own refunds: a child row, `PaymentRefunded`, `refundedAmount()` kept honest. The gateway's own running total is what's used, so a re-delivered or out-of-order callback settles to the same number instead of stacking, and the callback echoing a refund *you* issued adds nothing.
+Money also goes back without `Billing::refund()` — someone refunds from the gateway's dashboard, or a cardholder disputes the charge. Those arrive as webhooks, and where the payload is unambiguous the package records them exactly like its own refunds: a child row, `PaymentRefunded`, `refundedAmount()` kept honest. The gateway's own running total is what's used, so a re-delivered or out-of-order callback settles to the same number instead of stacking, and the callback echoing a refund *you* issued adds nothing. `PaymentRefunded` fires exactly once per refund row, whoever recorded it — the echo of your own `Billing::refund()`, a gateway re-delivery and a queue retry of the same job all resolve against the same per-row dedup claim.
 
 | Gateway | Reversal webhook | Recorded |
 |---|---|---|

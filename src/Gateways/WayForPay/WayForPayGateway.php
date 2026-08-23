@@ -204,7 +204,7 @@ class WayForPayGateway extends AbstractGateway implements ChecksPaymentStatus, T
             type: WebhookEventType::Payment,
             status: 'refunded',
             payment: $refund,
-            externalId: $dedupId,
+            externalId: (string) $refund->id, // see AbstractGateway::recordExternalRefund() — the row is the dedup identity
             raw: $payload,
         );
     }

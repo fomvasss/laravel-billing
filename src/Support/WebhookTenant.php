@@ -27,4 +27,14 @@ final class WebhookTenant
 
         return is_string($tenant) && $tenant !== '' ? $tenant : null;
     }
+
+    /** The same hint read back from a stored webhook call's URL — for the queued job, which has no Request. */
+    public static function fromUrl(?string $url): ?string
+    {
+        parse_str((string) parse_url((string) $url, PHP_URL_QUERY), $query);
+
+        $tenant = $query[self::QUERY_KEY] ?? null;
+
+        return is_string($tenant) && $tenant !== '' ? $tenant : null;
+    }
 }

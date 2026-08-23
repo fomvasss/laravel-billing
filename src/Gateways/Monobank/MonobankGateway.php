@@ -373,7 +373,7 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
             type: WebhookEventType::Payment,
             status: 'refunded',
             payment: $refund,
-            externalId: "refund:{$charge->id}:" . ($cumulative ?? $refund->amount),
+            externalId: (string) $refund->id, // see AbstractGateway::recordExternalRefund() — the row is the dedup identity
             raw: $payload,
         );
     }

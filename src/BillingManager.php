@@ -16,7 +16,8 @@ use Fomvasss\Billing\DTO\PaymentResult;
 use Fomvasss\Billing\DTO\ResolvedAmount;
 use Fomvasss\Billing\Enums\PaymentStatus;
 use Fomvasss\Billing\Enums\PaymentType;
-use Fomvasss\Billing\Events\PaymentRefunded;
+use Fomvasss\Billing\DTO\WebhookResult;
+use Fomvasss\Billing\Enums\WebhookEventType;
 use Fomvasss\Billing\Exceptions\BillingException;
 use Fomvasss\Billing\Exceptions\NotSupportedException;
 use Fomvasss\Billing\Models\Payment;
@@ -24,6 +25,7 @@ use Fomvasss\Billing\Models\PaymentMethod;
 use Fomvasss\Billing\Models\Price;
 use Fomvasss\Billing\Support\DefaultWebhookResponder;
 use Fomvasss\Billing\Support\Money;
+use Fomvasss\Billing\Support\WebhookResultDispatcher;
 use Fomvasss\Billing\Support\WebhookTenant;
 use Illuminate\Support\Facades\Cache;
 
@@ -357,7 +359,14 @@ class BillingManager
 
         $refund = Payment::recordRefundOf($payment, $money, $result->externalId, $result->raw);
 
-        PaymentRefunded::dispatch($refund);
+        // Claimed under the same dedup key the driver's webhook path uses for this row, so the
+        // gateway's callback echoing this refund finds the outcome already dispatched.
+        WebhookResultDispatcher::dispatchOnce($payment->gateway, new WebhookResult(
+            type: WebhookEventType::Payment,
+            status: 'refunded',
+            payment: $refund,
+            externalId: (string) $refund->id,
+        ), source: 'refund');
 
         return $refund;
     }

@@ -53,13 +53,45 @@ class ExternalRefundTest extends TestCase
 
     public function test_a_redelivered_refund_callback_does_not_record_it_twice(): void
     {
+        Event::fake([PaymentRefunded::class]);
         $charge = $this->paidPayment('stripe', 'pi_1');
 
-        Billing::driver('stripe')->handleWebhook($this->stripeRefund($charge, 10000, 're_1'));
-        $result = Billing::driver('stripe')->handleWebhook($this->stripeRefund($charge, 10000, 're_1'));
+        $this->process($this->stripeRefund($charge, 10000, 're_1'));
+        $this->process($this->stripeRefund($charge, 10000, 're_1'));
 
-        $this->assertSame('ignored', $result->status);
+        $this->assertSame(1, $charge->refunds()->count());
         $this->assertSame(10000, $charge->refundedAmount());
+        Event::assertDispatchedTimes(PaymentRefunded::class, 1);
+    }
+
+    /**
+     * The refund row is written by the driver, outside the job's transaction; a listener failing
+     * after that must not turn the retry into "already recorded, nothing to dispatch" — the event
+     * would be lost for good, with the money already gone.
+     */
+    public function test_a_retried_job_still_dispatches_the_refund_its_first_attempt_recorded(): void
+    {
+        $charge = $this->paidPayment('stripe', 'pi_1');
+        $call = $this->stripeRefund($charge, 4000);
+        $call->save();
+
+        $attempts = 0;
+        Event::listen(PaymentRefunded::class, function () use (&$attempts) {
+            if (++$attempts === 1) {
+                throw new \RuntimeException('listener blew up');
+            }
+        });
+
+        try {
+            (new ProcessWebhookJob($call))->handle();
+        } catch (\RuntimeException) {
+        }
+
+        (new ProcessWebhookJob($call))->handle();
+
+        $this->assertSame(2, $attempts);
+        $this->assertSame(1, $charge->refunds()->count());
+        $this->assertSame(4000, $charge->refundedAmount());
     }
 
     /** The gateway reports its running total, so a second partial settles to the difference. */
@@ -79,13 +111,15 @@ class ExternalRefundTest extends TestCase
     {
         Http::fake(['https://api.stripe.com/v1/refunds' => Http::response(['id' => 're_1', 'status' => 'succeeded'])]);
 
+        Event::fake([PaymentRefunded::class]);
+
         $charge = $this->paidPayment('stripe', 'pi_1');
         Billing::refund($charge, new Money(10000, 'UAH'));
 
-        $result = Billing::driver('stripe')->handleWebhook($this->stripeRefund($charge, 10000, 're_1'));
+        $this->process($this->stripeRefund($charge, 10000, 're_1'));
 
-        $this->assertSame('ignored', $result->status);
         $this->assertSame(1, $charge->refunds()->count());
+        Event::assertDispatchedTimes(PaymentRefunded::class, 1); // from refund() itself — the echo adds nothing
     }
 
     public function test_a_monobank_reversal_is_recorded_from_its_cancel_list(): void
@@ -115,16 +149,18 @@ class ExternalRefundTest extends TestCase
 
         $charge = $this->paidPayment('liqpay', 'pay_1');
 
-        $result = Billing::driver('liqpay')->handleWebhook($this->liqpayReversal($charge, '40.00'));
+        Event::fake([PaymentRefunded::class]);
 
-        $this->assertSame('refunded', $result->status);
+        $this->process($this->liqpayReversal($charge, '40.00'));
+
         $this->assertSame(4000, $charge->refundedAmount()); // decimal major units on the wire
 
-        // Re-delivered: the running total hasn't moved, so nothing is added.
-        $again = Billing::driver('liqpay')->handleWebhook($this->liqpayReversal($charge, '40.00'));
+        // Re-delivered: the running total hasn't moved, so nothing is added or dispatched.
+        $this->process($this->liqpayReversal($charge, '40.00'));
 
-        $this->assertSame('ignored', $again->status);
+        $this->assertSame(1, $charge->refunds()->count());
         $this->assertSame(4000, $charge->refundedAmount());
+        Event::assertDispatchedTimes(PaymentRefunded::class, 1);
     }
 
     /**
@@ -141,15 +177,20 @@ class ExternalRefundTest extends TestCase
 
         $charge = $this->paidPayment('wayforpay', 'ord_1');
 
-        $first = $this->wayforpayReversal($charge, 40.0, 1787421259);
-        Billing::driver('wayforpay')->handleWebhook($first);
-        Billing::driver('wayforpay')->handleWebhook($this->wayforpayReversal($charge, 25.0, 1787421260));
+        Event::fake([PaymentRefunded::class]);
+
+        $this->process($this->wayforpayReversal($charge, 40.0, 1787421259));
+        $this->process($this->wayforpayReversal($charge, 25.0, 1787421260));
 
         $this->assertSame(6500, $charge->refundedAmount());
+        Event::assertDispatchedTimes(PaymentRefunded::class, 2);
 
         // Same reversal delivered again — identical processingDate, so it is the same event.
-        $this->assertSame('ignored', Billing::driver('wayforpay')->handleWebhook($first)->status);
+        $this->process($this->wayforpayReversal($charge, 40.0, 1787421259));
+
+        $this->assertSame(2, $charge->refunds()->count());
         $this->assertSame(6500, $charge->refundedAmount());
+        Event::assertDispatchedTimes(PaymentRefunded::class, 2);
     }
 
     /** A refund can never exceed the charge, however the gateway words it. */
@@ -195,21 +236,33 @@ class ExternalRefundTest extends TestCase
      */
     public function test_stripes_real_payload_records_both_partials_and_keeps_the_charge_reference(): void
     {
+        Event::fake([PaymentRefunded::class]);
         $charge = $this->paidPayment('stripe', 'pi_1');
 
-        Billing::driver('stripe')->handleWebhook($this->stripeRefund($charge, 2500));
-        Billing::driver('stripe')->handleWebhook($this->stripeRefund($charge, 3800));
+        $this->process($this->stripeRefund($charge, 2500));
+        $this->process($this->stripeRefund($charge, 3800));
 
         $this->assertSame(3800, $charge->refundedAmount());
         $this->assertSame([2500, 1300], $charge->refunds()->orderBy('created_at')->pluck('amount')->all());
 
         // The Charge id is stored so a support lookup lands somewhere, but it never dedups —
-        // both rows carry it, and deduping on it would have dropped the second refund.
+        // both rows carry it, and deduping on it (row or webhook claim) would have dropped the
+        // second refund or its event.
         $this->assertSame(['ch_1', 'ch_1'], $charge->refunds()->pluck('external_id')->all());
+        Event::assertDispatchedTimes(PaymentRefunded::class, 2);
 
         // A re-delivery of the latest total adds nothing.
-        $this->assertSame('ignored', Billing::driver('stripe')->handleWebhook($this->stripeRefund($charge, 3800))->status);
+        $this->process($this->stripeRefund($charge, 3800));
+        $this->assertSame(2, $charge->refunds()->count());
         $this->assertSame(3800, $charge->refundedAmount());
+        Event::assertDispatchedTimes(PaymentRefunded::class, 2);
+    }
+
+    /** The whole pipeline — driver, dedup claim, events — the way a real delivery runs. */
+    private function process(BillingWebhookCall $call): void
+    {
+        $call->save();
+        (new ProcessWebhookJob($call))->handle();
     }
 
     private function stripeRefund(Payment $charge, int $cumulative, ?string $refundId = null): BillingWebhookCall

@@ -200,7 +200,9 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             type: WebhookEventType::Payment,
             status: 'refunded',
             payment: $refund,
-            externalId: $refund->external_id ?? "refund:{$charge->id}:{$refund->amount}",
+            // Never the row's external_id — that is the shared Charge id here, and keying the
+            // dedup claim on it would drop the second partial refund's PaymentRefunded.
+            externalId: (string) $refund->id, // see AbstractGateway::recordExternalRefund() — the row is the dedup identity
             raw: $event,
         );
     }

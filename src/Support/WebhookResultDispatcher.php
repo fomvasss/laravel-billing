@@ -58,9 +58,11 @@ final class WebhookResultDispatcher
      * of its own to stamp, so it claims the dedup key by INSERTing a synthetic one. The same
      * unique(name, external_id) index then arbitrates between a late real webhook and this poll —
      * whichever lands second is silently dropped instead of double-dispatching (double period
-     * advance, double order fulfillment).
+     * advance, double order fulfillment). Billing::refund() uses it the same way, so the callback
+     * echoing a refund we issued ourselves is dropped too. $source is what the synthetic row's url
+     * column records, for anyone reading the table.
      */
-    public static function dispatchOnce(string $gateway, WebhookResult $result): void
+    public static function dispatchOnce(string $gateway, WebhookResult $result, string $source = 'reconcile'): void
     {
         $key = $result->dedupKey();
 
@@ -68,7 +70,7 @@ final class WebhookResultDispatcher
             try {
                 BillingWebhookCall::create([
                     'name' => $gateway,
-                    'url' => 'reconcile',
+                    'url' => $source,
                     'external_id' => $key,
                     'payload' => $result->raw,
                 ]);

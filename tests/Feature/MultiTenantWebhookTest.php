@@ -7,6 +7,9 @@ namespace Fomvasss\Billing\Tests\Feature;
 use Fomvasss\Billing\Contracts\Billable;
 use Fomvasss\Billing\Contracts\CredentialResolverContract;
 use Fomvasss\Billing\Facades\Billing;
+use Fomvasss\Billing\Jobs\ProcessWebhookJob;
+use Fomvasss\Billing\Models\PaymentMethod;
+use Fomvasss\Billing\Webhooks\BillingWebhookCall;
 use Fomvasss\Billing\Models\Payment;
 use Fomvasss\Billing\Support\WebhookTenant;
 use Fomvasss\Billing\Tests\Fixtures\TestUser;
@@ -98,11 +101,56 @@ class MultiTenantWebhookTest extends TestCase
         $this->assertSame('pending', $payment->fresh()->status->value);
     }
 
-    private function payment(): Payment
+    /**
+     * Verifying the signature is only half of it: the queued job builds the driver again, and
+     * anything handleWebhook() asks the gateway for (Stripe's saveCard flow) must go out with the
+     * same tenant's key — not the default merchant's.
+     */
+    public function test_the_queued_job_talks_to_the_gateway_as_the_hinted_tenant(): void
+    {
+        $this->app['config']->set('billing.gateways.stripe.secret_key', 'sk_default');
+        $this->app->bind(CredentialResolverContract::class, fn () => new class implements CredentialResolverContract {
+            public function resolve(string $gateway, ?string $tenantId): array
+            {
+                return $tenantId === 'acme' ? ['secret_key' => 'sk_acme'] : config("billing.gateways.{$gateway}", []);
+            }
+        });
+        Http::fake([
+            'https://api.stripe.com/v1/payment_intents/pi_77*' => Http::response(['payment_method' => [
+                'id' => 'pm_acme', 'customer' => 'cus_1', 'card' => ['last4' => '4242', 'brand' => 'visa'],
+            ]]),
+            'https://api.stripe.com/v1/customers/cus_1' => Http::response(['id' => 'cus_1']),
+        ]);
+
+        $payment = $this->payment(['gateway' => 'stripe', 'currency' => 'USD']);
+
+        $call = BillingWebhookCall::create([
+            'name' => 'stripe',
+            'url' => route('billing.webhook', ['gateway' => 'stripe', WebhookTenant::QUERY_KEY => 'acme']),
+            'payload' => ['type' => 'checkout.session.completed', 'data' => ['object' => [
+                'id' => 'cs_1',
+                'payment_status' => 'paid',
+                'payment_intent' => 'pi_77',
+                'customer' => 'cus_1',
+                'amount_total' => 5000,
+                'currency' => 'usd',
+                'metadata' => ['payment_id' => (string) $payment->id],
+            ]]],
+        ]);
+
+        (new ProcessWebhookJob($call))->handle();
+
+        Http::assertSentCount(2);
+        Http::assertSent(fn ($request) => $request->header('Authorization') === ['Bearer sk_acme']);
+        $this->assertSame('paid', $payment->fresh()->status->value);
+        $this->assertSame('acme', PaymentMethod::where('external_id', 'pm_acme')->firstOrFail()->tenant_id);
+    }
+
+    private function payment(array $overrides = []): Payment
     {
         $user = TenantedUser::create(['name' => 'Buyer']);
 
-        return Payment::create([
+        return Payment::create([...[
             'status' => 'pending',
             'type' => 'charge',
             'gateway' => 'wayforpay',
@@ -112,7 +160,7 @@ class MultiTenantWebhookTest extends TestCase
             'payable_id' => $user->id,
             'billable_type' => TenantedUser::class,
             'billable_id' => $user->id,
-        ]);
+        ], ...$overrides]);
     }
 }
 

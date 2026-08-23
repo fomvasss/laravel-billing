@@ -7,6 +7,7 @@ namespace Fomvasss\Billing\Jobs;
 use Fomvasss\Billing\BillingManager;
 use Fomvasss\Billing\DTO\WebhookResult;
 use Fomvasss\Billing\Support\WebhookResultDispatcher;
+use Fomvasss\Billing\Support\WebhookTenant;
 use Fomvasss\Billing\Webhooks\BillingWebhookCall;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -49,8 +50,11 @@ class ProcessWebhookJob implements ShouldQueue
 
     public function handle(): void
     {
+        // The same tenant hint the validator verified against: a driver built with the default
+        // tenant's credentials would make any API call handleWebhook() needs (Stripe's saveCard
+        // flow retrieves the PaymentIntent) with the wrong merchant's key.
         $result = app(BillingManager::class)
-            ->driver($this->webhookCall->name)
+            ->driver($this->webhookCall->name, WebhookTenant::fromUrl($this->webhookCall->url))
             ->handleWebhook($this->webhookCall);
 
         // The claim and the events it guards commit together. Without the transaction, a listener

@@ -6,6 +6,7 @@ namespace Fomvasss\Billing\Gateways;
 
 use Fomvasss\Billing\Contracts\PaymentGatewayContract;
 use Fomvasss\Billing\DTO\ChargeOptions;
+use Fomvasss\Billing\Enums\PaymentStatus;
 use Fomvasss\Billing\Exceptions\BillingException;
 use Fomvasss\Billing\Models\Payment;
 use Fomvasss\Billing\Models\PaymentMethod;
@@ -171,8 +172,15 @@ abstract class AbstractGateway implements PaymentGatewayContract
      * $cumulativeRefunded is the gateway's own running total for this charge, so a re-delivered or
      * out-of-order callback settles to the same number instead of stacking: what gets recorded is
      * the difference from what we already know about, capped at what's still refundable. Pass null
-     * when the gateway reports a full reversal without a figure. Returns null when there is nothing
-     * new to record — which is the normal case for the callback that echoes our own refund() call.
+     * when the gateway reports a full reversal without a figure.
+     *
+     * Returns the refund row the callback is about — a new one when there is something new to
+     * record, otherwise the already-recorded one it matches (our own refund() call being echoed, a
+     * re-delivery, or the queue retrying this job after a listener failure). Null only when the
+     * total is stale (below what is already recorded). The driver is NOT the place to decide whether
+     * that row's PaymentRefunded fires: it can't tell a re-delivery from a retry. That is the dedup
+     * claim's job, so the WebhookResult's externalId is the refund row's own id — Billing::refund()
+     * claims the same key for the rows it records itself, which is what silences the echo.
      *
      * $refundExternalId is the reversal's OWN gateway id where one exists: it both dedups and is
      * stored. $reference is for gateways whose reversal callback carries no per-refund id — it is
@@ -186,15 +194,24 @@ abstract class AbstractGateway implements PaymentGatewayContract
         array $raw = [],
         ?string $reference = null,
     ): ?Payment {
-        if ($refundExternalId !== null && $charge->refunds()->withTrashed()->where('external_id', $refundExternalId)->exists()) {
-            return null; // already recorded, by us or by an earlier delivery of this same callback
+        if ($refundExternalId !== null) {
+            $existing = $charge->refunds()->withTrashed()->where('external_id', $refundExternalId)->first();
+
+            if ($existing !== null) {
+                return $existing; // already recorded — by us, by an earlier delivery, or by this job's first attempt
+            }
         }
 
+        $recorded = $charge->refundedAmount();
         $remainder = $charge->refundableRemainder();
 
         $amount = $cumulativeRefunded === null
             ? $remainder
-            : min($cumulativeRefunded - $charge->refundedAmount(), $remainder);
+            : min($cumulativeRefunded - $recorded, $remainder);
+
+        if ($amount <= 0) {
+            return $cumulativeRefunded !== null && $cumulativeRefunded === $recorded ? $this->latestRefundRow($charge) : null;
+        }
 
         return $this->writeRefundRow($charge, $amount, $refundExternalId ?? $reference, $raw);
     }
@@ -207,11 +224,14 @@ abstract class AbstractGateway implements PaymentGatewayContract
      */
     protected function recordExternalReversal(Payment $charge, int $amount, string $dedupId, array $raw = []): ?Payment
     {
-        if ($charge->refunds()->withTrashed()->where('external_id', $dedupId)->exists()) {
-            return null; // an earlier delivery of this same reversal
-        }
+        // Handed back rather than dropped, for the same reason recordExternalRefund() does it.
+        return $charge->refunds()->withTrashed()->where('external_id', $dedupId)->first()
+            ?? $this->writeRefundRow($charge, min($amount, $charge->refundableRemainder()), $dedupId, $raw);
+    }
 
-        return $this->writeRefundRow($charge, min($amount, $charge->refundableRemainder()), $dedupId, $raw);
+    private function latestRefundRow(Payment $charge): ?Payment
+    {
+        return $charge->refunds()->withTrashed()->where('status', PaymentStatus::Paid)->latest('created_at')->latest('id')->first();
     }
 
     /** Nothing left to refund (or nothing new) is a no-op, never a negative or over-refunding row. */

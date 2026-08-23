@@ -168,7 +168,7 @@ class HutkoGateway extends AbstractGateway implements TokenizesPaymentMethod, \F
             type: WebhookEventType::Payment,
             status: 'refunded',
             payment: $refund,
-            externalId: $refund->external_id ?? "refund:{$charge->id}:" . ($cumulative ?? $refund->amount),
+            externalId: (string) $refund->id, // see AbstractGateway::recordExternalRefund() — the row is the dedup identity
             raw: $payload,
         );
     }

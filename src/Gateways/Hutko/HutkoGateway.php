@@ -223,10 +223,13 @@ class HutkoGateway extends AbstractGateway implements TokenizesPaymentMethod, \F
             'rectoken' => $method->external_id,
             'server_callback_url' => $this->webhookUrl($options),
             'client_ip' => $options->customerIp ?? '127.0.0.1',
-            // Same key/shape as charge()'s checkout/url request — NOT independently live-verified
-            // against /api/recurring's own schema (only checkout/url's fiscalization was, see the
-            // class docblock). Verify against a real recurring charge before relying on it; drop
-            // this key and pass receiptItems: [] if /api/recurring turns out to reject it.
+            // Same key/shape as charge()'s checkout/url request. /api/recurring's own field list
+            // (docs.hutko.org/docs/page/10) omits it, but the RRO section (/uk/docs/page/50)
+            // documents the parameter and its exact shape for "a purchase request" without
+            // restricting it to one endpoint — and a live recurring charge confirms it: the
+            // signature holds and Hutko echoes the basket back in additional_info.reservation_data.
+            // NB it may append lines of its own there (a card_bin discount did on the test
+            // merchant), so its stored basket isn't necessarily what we sent.
             'reservation_data' => $this->reservationData($options->receiptItems),
         ]);
 

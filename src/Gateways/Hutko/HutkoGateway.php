@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Fomvasss\Billing\Gateways\Hutko;
 
 use Fomvasss\Billing\Contracts\Billable;
+use Fomvasss\Billing\Contracts\RefundsPayments;
 use Fomvasss\Billing\Contracts\TokenizesPaymentMethod;
 use Fomvasss\Billing\DTO\ChargeOptions;
 use Fomvasss\Billing\DTO\PaymentResult;
@@ -17,6 +18,7 @@ use Fomvasss\Billing\Exceptions\BillingException;
 use Fomvasss\Billing\Gateways\AbstractGateway;
 use Fomvasss\Billing\Models\Payment;
 use Fomvasss\Billing\Models\PaymentMethod;
+use Fomvasss\Billing\Support\Money;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Http;
 use Fomvasss\Billing\Webhooks\BillingWebhookCall;
@@ -35,6 +37,15 @@ use Fomvasss\Billing\Webhooks\BillingWebhookCall;
  *
  * `amount` — minor units, confirmed from the plugin (`(int) round($order->get_total() * 100)`).
  *
+ * RefundsPayments: `POST /api/reverse/order_id`, read off docs.hutko.org/uk/docs/page/7 through
+ * the same `r.jina.ai` reader (a direct fetch renders nothing) and then live-verified — a partial
+ * reversal of a paid test-merchant order came back `response_status: success` /
+ * `reverse_status: approved`. Partial reversals supported; `amount` is mandatory in the request,
+ * so refund() always sends an explicit figure. The reversal notification that follows is NOT a
+ * `tran_type: reverse` callback — it is the ordinary purchase callback again, still
+ * `order_status: approved`, with the order's running `reversal_amount` filled in (which is why
+ * handleWebhook() branches on that field first).
+ *
  * TokenizesPaymentMethod: OPT-IN like Monobank/LiqPay, not automatic like WayForPay —
  * `required_rectoken: 'Y'` must be sent on charge() (ChargeOptions::$saveCard) or the callback's
  * `rectoken` field arrives empty. The response schema lists the field on every approved payment,
@@ -42,7 +53,7 @@ use Fomvasss\Billing\Webhooks\BillingWebhookCall;
  * it whenever non-empty. No gateway-side token-revocation endpoint is documented —
  * detachPaymentMethod() is local-only, same reasoning as LiqPay/WayForPay.
  */
-class HutkoGateway extends AbstractGateway implements TokenizesPaymentMethod, \Fomvasss\Billing\Contracts\ChecksPaymentStatus, \Fomvasss\Billing\Contracts\ChecksGatewayHealth
+class HutkoGateway extends AbstractGateway implements RefundsPayments, TokenizesPaymentMethod, \Fomvasss\Billing\Contracts\ChecksPaymentStatus, \Fomvasss\Billing\Contracts\ChecksGatewayHealth
 {
     protected const BASE_URL = 'https://pay.hutko.org/api/';
 
@@ -153,11 +164,17 @@ class HutkoGateway extends AbstractGateway implements TokenizesPaymentMethod, \F
             ? (int) $payload['reversal_amount']
             : null;
 
+        // 'reverse-{payment_id}' is the ORDER's reference, identical for every reversal of it, so
+        // it goes in the $reference slot (stored only) and never the dedup one — deduping on it
+        // would drop a second partial reversal as "already recorded". `reversal_amount` is the
+        // order's running total (live-confirmed: a 10.00 reversal of a 50.00 charge reported
+        // reversal_amount=1000), and settling against that is what keeps this idempotent.
         $refund = $this->recordExternalRefund(
             $charge,
             $cumulative,
-            isset($payload['payment_id']) ? 'reverse-' . $payload['payment_id'] : null,
+            null,
             $payload,
+            reference: isset($payload['payment_id']) ? 'reverse-' . $payload['payment_id'] : null,
         );
 
         if ($refund === null) {
@@ -171,6 +188,54 @@ class HutkoGateway extends AbstractGateway implements TokenizesPaymentMethod, \F
             externalId: (string) $refund->id, // see AbstractGateway::recordExternalRefund() — the row is the dedup identity
             raw: $payload,
         );
+    }
+
+    /**
+     * POST /api/reverse/order_id ("Повернення коштів", docs.hutko.org/uk/docs/page/7) — the
+     * literal path again, same shape as status/order_id. `amount` is mandatory there, so a null
+     * $amount is resolved to the refundable remainder here rather than sent as "everything left";
+     * it is in minor units like every other Hutko amount.
+     *
+     * The reversal callback that follows lands in handleWebhook() and settles against the order's
+     * running `reversal_amount`, so the echo of this very call adds no second refund row.
+     */
+    public function refund(Payment $payment, ?Money $amount = null): PaymentResult
+    {
+        $money = $amount ?? new Money($payment->refundableRemainder(), $payment->currency);
+
+        $fields = [
+            'order_id' => (string) $payment->id,
+            'amount' => $money->amount,
+            'currency' => $money->currency,
+        ];
+
+        $fields['merchant_id'] = $this->merchantId();
+        $fields['signature'] = $this->sign($fields);
+
+        // Not through request(): its retry(2) would be a second reversal after a timeout that says
+        // nothing about whether the money already went back.
+        $data = Http::baseUrl(self::BASE_URL)
+            ->timeout(15)
+            ->retry(1)
+            ->post('reverse/order_id', ['request' => $fields])
+            ->throw()
+            ->json('response');
+
+        // Two separate refusals, both answered with HTTP 200: response_status=failure is the
+        // request itself being rejected (bad parameters, unknown order), reverse_status=declined is
+        // Hutko or the acquirer refusing the reversal. Neither moved money, and neither may leave a
+        // refund row behind. `created` is accepted — the reversal is queued and settles later, the
+        // same way Monobank's `processing` does.
+        if (($data['response_status'] ?? null) !== 'success' || ($data['reverse_status'] ?? null) === 'declined') {
+            throw new BillingException('Hutko: refund was refused: ' . json_encode($data));
+        }
+
+        // The reversal's own reference, so support can find it on Hutko's side: neither field is in
+        // the documented response list, but a live reversal carried transaction_id (distinct from
+        // the charge's own) with reverse_id empty. Falls back to the charge's reference.
+        $externalId = ($data['reverse_id'] ?? '') ?: (string) ($data['transaction_id'] ?? '');
+
+        return new PaymentResult(externalId: $externalId ?: $payment->external_id, raw: $data);
     }
 
     /** No gateway-side "customer" object — same reasoning as Monobank/LiqPay/WayForPay, ours to pick and stable per billable. */

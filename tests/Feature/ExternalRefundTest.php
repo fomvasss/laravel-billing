@@ -193,6 +193,38 @@ class ExternalRefundTest extends TestCase
         Event::assertDispatchedTimes(PaymentRefunded::class, 2);
     }
 
+    /**
+     * Hutko announces a reversal by re-sending the ORDINARY purchase callback — still
+     * `tran_type: purchase` / `order_status: approved` — with the order's running `reversal_amount`
+     * filled in (payload shape taken from a live test merchant). Its `payment_id` names the order,
+     * not the reversal, so two partial reversals share it: only the running total can tell them
+     * apart, and deduping on that reference would silently drop the second one.
+     */
+    public function test_hutko_partial_reversals_settle_by_running_total(): void
+    {
+        config([
+            'billing.gateways.hutko.merchant_id' => '1700002',
+            'billing.gateways.hutko.secret_key' => 'secret',
+        ]);
+
+        $charge = $this->paidPayment('hutko', '104210513');
+
+        Event::fake([PaymentRefunded::class]);
+
+        $this->process($this->hutkoReversal($charge, '3000'));
+        $this->process($this->hutkoReversal($charge, '5000'));
+
+        $this->assertSame([3000, 2000], $charge->refunds()->orderBy('created_at')->pluck('amount')->all());
+        $this->assertSame(5000, $charge->refundedAmount());
+        Event::assertDispatchedTimes(PaymentRefunded::class, 2);
+
+        // Re-delivered: the running total hasn't moved, so nothing is added or dispatched.
+        $this->process($this->hutkoReversal($charge, '5000'));
+
+        $this->assertSame(2, $charge->refunds()->count());
+        Event::assertDispatchedTimes(PaymentRefunded::class, 2);
+    }
+
     /** A refund can never exceed the charge, however the gateway words it. */
     public function test_a_reversal_larger_than_the_charge_is_capped(): void
     {
@@ -280,6 +312,19 @@ class ExternalRefundTest extends TestCase
         return new BillingWebhookCall(['name' => 'stripe', 'url' => 'https://example.test/billing/webhooks/stripe', 'payload' => [
             'type' => 'charge.refunded',
             'data' => ['object' => $object],
+        ]]);
+    }
+
+    private function hutkoReversal(Payment $charge, string $cumulative): BillingWebhookCall
+    {
+        return new BillingWebhookCall(['name' => 'hutko', 'url' => 'https://example.test/billing/webhooks/hutko', 'payload' => [
+            'order_id' => (string) $charge->id,
+            'payment_id' => 104210513,
+            'tran_type' => 'purchase',
+            'order_status' => 'approved',
+            'amount' => '10000',
+            'currency' => 'UAH',
+            'reversal_amount' => $cumulative,
         ]]);
     }
 

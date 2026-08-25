@@ -307,11 +307,11 @@ $refund = Billing::refund($payment, new Money(2500, 'UAH'));  // partial
 $payment->refundedAmount(); // minor units, sums all paid refund rows
 ```
 
-A refund row is only ever written for money that is actually on its way back: a gateway that refuses the refund throws a `BillingException` (all three answer a refusal with HTTP 200 and a status field, so this isn't something `->throw()` would catch), and `refundedAmount()` counts soft-deleted rows too — hiding a refund row must not re-open room to refund the same amount twice.
+A refund row is only ever written for money that is actually on its way back: a gateway that refuses the refund throws a `BillingException` (they all answer a refusal with HTTP 200 and a status field, so this isn't something `->throw()` would catch — Hutko has two such fields, `response_status` for a rejected request and `reverse_status` for a declined reversal), and `refundedAmount()` counts soft-deleted rows too — hiding a refund row must not re-open room to refund the same amount twice.
 
 Concurrent calls are serialized with a cache lock (`billing:refund:{id}`): the remainder is read, checked and written by three separate statements, so two calls racing on the same payment would otherwise both pass the check against the same stale total. The second caller gets a `BillingException` rather than sending money. **The lock is only as wide as your cache store**: `redis`/`memcached`/`database` cover every process on every server; `file` locks properly across processes on *one* machine (it uses `flock()`) but not across app servers, each of which has its own cache directory; `array` is per-process and protects nothing (it's the testing store).
 
-Supported where the gateway has a refund API: Monobank, LiqPay, Stripe (`RefundsPayments` — check `Billing::gateways()[$name]['capabilities']['refunds']`). WayForPay/Hutko refunds happen in the bank's own dashboard.
+Supported where the gateway has a refund API: Monobank, LiqPay, Stripe, Hutko (`RefundsPayments` — check `Billing::gateways()[$name]['capabilities']['refunds']`). WayForPay is the exception — no reachable refund endpoint is documented for it, so its refunds happen in the bank's own dashboard (and come back as the reversal webhook below).
 
 #### Refunds issued outside the package
 
@@ -321,7 +321,7 @@ Money also goes back without `Billing::refund()` — someone refunds from the ga
 |---|---|---|
 | Stripe | `charge.refunded` | yes, from `amount_refunded` (the row references the Charge — the event carries no per-refund id) |
 | Monobank | invoice `reversed` | yes, from `cancelList` |
-| Hutko | `tran_type=reverse` | yes, from `reversal_amount` |
+| Hutko | the purchase callback again, with `reversal_amount` set | yes, from `reversal_amount` (the order's running total) |
 | LiqPay | `reversed` | yes, from `refund_amount` |
 | WayForPay | `Refunded` / `Voided` | yes, from `amount` (per reversal, not a total) |
 

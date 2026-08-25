@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.3.0] - 2026-08-25
+
+### Added
+- **Hutko refunds.** `Billing::refund()` now works on Hutko payments, full or partial (live-verified end to end) — it reverses through the gateway instead of throwing `NotSupportedException`, and `Billing::gateways()['hutko']['capabilities']['refunds']` reports `true`. A refusal (a rejected request or a declined reversal, both answered with HTTP 200) throws and records nothing, and Hutko's own reversal callback echoing the refund settles against the row already written rather than adding a second one. The refund row keeps the reversal's own gateway reference. WayForPay stays the one built-in gateway without API refunds.
+
+### Fixed
+- **A second partial Hutko reversal issued outside the package was silently dropped.** Hutko's reversal callback identifies the *order*, not the reversal, so every reversal of the same payment arrived under the same reference and each one after the first was treated as an already-recorded re-delivery — `refundedAmount()` then understated what had actually gone back. Reversals now settle against the order's running total, the way the gateway reports it.
+
 ## [0.2.0] - 2026-08-25
 
 ### Changed

@@ -193,12 +193,12 @@ class BillingManager
 
     /**
      * Same orchestration as charge(), for a saved payment method instead of a redirect/form —
-     * including the same $options->receiptItems auto-fill (see charge()'s docblock). A scheduled
-     * subscription renewal (ProcessRecurringChargesCommand) never gets one this way: its Payable is
-     * always the package's own Subscription row, which deliberately does NOT implement
-     * HasReceiptItems (the basket total would have to reconstruct pricing_type/currency-conversion
-     * math the package doesn't want to guess at for a fiscal document) — pass receiptItems
-     * yourself when calling chargeWithMethod() directly if a renewal needs a receipt.
+     * including the same $options->receiptItems auto-fill (see charge()'s docblock). The auto-fill
+     * never triggers for a scheduled subscription renewal: its Payable is always the package's own
+     * Subscription row, which deliberately does NOT implement HasReceiptItems (the basket total
+     * would have to reconstruct pricing_type/currency-conversion math the package doesn't want to
+     * guess at for a fiscal document). A renewal's options come from
+     * Contracts\RenewalChargeOptionsContract instead — see ProcessRecurringChargesCommand.
      */
     public function chargeWithMethod(Payment $payment, PaymentMethod $method, ChargeOptions $options = new ChargeOptions()): PaymentResult
     {

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Fomvasss\Billing\Console;
 
 use Fomvasss\Billing\BillingManager;
+use Fomvasss\Billing\Contracts\RenewalChargeOptionsContract;
 use Fomvasss\Billing\Contracts\TokenizesPaymentMethod;
 use Fomvasss\Billing\Enums\PaymentStatus;
 use Fomvasss\Billing\Enums\PaymentType;
@@ -30,6 +31,11 @@ class ProcessRecurringChargesCommand extends Command
     protected $signature = 'billing:process-recurring-charges';
 
     protected $description = 'Charge subscriptions whose current period has ended, using a saved payment method';
+
+    public function __construct(protected RenewalChargeOptionsContract $chargeOptions)
+    {
+        parent::__construct();
+    }
 
     public function handle(BillingManager $billing): int
     {
@@ -130,10 +136,14 @@ class ProcessRecurringChargesCommand extends Command
             return false;
         }
 
-        [$payment, $method] = $claim;
+        [$payment, $method, $subscription] = $claim;
 
         try {
-            $billing->chargeWithMethod($payment, $method);
+            // Inside the try on purpose: a resolver that throws (a bad basket total, a lookup that
+            // blew up) has to land on the same write-off path as a failed initiation. Left to
+            // propagate from outside it, the Payment would stay pending — and the pending-renewal
+            // guard would then block this subscription's renewals for good.
+            $billing->chargeWithMethod($payment, $method, $this->chargeOptions->resolve($subscription, $payment));
         } catch (\Throwable $exception) {
             // The attempt never got off the ground (network timeout, rejected request, a gateway
             // 5xx). Leaving the row pending would be the worst outcome: the pending-renewal guard
@@ -152,11 +162,12 @@ class ProcessRecurringChargesCommand extends Command
     }
 
     /**
-     * Runs under the subscription's row lock. Returns the pending Payment and the card to charge
-     * it with, or null when this period needs no gateway call at all (already claimed, no card,
-     * nothing owed).
+     * Runs under the subscription's row lock. Returns the pending Payment, the card to charge it
+     * with and the locked subscription itself (the caller's copy predates the lock — the charge
+     * options are built off this one), or null when this period needs no gateway call at all
+     * (already claimed, no card, nothing owed).
      *
-     * @return array{Payment, PaymentMethod}|null
+     * @return array{Payment, PaymentMethod, Subscription}|null
      */
     protected function claimRenewal(Subscription $subscription, BillingManager $billing): ?array
     {
@@ -233,6 +244,6 @@ class ProcessRecurringChargesCommand extends Command
             'billable_id' => $subscription->billable_id,
         ]);
 
-        return [$payment, $method];
+        return [$payment, $method, $subscription];
     }
 }

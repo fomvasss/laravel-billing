@@ -125,6 +125,28 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Renewal charge options
+    |--------------------------------------------------------------------------
+    |
+    | A scheduled renewal has no request and no caller behind it, so the fiscal
+    | basket an ordinary charge picks up from a HasReceiptItems payable can't
+    | reach it. Turn receipt_items on and every renewal carries a one-line
+    | basket — the payment's full amount, named after the plan (or after the
+    | price's meta.receipt_name) — which is what Monobank's basketOrder,
+    | WayForPay's products and Hutko's RRO reservation_data need.
+    |
+    | Anything richer (per-seat lines, tax codes, LiqPay's rro_info) comes from
+    | your own Contracts\RenewalChargeOptionsContract binding, which also gets
+    | to set the description, customer email and IP for the same charge.
+    |
+    */
+
+    'renewal' => [
+        'receipt_items' => env('BILLING_RENEWAL_RECEIPT_ITEMS', false),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Reconciliation
     |--------------------------------------------------------------------------
     |

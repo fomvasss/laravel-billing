@@ -646,6 +646,51 @@ Schedule::command('billing:expire-pauses')->hourly();
 
 Keep `withoutOverlapping()` on the money-touching commands, and add `onOneServer()` if the scheduler runs on several servers.
 
+### Fiscalizing a renewal
+
+A renewal is the one charge you never call yourself — no request, no `ChargeOptions`, and a payable (the `Subscription` row) that carries no `HasReceiptItems` basket. Where a fiscal receipt is required, that would leave the first payment fiscalized and every renewal after it bare. `RenewalChargeOptionsContract` is where a renewal's options come from instead.
+
+The cheap way in, for a flat subscription that just needs *a* line on the receipt:
+
+```php
+// config/billing.php
+'renewal' => ['receipt_items' => true],
+```
+
+Every renewal now carries a one-line basket — the payment's full amount, `qty` 1, named after the plan (or after `prices.meta['receipt_name']`, if you'd rather write "Підписка «Pro», 1 міс" than "Pro"). That is as far as a generic implementation can go without inventing data: `licensed` charges whole seats and `metered` a fractional quantity, so splitting the total into `qty × unitAmount` would round off a kopiyka and fail the receipt-total check.
+
+For anything richer — per-seat lines, tax codes, UKTZED, LiqPay's `rro_info` — bind your own. It also fills in what a renewal otherwise has no source for: the description, the customer's email, and the IP (LiqPay requires one for an off-session `paytoken` charge; Hutko sends `127.0.0.1` without it):
+
+```php
+// AppServiceProvider::register()
+$this->app->bind(RenewalChargeOptionsContract::class, fn () => new class implements RenewalChargeOptionsContract
+{
+    public function resolve(Subscription $subscription, Payment $payment): ChargeOptions
+    {
+        $organization = $subscription->billable;
+
+        return new ChargeOptions(
+            receiptItems: [[
+                'name' => "Підписка «{$subscription->price->plan->name}», 1 міс",
+                'qty' => 1,
+                'unitAmount' => $payment->amount,
+                'sku' => $subscription->price->plan->code,
+            ]],
+            customerEmail: $organization->billing_email,
+            customerIp: $organization->last_ip,
+            description: "Продовження підписки #{$subscription->id}",
+        );
+    }
+});
+```
+
+The gateways take it from there exactly as they do on a first payment: Monobank as `basketOrder`, WayForPay as `productName[]`/`productPrice[]`/`productCount[]`, Hutko as its RRO `reservation_data`. LiqPay has no neutral basket field at all — put `rro_info` in `ChargeOptions::$raw` instead. Stripe has no basket on an off-session `PaymentIntent`, so a basket passed there is simply unused.
+
+Two things worth knowing before you write one:
+
+- **The basket must add up to `$payment->amount`** — same check as any other charge, and it runs before the gateway is called.
+- **A resolver that throws fails that renewal**: the `Payment` is written off as `failed` and the subscription enters the normal dunning cycle. That is deliberate (a `pending` payment left behind would block this subscription's renewals for good), but it does mean a bug in the resolver duns real customers — keep it to reading what's already on the models, with no outbound calls.
+
 ### Who runs the renewal: package-managed vs provider-managed
 
 Everything above describes **package-managed** subscriptions — the package's scheduler charges the saved card, paces the dunning, expires the trials. That's the only mode the built-in drivers produce, because none of the Ukrainian gateways host subscriptions natively.
@@ -776,7 +821,7 @@ class Order extends Model implements Payable, HasReceiptItems
 
 What each gateway does with it differs — **Monobank** (`basketOrder`), **WayForPay** (`productName[]`/`productPrice[]`/`productCount[]`), **Stripe** (`line_items`) and **Hutko** (`reservation_data`, its programmable-RRO fiscal basket) all take it as-is. The exception is **LiqPay**: its `rro_info` line items reference goods registered in your LiqPay account by their catalog id — a value this neutral shape has no field for — so pass that one explicitly via `ChargeOptions::$raw` (see below).
 
-The same auto-fill applies to `chargeWithMethod()` — an off-session charge (overage, a top-up, the postpaid-ride charge in use-case #7) is fiscalized exactly like a redirect checkout, as long as `$payment->payable` implements `HasReceiptItems`. The one place this doesn't reach is `billing:process-recurring-charges`: a subscription renewal's payable is always the package's own `Subscription` row, which deliberately does **not** implement `HasReceiptItems` — reconstructing the right basket total there would mean the package guessing at `pricing_type`/currency-conversion math for a fiscal document, which it won't do silently. Call `chargeWithMethod()` yourself with explicit `receiptItems` if a renewal needs one.
+The same auto-fill applies to `chargeWithMethod()` — an off-session charge (overage, a top-up, the postpaid-ride charge in use-case #7) is fiscalized exactly like a redirect checkout, as long as `$payment->payable` implements `HasReceiptItems`. The one place the auto-fill can't reach is a scheduled renewal, whose payable is always the package's own `Subscription` row: see "Fiscalizing a renewal" below for the hook that covers it.
 
 Whatever the basket comes from, it has to add up to the payment's own `amount` — a mismatch throws before the gateway is called. This isn't pedantry about fiscal data: Stripe bills the sum of its line items rather than your `amount`, so a basket that disagrees charges the customer one number while the row says another, and the callback — checked against `amount` — then refuses to mark it paid.
 
@@ -1270,6 +1315,7 @@ Every setting is a config key first; the env vars below are what `config/billing
 | `billing.retry_intervals` (no env) | `['6 hours', '24 hours', '48 hours']` | How long to wait after each failed renewal; the last entry repeats if the list is shorter than the attempts, `[]` means no retries at all. Per-`Price` override available. |
 | `BILLING_GRACE_PERIOD_DAYS` | `3` | How long `past_due` keeps `onGracePeriod()` true past the next retry. |
 | `BILLING_GRACE_ACCESS` | `true` | Whether `isActive()` stays true through that window, or access is cut on the first failed renewal. Per-`Price` override available. |
+| `BILLING_RENEWAL_RECEIPT_ITEMS` | `false` | Whether a scheduled renewal carries a generic one-line fiscal basket (the plan name, the payment's full amount). Bind `RenewalChargeOptionsContract` for a real one — see "Fiscalizing a renewal". |
 | `BILLING_RECONCILE_AFTER_MINUTES` | `60` | How old a `pending` payment must be before reconciliation polls the gateway for it. |
 | `BILLING_WEBHOOK_PATH` | `billing/webhooks/{gateway}` | Webhook route path. `{gateway}` must stay somewhere in it. |
 | `BILLING_WEBHOOK_PRUNE_AFTER_DAYS` | `30` | How long stored webhook calls are kept. Lowering it below a gateway's retry horizon lets an old re-delivery fire its events again — 30 days is beyond all five (WayForPay's four days is the longest). |

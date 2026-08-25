@@ -44,21 +44,24 @@ return [
     | Recurring charge attempts
     |--------------------------------------------------------------------------
     |
-    | How many failed recurring-charge retries a subscription gets (status
-    | past_due, grace_ends_at) before it's marked canceled.
+    | How many charge attempts a renewal gets in total — the first one plus the
+    | retries — before the subscription is marked canceled. Counts attempts,
+    | not retries: 4 means the renewal charge itself and three retries, which
+    | is what the default retry_intervals below pace out.
     |
     */
 
-    'max_recurring_attempts' => env('BILLING_MAX_RECURRING_ATTEMPTS', 3),
+    'max_recurring_attempts' => env('BILLING_MAX_RECURRING_ATTEMPTS', 4),
 
     /*
     |--------------------------------------------------------------------------
     | Grace period
     |--------------------------------------------------------------------------
     |
-    | Days a subscription stays `past_due` (still counted as paying, still
-    | retried) after a failed recurring charge before recurring_attempts hits
-    | max_recurring_attempts and it's marked canceled.
+    | How long access outlives a failed renewal, on top of the wait until the
+    | next retry: grace_ends_at is stamped at next_retry_at + this many days, so
+    | the window always covers the gap to the next attempt no matter how long
+    | the retry_intervals below get. Only meaningful while grace_access is on.
     |
     */
 
@@ -66,17 +69,25 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Retry interval
+    | Retry intervals
     |--------------------------------------------------------------------------
     |
-    | Hours between recurring-charge retries after a failure. Spaces the
-    | max_recurring_attempts across the grace window (default: 3 attempts,
-    | 24h apart, 3-day grace) instead of burning them on consecutive
-    | scheduler runs.
+    | How long to wait after each failed recurring charge before trying again —
+    | a list, because a card that just failed is worth retrying soon, while the
+    | third failure in a row is worth waiting a day or two on. Same entry shape
+    | as trial_ending_notices: a CarbonInterval string or an int = minutes.
+    |
+    | The first entry paces the wait after the first failure, the second after
+    | the second, and so on; a list shorter than max_recurring_attempts repeats
+    | its last entry. The default pairs with max_recurring_attempts = 4: charge,
+    | +6h, +24h, +48h, then canceled. An empty list means no retries at all —
+    | the first failed renewal cancels the subscription outright.
+    |
+    | Overridable per Price via prices.retry_intervals (null = this list).
     |
     */
 
-    'retry_interval_hours' => env('BILLING_RETRY_INTERVAL_HOURS', 24),
+    'retry_intervals' => ['6 hours', '24 hours', '48 hours'],
 
     /*
     |--------------------------------------------------------------------------

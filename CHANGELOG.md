@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+- **Renewal retries are now a ladder instead of one fixed interval.** `billing.retry_interval_hours` is replaced by `billing.retry_intervals` — a list in the same shape as `trial_ending_notices` (a CarbonInterval string, or an int = minutes). Entry *n* paces the wait after failure *n*, a list shorter than the attempt limit repeats its last entry, and `[]` means no retries at all (the first failed renewal cancels the subscription). Default: `['6 hours', '24 hours', '48 hours']`, overridable per `Price` via the new `prices.retry_intervals` column. `BILLING_RETRY_INTERVAL_HOURS` is gone — set the config key.
+- `billing.max_recurring_attempts` now defaults to `4` and counts **attempts, not retries**: the renewal charge itself plus three retries, which is what the default ladder paces out. A list of *n* intervals wants `max_recurring_attempts` = *n* + 1, or its last entries never get used.
+- `grace_ends_at` is stamped at `next_retry_at` + `grace_period_days` instead of `now()` + `grace_period_days`, so the access window always outlives the wait for the next attempt. Without this, a retry interval longer than the grace period would cut access off between two attempts and hand it back on the next failure.
+- A configured interval that can't be parsed, or that is zero or negative, now throws instead of being silently treated as "retry on every scheduler run".
+
+### Added
+- `Money::parse()` — strict parser for amounts a human typed (admin form, imported spreadsheet): reads `1299`, `1299.00`, `1 299,00` (including non-breaking spaces), `1.299,00` and `1,299.00` alike, and throws instead of guessing on more than two decimals, stray characters or an ambiguous `1,299`. Unlike `fromDecimal()` it never goes through a float. Use it wherever the amount comes from a form — `(float) '1 299,00'` is `1.0`.
+- `Money::format()` — human-facing output through `Number::currency()` with an optional locale, falling back to `"1299.00 UAH"` when `ext-intl` is missing (still not a package requirement).
+- `Money` arithmetic: `plus()`, `minus()`, `multiply()`, `allocate()`, `equals()`, `isZero()`. `multiply()` takes a `Rounding` mode (`HalfUp` by default, plus `HalfDown`/`HalfEven`/`Up`/`Down`) — half-up drifts in the merchant's favour over a long invoice, so banker's rounding is a choice the caller makes, not a constant baked into the class. `allocate()` splits an amount by ratios without losing or inventing a minor unit (100.00 in three is 33.34 + 33.33 + 33.33) — for discounts spread over basket lines, VAT per item, revenue splits. Mixing currencies throws; a result below zero throws.
+- `Payment::money()` and `Price::money()`, plus `Payment::feeMoney()` / `netMoney()` / `refundedMoney()` / `refundableRemainderMoney()` — the amount paired with the row's currency, for formatting and arithmetic. The columns and the existing integer helpers are unchanged: `$payment->amount` is still a minor-unit `int`.
+
 ## [0.1.0] - 2026-08-23
 
 Initial release. Pre-1.0: the public API and schema may still change between minor versions.

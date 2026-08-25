@@ -116,11 +116,14 @@ class RecurringChargeGuardsTest extends TestCase
 
         $subscription = $this->dueSubscriptionWithoutCard();
 
+        // Walks the default ladder: charge, +6h, +24h, +48h, then max_recurring_attempts (4) is up.
         $this->artisan('billing:process-recurring-charges')->assertSuccessful(); // attempt 1 → past_due
-        $this->travel(25)->hours();
+        $this->travel(7)->hours();
         $this->artisan('billing:process-recurring-charges')->assertSuccessful(); // attempt 2 → past_due
         $this->travel(25)->hours();
-        $this->artisan('billing:process-recurring-charges')->assertSuccessful(); // attempt 3 = max → canceled
+        $this->artisan('billing:process-recurring-charges')->assertSuccessful(); // attempt 3 → past_due
+        $this->travel(49)->hours();
+        $this->artisan('billing:process-recurring-charges')->assertSuccessful(); // attempt 4 = max → canceled
 
         $this->assertSame(SubscriptionStatus::Canceled, $subscription->fresh()->status);
         Event::assertDispatchedTimes(SubscriptionCancelled::class, 1);

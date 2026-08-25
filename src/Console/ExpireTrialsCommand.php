@@ -7,6 +7,7 @@ namespace Fomvasss\Billing\Console;
 use Fomvasss\Billing\Enums\SubscriptionStatus;
 use Fomvasss\Billing\Events\TrialWillEnd;
 use Fomvasss\Billing\Models\Subscription;
+use Fomvasss\Billing\Support\Intervals;
 use Illuminate\Console\Command;
 
 /**
@@ -62,7 +63,7 @@ class ExpireTrialsCommand extends Command
             ->chunkById(200, function ($subscriptions) use ($default) {
                 foreach ($subscriptions as $subscription) {
                     $notices = collect($subscription->price?->trial_ending_notices ?? $default)
-                        ->mapWithKeys(fn ($notice) => [(string) $notice => $this->noticeInterval($notice)])
+                        ->mapWithKeys(fn ($notice) => [(string) $notice => Intervals::parse($notice, 'trial notice interval')])
                         ->sortBy(fn (\Carbon\CarbonInterval $interval) => $interval->totalSeconds);
 
                     $sent = $subscription->trial_notices_sent ?? [];
@@ -81,12 +82,5 @@ class ExpireTrialsCommand extends Command
                     TrialWillEnd::dispatch($subscription, $due->keys()->first());
                 }
             });
-    }
-
-    protected function noticeInterval(string|int $notice): \Carbon\CarbonInterval
-    {
-        return is_int($notice)
-            ? \Carbon\CarbonInterval::minutes($notice)
-            : \Carbon\CarbonInterval::make($notice) ?? throw new \InvalidArgumentException("Unparsable trial notice interval \"{$notice}\".");
     }
 }

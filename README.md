@@ -396,7 +396,7 @@ sequenceDiagram
     alt paid
         Note over Listener: status=active, period +1 interval,<br/>attempts/grace reset → SubscriptionRenewed
     else failed
-        Note over Listener: status=past_due, attempts+1,<br/>next_retry_at +retry_interval_hours → SubscriptionPaymentFailed<br/>after max_recurring_attempts → canceled + SubscriptionCancelled
+        Note over Listener: status=past_due, attempts+1,<br/>next_retry_at per retry_intervals → SubscriptionPaymentFailed<br/>after max_recurring_attempts → canceled + SubscriptionCancelled
     end
 ```
 
@@ -624,7 +624,7 @@ Three artisan commands, off by default (`billing.schedule.enabled`, since they t
 
 | Command | Runs | What it does |
 |---|---|---|
-| `billing:process-recurring-charges` | every minute | First finalizes subscriptions whose `cancels_at` has passed (status → `canceled`, `SubscriptionCancelled` fires) so a period-end cancellation is never billed again. Then finds subscriptions where `current_period_ends_at <= now()` and charges the saved `PaymentMethod` via `chargePaymentMethod()` — unless an earlier renewal `Payment` is still `pending` (webhook not yet resolved), which blocks a second charge for the same period. Only *initiates* the charge — the outcome arrives later through the normal webhook pipeline, handled automatically: the period advances on `PaymentSucceeded`; on `PaymentFailed` the subscription goes `past_due` and is retried every `retry_interval_hours` (default 24 — spaced out, *not* every scheduler run) until `max_recurring_attempts` is reached, then `SubscriptionCancelled`. With the defaults that's 3 attempts a day apart across the 3-day grace window (`grace_period_days`). **No saved card to charge** (never tokenized, or detached since the last renewal) gets the identical grace/retry treatment via `Subscription::recordRenewalFailure()` — it doesn't stall in `active` waiting for a card that never arrives. So does an attempt that never reached the gateway at all (timeout, gateway 5xx): the `Payment` is written off as `failed` rather than left `pending` where it would block this subscription's renewals for good — if the charge did land at the bank after all, its webhook still arrives long before the next retry and flips the row to `paid`. **A renewal that owes nothing** — a metered period with no usage, a licensed one down to zero seats — advances the period directly instead of attempting a zero debit every gateway rejects. |
+| `billing:process-recurring-charges` | every minute | First finalizes subscriptions whose `cancels_at` has passed (status → `canceled`, `SubscriptionCancelled` fires) so a period-end cancellation is never billed again. Then finds subscriptions where `current_period_ends_at <= now()` and charges the saved `PaymentMethod` via `chargePaymentMethod()` — unless an earlier renewal `Payment` is still `pending` (webhook not yet resolved), which blocks a second charge for the same period. Only *initiates* the charge — the outcome arrives later through the normal webhook pipeline, handled automatically: the period advances on `PaymentSucceeded`; on `PaymentFailed` the subscription goes `past_due` and is retried on the `retry_intervals` ladder (spaced out, *not* every scheduler run) until `max_recurring_attempts` is reached, then `SubscriptionCancelled`. With the defaults that's the renewal charge, then `+6h`, `+24h`, `+48h`, then cancelled — a card that just failed is worth retrying soon, the third failure in a row is worth waiting on. **No saved card to charge** (never tokenized, or detached since the last renewal) gets the identical grace/retry treatment via `Subscription::recordRenewalFailure()` — it doesn't stall in `active` waiting for a card that never arrives. So does an attempt that never reached the gateway at all (timeout, gateway 5xx): the `Payment` is written off as `failed` rather than left `pending` where it would block this subscription's renewals for good — if the charge did land at the bank after all, its webhook still arrives long before the next retry and flips the row to `paid`. **A renewal that owes nothing** — a metered period with no usage, a licensed one down to zero seats — advances the period directly instead of attempting a zero debit every gateway rejects. |
 | `billing:reconcile-pending-payments` | every 15 min | Fallback for a `Payment` stuck `pending` because a webhook was lost, or a gateway `expired` status that never gets its own webhook. Only looks at payments older than `config('billing.reconcile_after_minutes')` (default 60 min) — that cutoff already delays how soon a stuck payment qualifies, which is why this runs more often than the other two, not hourly like them. A failure on one payment is reported and skipped, never blocks the rest. |
 | `billing:expire-trials` | daily | Dispatches `TrialWillEnd` at each configured `trial_ending_notices` interval (once per subscription per notice; when several become due at once only the closest fires), then moves `trialing` subscriptions past `trial_ends_at` to `ended`. Converting a trial to paid is a normal `chargeWithMethod()` call, same as any renewal (see "Free trial period" in Recipes). |
 | `billing:expire-pauses` | hourly | Resumes `paused` subscriptions whose `pause_ends_at` (set via `pause($until)`) has passed — hourly rather than daily since a paused subscription has no access (`isActive()` false) and no money is at stake. Indefinite pauses (`pause_ends_at` null) are untouched. |
@@ -677,7 +677,7 @@ stateDiagram-v2
 |---|---|
 | `trialing` | Free period, no card needed — still counts as active for access checks |
 | `active` | Paid and current |
-| `past_due` | A renewal failed; retried every `retry_interval_hours` while inside the grace window — `isActive()` stays true until `grace_ends_at` |
+| `past_due` | A renewal failed; retried on the `retry_intervals` ladder — `isActive()` stays true until `grace_ends_at`, which is always stamped past the next retry |
 | `paused` | Local pause via `pause()`/`resume()` — never gateway-driven |
 | `canceled` | Cancelled (immediately, at period end, or by dunning exhausting `max_recurring_attempts`) |
 | `ended` | Trial expired without converting |
@@ -999,7 +999,9 @@ One thing the package deliberately doesn't guard: nothing stops two active subsc
 
 ### 6. The customer's card changed / stopped working
 
-When a renewal charge fails, nothing special is required — that's what dunning is for: the subscription goes `past_due` but `isActive()` stays true through the grace window, `SubscriptionPaymentFailed` fires (your cue to email "we couldn't charge your card — update it" with a payment link), and retries run every `retry_interval_hours`. A card reissued by the same bank sometimes starts working again on its own (network token updates), in which case a retry simply succeeds. After `max_recurring_attempts` the subscription is `canceled`.
+When a renewal charge fails, nothing special is required — that's what dunning is for: the subscription goes `past_due` but `isActive()` stays true through the grace window, `SubscriptionPaymentFailed` fires (your cue to email "we couldn't charge your card — update it" with a payment link), and retries run on the `retry_intervals` ladder (`6h`, `24h`, `48h` by default). A card reissued by the same bank sometimes starts working again on its own (network token updates), in which case a retry simply succeeds. After `max_recurring_attempts` the subscription is `canceled`.
+
+A `Price` can carry its own `retry_intervals` (json column, same idea as `trial_ending_notices`): `null` = the global list, its own array = its own pace, `[]` = don't retry this one at all — the first failed renewal cancels it outright. `grace_ends_at` is always stamped at `next_retry_at` + `grace_period_days`, so however long the ladder gets, access never lapses *between* two attempts and comes back on the next failure.
 
 Updating the card is the same move as saving the first one — a real charge with `saveCard`:
 
@@ -1075,13 +1077,48 @@ Payment::create([
     // ...
 ]);
 
-// the other direction — display an existing Payment/Price row:
-(new Money($payment->amount, $payment->currency))->toDecimal(); // '100.00'
+// the other direction — Payment and Price hand you the pair already built:
+$payment->money()->toDecimal(); // '100.00'
+$price->money()->format();      // '1 299,00 ₴'
 ```
 
 The trap it exists for: `(int) (19.99 * 100)` is **1998**, not 1999 — `19.99` has no exact binary representation, so the product is `1998.9999999999998` and the cast truncates. `Money::fromDecimal()` rounds. Eloquent's `decimal:2` cast returns a *string*, which sidesteps the issue on the way in — but only until something casts it to float, so route it through `fromDecimal()` anyway.
 
-`toDecimal()` always returns exactly two decimal places (`'5.00'`, never `'5'`), dot separator, no thousands grouping — format for display however you like on top of that.
+`toDecimal()` always returns exactly two decimal places (`'5.00'`, never `'5'`), dot separator, no thousands grouping. For human-facing output use `format()` instead — it goes through `Number::currency()` (`'1 299,00 ₴'`, with an optional locale argument), falling back to `'1299.00 UAH'` when `ext-intl` isn't installed, which the package doesn't require.
+
+### Parsing what a human typed
+
+`fromDecimal()` trusts its input — it's the bridge from a column or an API, and `(float) '1 299,00'` is **1.0**, silently. For an admin price field or an imported spreadsheet cell use `parse()`, which reads every separator convention and refuses everything else instead of guessing:
+
+```php
+Money::parse('1299', 'UAH');      // 129900
+Money::parse('1 299,00', 'UAH');  // 129900 — including the non-breaking spaces a browser pastes
+Money::parse('1.299,00', 'UAH');  // 129900 — uk/de grouping
+Money::parse('1,299.00', 'UAH');  // 129900 — en grouping
+Money::parse('19.999', 'UAH');    // throws: more than two decimals
+Money::parse('1,299', 'UAH');     // throws: 1299 or 1.299? no way to tell, so it refuses
+```
+
+It also never touches a float on the way in: `'19.99'` is composed as `19 * 100 + 99`.
+
+### Arithmetic
+
+```php
+$total = $first->plus($second);        // same currency enforced — mixing throws
+$left  = $total->minus($paid);         // below zero throws: money is never negative
+$line  = $unit->multiply($quantity);   // rounds half-up to the minor unit...
+$line  = $unit->multiply($quantity, Rounding::HalfEven); // ...unless accounting says otherwise
+
+// splitting without losing or inventing a kopiyka — 100.00 in three is 33.34 + 33.33 + 33.33
+[$a, $b, $c] = (new Money(10000, 'UAH'))->allocate([1, 1, 1]);
+
+// weighted the same way: a discount spread across basket lines
+$shares = $discount->allocate([$line1->amount, $line2->amount]);
+```
+
+`allocate()` is the reason not to do this by hand: a naive `multiply(1/3)` on each share gives 33.33 three times and quietly loses a kopiyka. It floors every share and hands the leftover units to the earliest ones — order your ratios accordingly. Also `equals()`, `isZero()`, `isSameCurrency()`.
+
+`Rounding` (`HalfUp` — the default, `HalfDown`, `HalfEven`, `Up`, `Down`) is a parameter rather than a hidden constant because half-up and half-even are different money: over a long invoice half-up drifts in the merchant's favour, which is why some accounting rules mandate banker's rounding. Note the ceiling of all this: `multiply()` takes a float factor, so an inexact factor (a tax rate, proration to the day) is already approximate before rounding happens — that's the point to reach for `brick/money` instead of growing this class.
 
 Known limitation: the whole package assumes **two-decimal currencies** (`fromDecimal()` multiplies by 100, `toDecimal()` divides by 100, and the drivers do the same on the wire). Zero-decimal (JPY) and three-decimal (BHD) currencies are not supported; every currency in the built-in gateways' `supportedCurrencies()` lists is two-decimal on purpose.
 
@@ -1089,7 +1126,7 @@ Gateways that want decimal major units on the wire (LiqPay, WayForPay) convert i
 
 ### What to store in your own tables
 
-- **Anything that feeds billing directly** — your own tariff/plan tables, wallet balances, transaction ledgers — store as **integer minor units** too. Every conversion you don't have is a `fromDecimal()` call nobody can forget. (`billing_prices.amount` already is one — no choice there.) An admin form is not a reason to store decimals: show/accept `299.00` in the form, save `Money::fromDecimal($request->input('price'), 'UAH')->amount`.
+- **Anything that feeds billing directly** — your own tariff/plan tables, wallet balances, transaction ledgers — store as **integer minor units** too. Every conversion you don't have is a `fromDecimal()` call nobody can forget. (`billing_prices.amount` already is one — no choice there.) An admin form is not a reason to store decimals: show/accept `299.00` in the form, save `Money::parse($request->input('price'), 'UAH')->amount` (`parse()`, not `fromDecimal()` — form input is where `'1 299,00'` comes from).
 - **Catalog prices humans edit and that don't reach billing directly** (shop products, display prices) — `decimal(12,2)` is fine; MySQL `DECIMAL` is exact, not a float. Convert at the single boundary where an order total becomes a `Payment`.
 - **Never** `float`/`double` columns, and never float arithmetic over money in PHP — that's exactly where `1998.9999...` comes from. Keep sums in integer kopiykas (or bcmath for percentages), and always store the `currency` next to the amount, even in a "UAH-only" project — until the first USD price shows up.
 
@@ -1124,6 +1161,9 @@ $payment->refundedAmount();         // total refunded against this charge, minor
 $payment->netAmount();              // amount minus the gateway's fee — null while fee is unknown
 $payment->hasActivePaymentUrl();    // checkout link still usable — no need to charge() again
 $payment->refundableRemainder();    // amount minus what's already been refunded
+$payment->money();                  // amount + currency as a Money (see "Money" above); the same
+                                    // pairing exists for the helpers above — feeMoney(), netMoney(),
+                                    // refundedMoney(), refundableRemainderMoney(), and Price::money()
 $payment->refunds;                  // the child refund rows
 $payment->parentPayment;            // set on a refund row: the charge it belongs to
 Payment::findByNumber('PAY-2026-000123');
@@ -1158,7 +1198,7 @@ $plan->prices()->create(['interval' => Interval::Month, ...]);
 if ($subscription->status === SubscriptionStatus::PastDue) { ... } // reading a cast column gives the enum instance
 ```
 
-Each enum also has `label()` for UI (`'Past due'`) and the usual `cases()` for building selects. `Interval::Minute`/`Hour` work for real short-cycle billing too (hourly parking/equipment rental, not just testing) — the every-minute default schedule covers them out of the box; just rethink the dunning defaults, since a 24-hour retry interval (`retry_interval_hours`) and a 3-day grace (`grace_period_days`) make no sense against a one-hour period (e.g. `BILLING_MAX_RECURRING_ATTEMPTS=1`).
+Each enum also has `label()` for UI (`'Past due'`) and the usual `cases()` for building selects. `Interval::Minute`/`Hour` work for real short-cycle billing too (hourly parking/equipment rental, not just testing) — the every-minute default schedule covers them out of the box; just rethink the dunning defaults, since a `6h`/`24h`/`48h` retry ladder (`retry_intervals`) and a 3-day grace (`grace_period_days`) make no sense against a one-hour period (e.g. `retry_intervals => ['5 minutes']`, `BILLING_MAX_RECURRING_ATTEMPTS=1`).
 
 ## Currency conversion
 
@@ -1226,9 +1266,9 @@ Every setting is a config key first; the env vars below are what `config/billing
 | `BILLING_SCHEDULE_ENABLED` | `false` | Master switch for the package's scheduled commands. **Off by default** — nothing is charged, reconciled or expired until you turn it on. |
 | `BILLING_QUEUE_CONNECTION` | app default | Queue connection for `ProcessWebhookJob`. |
 | `BILLING_QUEUE` | app default | Queue name for it — give webhooks their own so a busy default queue can't delay marking payments paid. |
-| `BILLING_MAX_RECURRING_ATTEMPTS` | `3` | Failed renewals before the subscription is cancelled. |
-| `BILLING_RETRY_INTERVAL_HOURS` | `24` | Spacing between renewal retries (not every scheduler run). |
-| `BILLING_GRACE_PERIOD_DAYS` | `3` | How long `past_due` keeps `onGracePeriod()` true. |
+| `BILLING_MAX_RECURRING_ATTEMPTS` | `4` | Charge attempts a renewal gets in total — the first one plus the retries — before the subscription is cancelled. |
+| `billing.retry_intervals` (no env) | `['6 hours', '24 hours', '48 hours']` | How long to wait after each failed renewal; the last entry repeats if the list is shorter than the attempts, `[]` means no retries at all. Per-`Price` override available. |
+| `BILLING_GRACE_PERIOD_DAYS` | `3` | How long `past_due` keeps `onGracePeriod()` true past the next retry. |
 | `BILLING_GRACE_ACCESS` | `true` | Whether `isActive()` stays true through that window, or access is cut on the first failed renewal. Per-`Price` override available. |
 | `BILLING_RECONCILE_AFTER_MINUTES` | `60` | How old a `pending` payment must be before reconciliation polls the gateway for it. |
 | `BILLING_WEBHOOK_PATH` | `billing/webhooks/{gateway}` | Webhook route path. `{gateway}` must stay somewhere in it. |

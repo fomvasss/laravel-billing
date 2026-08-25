@@ -77,6 +77,96 @@ class SubscriptionRenewalTest extends TestCase
         $this->assertSame(3, $subscription->recurring_attempts);
     }
 
+    public function test_each_failure_waits_longer_than_the_last(): void
+    {
+        $subscription = $this->activeMonthlySubscription();
+
+        // Default ladder: 6h after the first failure, 24h after the second, 48h after the third.
+        foreach ([6, 24, 48] as $expectedHours) {
+            PaymentFailed::dispatch($this->renewalPayment($subscription));
+
+            $subscription->refresh();
+
+            $this->assertSame(
+                now()->addHours($expectedHours)->format('Y-m-d H:i'),
+                $subscription->next_retry_at->format('Y-m-d H:i'),
+                "after failure #{$subscription->recurring_attempts}"
+            );
+        }
+
+        // Fourth failure is max_recurring_attempts — no fifth wait, the subscription is done.
+        PaymentFailed::dispatch($this->renewalPayment($subscription));
+
+        $this->assertSame(SubscriptionStatus::Canceled, $subscription->fresh()->status);
+    }
+
+    /** A list shorter than max_recurring_attempts keeps using its last entry rather than running out. */
+    public function test_a_short_interval_list_repeats_its_last_entry(): void
+    {
+        config(['billing.retry_intervals' => ['1 hour'], 'billing.max_recurring_attempts' => 4]);
+        $subscription = $this->activeMonthlySubscription();
+
+        foreach ([1, 2, 3] as $failure) {
+            PaymentFailed::dispatch($this->renewalPayment($subscription));
+
+            $this->assertSame(
+                now()->addHour()->format('Y-m-d H:i'),
+                $subscription->fresh()->next_retry_at->format('Y-m-d H:i'),
+                "after failure #{$failure}"
+            );
+        }
+    }
+
+    /** null on the Price = the global list; its own array = its own pace, like trial_ending_notices. */
+    public function test_a_price_can_set_its_own_retry_pace(): void
+    {
+        $subscription = $this->activeMonthlySubscription();
+        $subscription->price->update(['retry_intervals' => ['15 minutes', '2 hours']]);
+
+        PaymentFailed::dispatch($this->renewalPayment($subscription));
+        $this->assertSame(now()->addMinutes(15)->format('Y-m-d H:i'), $subscription->fresh()->next_retry_at->format('Y-m-d H:i'));
+
+        PaymentFailed::dispatch($this->renewalPayment($subscription->fresh()));
+        $this->assertSame(now()->addHours(2)->format('Y-m-d H:i'), $subscription->fresh()->next_retry_at->format('Y-m-d H:i'));
+    }
+
+    /** [] on the Price = don't retry this one at all, the mirror of "[] = no trial notices". */
+    public function test_an_empty_interval_list_cancels_on_the_first_failure(): void
+    {
+        $subscription = $this->activeMonthlySubscription();
+        $subscription->price->update(['retry_intervals' => []]);
+
+        PaymentFailed::dispatch($this->renewalPayment($subscription));
+
+        $subscription->refresh();
+
+        $this->assertSame(SubscriptionStatus::Canceled, $subscription->status);
+        $this->assertSame(1, $subscription->recurring_attempts);
+    }
+
+    /**
+     * The window is anchored on the next attempt, not on now() — otherwise a retry pace longer than
+     * grace_period_days would strand a past_due subscription without access between two attempts
+     * and hand it back on the next failure.
+     */
+    public function test_the_grace_window_always_outlives_the_wait_for_the_next_retry(): void
+    {
+        config(['billing.retry_intervals' => ['10 days'], 'billing.grace_period_days' => 3]);
+        $subscription = $this->activeMonthlySubscription();
+
+        PaymentFailed::dispatch($this->renewalPayment($subscription));
+
+        $subscription->refresh();
+
+        $this->assertSame(
+            $subscription->next_retry_at->copy()->addDays(3)->format('Y-m-d H:i'),
+            $subscription->grace_ends_at->format('Y-m-d H:i'),
+        );
+        $this->assertTrue($subscription->isActive()); // grace_access is on by default — access holds
+        $this->travelTo($subscription->next_retry_at->copy()->subMinute());
+        $this->assertTrue($subscription->fresh()->isActive()); // still on, right up to the retry
+    }
+
     public function test_a_manually_paid_subscription_cancels_immediately_on_failure_without_grace(): void
     {
         $subscription = $this->activeMonthlySubscription();

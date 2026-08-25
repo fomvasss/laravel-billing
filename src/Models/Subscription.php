@@ -14,6 +14,7 @@ use Fomvasss\Billing\Events\SubscriptionPaymentFailed;
 use Fomvasss\Billing\Events\SubscriptionRenewed;
 use Fomvasss\Billing\Events\SubscriptionResumed;
 use Fomvasss\Billing\Events\UsageLimitReached;
+use Fomvasss\Billing\Support\Intervals;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Model;
@@ -254,12 +255,15 @@ class Subscription extends Model
     public function recordRenewalFailure(): void
     {
         $attempts = $this->recurring_attempts + 1;
-        $maxAttempts = (int) config('billing.max_recurring_attempts', 3);
+        $maxAttempts = (int) config('billing.max_recurring_attempts', 4);
+        $intervals = $this->retryIntervals();
         // Captured before the update: access is only ever "cut" on the transition INTO past_due,
         // never on a later retry within the same episode (it's already off by then).
         $wasPastDue = $this->status === SubscriptionStatus::PastDue;
 
-        if ($attempts >= $maxAttempts) {
+        // An empty interval list means "don't retry at all" (the same "[] = off" the trial notices
+        // use) — the first failed renewal is then also the last.
+        if ($intervals === [] || $attempts >= $maxAttempts) {
             $this->update(['status' => SubscriptionStatus::Canceled, 'recurring_attempts' => $attempts, 'cancels_at' => now()]);
 
             SubscriptionCancelled::dispatch($this);
@@ -267,14 +271,19 @@ class Subscription extends Model
             return;
         }
 
+        // Spaces the retries out — without this, the scheduler would re-pick a past_due
+        // subscription every run and burn through max_recurring_attempts within minutes, making
+        // the grace window meaningless.
+        $nextRetryAt = now()->add(Intervals::parse($intervals[min($attempts, count($intervals)) - 1], 'retry interval'));
+
         $this->update([
             'status' => SubscriptionStatus::PastDue,
             'recurring_attempts' => $attempts,
-            'grace_ends_at' => now()->addDays((int) config('billing.grace_period_days', 3)),
-            // Spaces the retries out — without this, the scheduler would re-pick a past_due
-            // subscription every run and burn through max_recurring_attempts within minutes, making
-            // the multi-day grace window meaningless.
-            'next_retry_at' => now()->addHours((int) config('billing.retry_interval_hours', 24)),
+            // Anchored on the next attempt, not on now(): the window has to outlive the wait, or a
+            // retry pace longer than grace_period_days would cut access off between two attempts
+            // and hand it back on the next failure — access flickering on and off mid-dunning.
+            'grace_ends_at' => $nextRetryAt->copy()->addDays((int) config('billing.grace_period_days', 3)),
+            'next_retry_at' => $nextRetryAt,
         ]);
 
         SubscriptionPaymentFailed::dispatch($this);
@@ -282,6 +291,19 @@ class Subscription extends Model
         if (! $wasPastDue && ! $this->hasGraceAccess()) {
             SubscriptionAccessSuspended::dispatch($this);
         }
+    }
+
+    /**
+     * The dunning pace for this subscription: the Price's own retry_intervals when it has one,
+     * otherwise config('billing.retry_intervals') — null on the Price means "use the global list",
+     * [] means "no retries for this price". Entry n paces the wait after failure n, and a list
+     * shorter than max_recurring_attempts repeats its last entry (see recordRenewalFailure()).
+     *
+     * @return list<string|int>
+     */
+    public function retryIntervals(): array
+    {
+        return array_values($this->price?->retry_intervals ?? (array) config('billing.retry_intervals', ['6 hours', '24 hours', '48 hours']));
     }
 
     /**

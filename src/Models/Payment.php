@@ -131,6 +131,17 @@ class Payment extends Model
     }
 
     /**
+     * amount + currency as one value object, for the cases where the pair travels together —
+     * formatting for a receipt, arithmetic that must not lose a kopiyka (Money::allocate()),
+     * handing an amount to refund(). The columns themselves stay plain minor-unit integers:
+     * $payment->amount is still an int, and every helper below still returns one.
+     */
+    public function money(): Money
+    {
+        return new Money($this->amount, $this->currency);
+    }
+
+    /**
      * Total refunded against this charge, in minor units — 0 when nothing was refunded. Counts
      * soft-deleted refund rows too: the money left the merchant account whether or not the row was
      * later hidden, and dropping them would re-open room to refund the same amount twice.
@@ -138,6 +149,12 @@ class Payment extends Model
     public function refundedAmount(): int
     {
         return (int) $this->refunds()->withTrashed()->where('status', PaymentStatus::Paid)->sum('amount');
+    }
+
+    /** refundedAmount() as Money — see money(). */
+    public function refundedMoney(): Money
+    {
+        return new Money($this->refundedAmount(), $this->currency);
     }
 
     /**
@@ -170,6 +187,12 @@ class Payment extends Model
         return $this->amount - $this->refundedAmount();
     }
 
+    /** refundableRemainder() as Money — see money(). */
+    public function refundableRemainderMoney(): Money
+    {
+        return new Money($this->refundableRemainder(), $this->currency);
+    }
+
     /**
      * Lookup by the human-facing payment number ("PAY-2026-000123") — the package stores the
      * column but never generates it; your app assigns numbers in a Payment::creating() hook
@@ -189,6 +212,20 @@ class Payment extends Model
     public function netAmount(): ?int
     {
         return $this->fee === null ? null : $this->amount - $this->fee;
+    }
+
+    /** The gateway's fee as Money — null while it is unknown, same as the `fee` column. */
+    public function feeMoney(): ?Money
+    {
+        return $this->fee === null ? null : new Money($this->fee, $this->currency);
+    }
+
+    /** netAmount() as Money — null while the fee is unknown. */
+    public function netMoney(): ?Money
+    {
+        $net = $this->netAmount();
+
+        return $net === null ? null : new Money($net, $this->currency);
     }
 
     /** The checkout link is still usable — no need to call charge() again (see BillingManager::charge()). */

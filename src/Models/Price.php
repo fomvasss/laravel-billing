@@ -6,6 +6,7 @@ namespace Fomvasss\Billing\Models;
 
 use Fomvasss\Billing\Enums\Interval;
 use Fomvasss\Billing\Enums\PricingType;
+use Fomvasss\Billing\Support\Money;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -27,6 +28,7 @@ class Price extends Model
             'interval_count' => 'integer',
             'trial_days' => 'integer',
             'trial_ending_notices' => 'array',
+            'retry_intervals' => 'array',
             'grace_access' => 'boolean',
             'pricing_type' => PricingType::class,
             'included_units' => 'float',
@@ -43,6 +45,15 @@ class Price extends Model
     public function subscriptions(): HasMany
     {
         return $this->hasMany(Subscription::class);
+    }
+
+    /**
+     * amount + currency as one value object — for showing the price on a pricing page or doing
+     * arithmetic on it. The column stays a plain minor-unit integer (see Payment::money()).
+     */
+    public function money(): Money
+    {
+        return new Money($this->amount, $this->currency);
     }
 
     /**

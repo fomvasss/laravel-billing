@@ -78,8 +78,8 @@ class ProcessRecurringChargesCommand extends Command
             ->whereNull('external_id')
             ->whereNotNull('current_period_ends_at')
             ->where('current_period_ends_at', '<=', now())
-            // Dunning pacing: a failed attempt stamps next_retry_at (retry_interval_hours ahead) —
-            // until then the hourly run leaves the subscription alone.
+            // Dunning pacing: a failed attempt stamps next_retry_at (the retry_intervals entry
+            // for that attempt ahead) — until then every run leaves the subscription alone.
             ->where(fn ($query) => $query->whereNull('next_retry_at')->orWhere('next_retry_at', '<=', now()));
     }
 
@@ -140,7 +140,7 @@ class ProcessRecurringChargesCommand extends Command
             // above would block this subscription's renewals forever, while reconciliation can't
             // resolve a row that never got an external_id. Writing it off as failed feeds the
             // normal dunning path instead — and if the charge did reach the bank after all, its
-            // webhook still lands well within retry_interval_hours and flips the row to paid.
+            // webhook still lands well before the next retry and flips the row to paid.
             $payment->transitionTo(PaymentStatus::Failed, ['raw_response' => ['exception' => $exception->getMessage()]]);
 
             PaymentFailed::dispatch($payment);

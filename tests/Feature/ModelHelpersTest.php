@@ -9,6 +9,7 @@ use Fomvasss\Billing\Models\Payment;
 use Fomvasss\Billing\Models\Plan;
 use Fomvasss\Billing\Models\Price;
 use Fomvasss\Billing\Models\Subscription;
+use Fomvasss\Billing\Support\Money;
 use Fomvasss\Billing\Tests\Fixtures\TestUser;
 use Fomvasss\Billing\Tests\TestCase;
 
@@ -117,6 +118,41 @@ class ModelHelpersTest extends TestCase
         $this->payment(['status' => 'failed', 'type' => 'refund', 'amount' => 9999, 'parent_payment_id' => $charge->id]);
 
         $this->assertSame(2500, $charge->refundedAmount());
+    }
+
+    /** The int getters stay ints; the Money twins just pair them with the row's currency. */
+    public function test_payment_money_helpers_mirror_the_integer_ones(): void
+    {
+        $charge = $this->payment(['status' => 'paid', 'amount' => 10000, 'fee' => 130]);
+        $this->payment(['status' => 'paid', 'type' => 'refund', 'amount' => 2500, 'parent_payment_id' => $charge->id]);
+
+        $this->assertTrue($charge->money()->equals(new Money(10000, 'UAH')));
+        $this->assertTrue($charge->feeMoney()->equals(new Money(130, 'UAH')));
+        $this->assertTrue($charge->netMoney()->equals(new Money(9870, 'UAH')));
+        $this->assertTrue($charge->refundedMoney()->equals(new Money(2500, 'UAH')));
+        $this->assertTrue($charge->refundableRemainderMoney()->equals(new Money(7500, 'UAH')));
+
+        $this->assertSame(10000, $charge->amount);
+        $this->assertSame('100.00', $charge->money()->toDecimal());
+    }
+
+    /** An unknown fee stays unknown — null, never a Money(0) that reads as "no commission". */
+    public function test_payment_money_helpers_keep_an_unknown_fee_null(): void
+    {
+        $charge = $this->payment(['status' => 'paid', 'amount' => 10000]);
+
+        $this->assertNull($charge->fee);
+        $this->assertNull($charge->feeMoney());
+        $this->assertNull($charge->netMoney());
+    }
+
+    public function test_price_money_pairs_the_amount_with_its_currency(): void
+    {
+        $plan = Plan::create(['code' => 'pro-' . uniqid(), 'name' => 'Pro']);
+        $price = Price::create(['plan_id' => $plan->id, 'currency' => 'USD', 'amount' => 1999, 'pricing_type' => 'flat']);
+
+        $this->assertTrue($price->money()->equals(new Money(1999, 'USD')));
+        $this->assertSame('19.99', $price->money()->toDecimal());
     }
 
     public function test_payment_has_active_payment_url(): void

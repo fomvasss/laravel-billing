@@ -193,7 +193,7 @@ $price = $plan->prices()->create([
 BILLING_MAX_RECURRING_ATTEMPTS=1   # first failure → canceled, no past_due limbo
 ```
 
-- **Trial/first-hour reminders** — minute-scale notices, and run the command more often than its daily default:
+- **Trial/first-hour reminders** — minute-scale notices, and run the command more often than its hourly default (a 15-minute reminder fired by an hourly pass would land anywhere in the preceding hour, or not at all):
 
 ```php
 'trial_ending_notices' => ['15 minutes'],
@@ -203,8 +203,10 @@ BILLING_MAX_RECURRING_ATTEMPTS=1   # first failure → canceled, no past_due lim
 Schedule::command('billing:process-recurring-charges')->everyMinute()->withoutOverlapping();
 Schedule::command('billing:reconcile-pending-payments')->everyFiveMinutes()->withoutOverlapping();
 Schedule::command('billing:expire-trials')->everyMinute();
+Schedule::command('billing:expire-pauses')->everyMinute();
 ```
 
+- **Access is exact regardless of all this**: `isActive()` derives entitlement from the row's dates, so a first hour that ends at 13:23 stops granting access at 13:23 even if the scheduler is lagging or switched off — the commands above only write the status down and fire the events. The cadence buys you prompt notices and honest dashboards, not correct billing.
 - **Stopping the rental** is `cancel()`: `atPeriodEnd: false` frees the spot immediately, the default period-end variant lets the paid hour run out (finalized by the scheduler — which at this cadence reacts within a minute).
 - **Reconciliation matters more here**: a lost webhook that a monthly plan wouldn't notice for an hour is a whole billing period for a rental — hence the five-minute reconcile above, with `BILLING_RECONCILE_AFTER_MINUTES` lowered to taste.
 

@@ -125,6 +125,27 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Period ending notices
+    |--------------------------------------------------------------------------
+    |
+    | When SubscriptionPeriodEnding fires before a paid period runs out — the
+    | hook for "we'll charge your card on the 14th" and, for a subscription the
+    | customer already cancelled, "your access ends on the 14th". Nobody else
+    | sends it: package-managed renewals have no provider to mail an upcoming
+    | invoice. Same entry shape and same once-per-notice rule as the trial
+    | notices above, per period; a renewal clears the markers for the next one.
+    |
+    | Empty by default — unlike a trial ending, which always needs a nudge for a
+    | card, an advance renewal notice is a policy call (some businesses must
+    | send it, others find it drives cancellations). Overridable per Price via
+    | prices.period_ending_notices (null = this list).
+    |
+    */
+
+    'period_ending_notices' => [],
+
+    /*
+    |--------------------------------------------------------------------------
     | Renewal charge options
     |--------------------------------------------------------------------------
     |

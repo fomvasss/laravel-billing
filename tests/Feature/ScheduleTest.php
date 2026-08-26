@@ -33,9 +33,13 @@ class ScheduleTest extends TestCase
         $this->assertSame('* * * * *', $this->expressionFor('billing:process-recurring-charges'));
     }
 
-    public function test_expire_trials_runs_daily(): void
+    public function test_housekeeping_commands_run_hourly(): void
     {
-        $this->assertSame('0 0 * * *', $this->expressionFor('billing:expire-trials'));
+        // Hourly, not daily: none of them gates access (isActive() reads the row's own dates), but
+        // an hours-scale notice only lands if the notice pass runs at least that often.
+        $this->assertSame('0 * * * *', $this->expressionFor('billing:expire-trials'));
+        $this->assertSame('0 * * * *', $this->expressionFor('billing:send-period-notices'));
+        $this->assertSame('0 * * * *', $this->expressionFor('billing:expire-pauses'));
     }
 
     public function test_webhook_calls_are_pruned_daily(): void

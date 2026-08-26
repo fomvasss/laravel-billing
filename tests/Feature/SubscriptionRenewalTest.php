@@ -7,12 +7,14 @@ namespace Fomvasss\Billing\Tests\Feature;
 use Fomvasss\Billing\Enums\SubscriptionStatus;
 use Fomvasss\Billing\Events\PaymentFailed;
 use Fomvasss\Billing\Events\PaymentSucceeded;
+use Fomvasss\Billing\Events\SubscriptionRenewed;
 use Fomvasss\Billing\Models\Payment;
 use Fomvasss\Billing\Models\Plan;
 use Fomvasss\Billing\Models\Price;
 use Fomvasss\Billing\Models\Subscription;
 use Fomvasss\Billing\Tests\Fixtures\TestUser;
 use Fomvasss\Billing\Tests\TestCase;
+use Illuminate\Support\Facades\Event;
 
 /**
  * HandleSubscriptionPaymentOutcome only reacts when Payment::payable is a Subscription — these
@@ -178,6 +180,47 @@ class SubscriptionRenewalTest extends TestCase
 
         $this->assertSame(SubscriptionStatus::Canceled, $subscription->status);
         $this->assertNull($subscription->grace_ends_at);
+    }
+
+    public function test_a_converted_trial_reports_the_status_it_came_from(): void
+    {
+        Event::fake([SubscriptionRenewed::class]);
+        $subscription = $this->activeMonthlySubscription();
+        $subscription->update(['status' => SubscriptionStatus::Trialing, 'trial_ends_at' => now()->addDays(3)]);
+
+        PaymentSucceeded::dispatch($this->renewalPayment($subscription));
+
+        Event::assertDispatched(
+            SubscriptionRenewed::class,
+            fn (SubscriptionRenewed $event) => $event->previousStatus === SubscriptionStatus::Trialing,
+        );
+    }
+
+    public function test_a_renewal_recovered_from_dunning_reports_the_status_it_came_from(): void
+    {
+        Event::fake([SubscriptionRenewed::class]);
+        $subscription = $this->activeMonthlySubscription();
+        $subscription->update(['status' => SubscriptionStatus::PastDue, 'recurring_attempts' => 1]);
+
+        PaymentSucceeded::dispatch($this->renewalPayment($subscription));
+
+        Event::assertDispatched(
+            SubscriptionRenewed::class,
+            fn (SubscriptionRenewed $event) => $event->previousStatus === SubscriptionStatus::PastDue,
+        );
+    }
+
+    public function test_an_ordinary_renewal_reports_the_status_it_came_from(): void
+    {
+        Event::fake([SubscriptionRenewed::class]);
+        $subscription = $this->activeMonthlySubscription();
+
+        PaymentSucceeded::dispatch($this->renewalPayment($subscription));
+
+        Event::assertDispatched(
+            SubscriptionRenewed::class,
+            fn (SubscriptionRenewed $event) => $event->previousStatus === SubscriptionStatus::Active,
+        );
     }
 
     private function activeMonthlySubscription(): Subscription

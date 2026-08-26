@@ -75,6 +75,7 @@ class BillingServiceProvider extends ServiceProvider
                 ReconcilePendingPaymentsCommand::class,
                 ExpireTrialsCommand::class,
                 ExpirePausesCommand::class,
+                \Fomvasss\Billing\Console\SendPeriodNoticesCommand::class,
                 \Fomvasss\Billing\Console\StripeRegisterWebhookCommand::class,
                 \Fomvasss\Billing\Console\HealthCommand::class,
             ]);
@@ -206,10 +207,15 @@ class BillingServiceProvider extends ServiceProvider
             // stuck payment qualifies; hourly on top of that meant a real "paid but webhook lost"
             // payment could sit unresolved for up to ~2h before this ever looked at it.
             $schedule->command('billing:reconcile-pending-payments')->everyFifteenMinutes()->withoutOverlapping();
-            $schedule->command('billing:expire-trials')->daily();
-            // Hourly, not daily like expire-trials above: a paused subscription has isActive()
-            // false, so a full day's lag past $until would deny access well beyond what the
-            // customer scheduled. No money moves here, so hourly costs nothing extra.
+            // All three housekeeping commands run hourly. None of them gates access — isActive()
+            // reads the row's own dates, so a lagging run only delays the status write and the
+            // notice, never the entitlement — but an hourly notice pass is what makes an
+            // hours-scale reminder ('12 hours' before a trial ends) land at all, and a day-scale
+            // lag on the status itself makes reports and dashboards lie. Nothing here moves money,
+            // so the extra 23 indexed queries a day cost nothing. Minute-scale billing (parking,
+            // rentals) registers its own cadence — see the short-cycle case in docs/use-cases.md.
+            $schedule->command('billing:expire-trials')->hourly();
+            $schedule->command('billing:send-period-notices')->hourly();
             $schedule->command('billing:expire-pauses')->hourly();
             $schedule->command('model:prune', ['--model' => [\Fomvasss\Billing\Webhooks\BillingWebhookCall::class]])->daily();
         });

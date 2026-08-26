@@ -23,6 +23,8 @@ return new class extends Migration
             // trial_ending_notices entries already fired — each reminder at most once per subscription.
             $table->json('trial_notices_sent')->nullable();
             $table->timestamp('current_period_ends_at')->nullable();
+            // period_ending_notices entries already fired for the current period — cleared on renewal.
+            $table->json('period_notices_sent')->nullable();
             $table->timestamp('cancels_at')->nullable();
             // Scheduled auto-resume for Subscription::pause($until) — null means an indefinite
             // pause, only resume() ends it. See billing:expire-pauses.

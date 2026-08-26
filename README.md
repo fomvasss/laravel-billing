@@ -428,7 +428,8 @@ One route (`POST /billing/webhooks/{gateway}`) handles every gateway, resolved a
 | `PaymentSucceeded` / `PaymentFailed` | A `Payment`'s status resolves to a terminal state |
 | `PaymentRefunded` | `Billing::refund()` created a refund row (see "Refunds") |
 | `PaymentCanceled` | The charge will never complete — the gateway voided/expired it, or reconciliation wrote off a checkout nobody finished. Not the same as `PaymentFailed`: no card was ever refused, so it's usually not worth emailing about |
-| `SubscriptionRenewed` / `SubscriptionPaymentFailed` / `SubscriptionCancelled` | The outcome of a renewal charge, handled by the package's own listener (period advanced / dunning / cancelled after `max_recurring_attempts` or at `cancels_at`) |
+| `SubscriptionRenewed` / `SubscriptionPaymentFailed` / `SubscriptionCancelled` | The outcome of a renewal charge, handled by the package's own listener (period advanced / dunning / cancelled after `max_recurring_attempts` or at `cancels_at`). `SubscriptionRenewed::$previousStatus` says which paid period this is — see "Welcome, renewed, or recovered" |
+| `SubscriptionPeriodEnding` | From `billing:send-period-notices`, at each `period_ending_notices` interval before `current_period_ends_at` (off by default) — `$event->willRenew` says whether the period ends in a charge or in the subscription ending, `$event->notice` which reminder it is |
 | `SubscriptionAccessSuspended` | Only when `grace_access` resolves `false` — fires once, the moment a failed renewal cuts `isActive()` to `false` immediately instead of granting the grace window |
 | `SubscriptionCreated` | Native-subscription gateways only — no built-in driver dispatches it yet |
 | `TrialWillEnd` | From `billing:expire-trials`, at each `trial_ending_notices` interval before `trial_ends_at` (default `['3 days']`; e.g. `['7 days', '3 days', '1 day']` for yearly plans, `['1 hour', '15 minutes']` for hourly rentals) — once per subscription per notice, `$event->notice` says which one fired |
@@ -609,13 +610,13 @@ $subscription->cancel(atPeriodEnd: false); // immediately
 $subscription->swapPlan($newPrice);
 ```
 
-A pause with no `$until` is indefinite — only an explicit `resume()` ends it. `isActive()` is `false` while `paused`, same as `canceled`/`ended`.
+A pause with no `$until` is indefinite — only an explicit `resume()` ends it. `isActive()` is `false` while `paused` — except once `pause_ends_at` has passed, where access comes back at that timestamp rather than waiting for `billing:expire-pauses` to write the status.
 
 `cancel()` at period end only stamps `cancels_at` — the actual status flip (and the guarantee the customer is *not* charged for another period) happens in `billing:process-recurring-charges` when that moment passes. In other words: period-end cancellation requires the schedule to be enabled, same as auto-renewal itself.
 
 ### Recurring charges, reconciliation, trial expiry
 
-Three artisan commands, off by default (`billing.schedule.enabled`, since they touch money and subscription state):
+Five artisan commands, off by default (`billing.schedule.enabled`, since they touch money and subscription state):
 
 ```php
 // config/billing.php
@@ -626,8 +627,9 @@ Three artisan commands, off by default (`billing.schedule.enabled`, since they t
 |---|---|---|
 | `billing:process-recurring-charges` | every minute | First finalizes subscriptions whose `cancels_at` has passed (status → `canceled`, `SubscriptionCancelled` fires) so a period-end cancellation is never billed again. Then finds subscriptions where `current_period_ends_at <= now()` and charges the saved `PaymentMethod` via `chargePaymentMethod()` — unless an earlier renewal `Payment` is still `pending` (webhook not yet resolved), which blocks a second charge for the same period. Only *initiates* the charge — the outcome arrives later through the normal webhook pipeline, handled automatically: the period advances on `PaymentSucceeded`; on `PaymentFailed` the subscription goes `past_due` and is retried on the `retry_intervals` ladder (spaced out, *not* every scheduler run) until `max_recurring_attempts` is reached, then `SubscriptionCancelled`. With the defaults that's the renewal charge, then `+6h`, `+24h`, `+48h`, then cancelled — a card that just failed is worth retrying soon, the third failure in a row is worth waiting on. **No saved card to charge** (never tokenized, or detached since the last renewal) gets the identical grace/retry treatment via `Subscription::recordRenewalFailure()` — it doesn't stall in `active` waiting for a card that never arrives. So does an attempt that never reached the gateway at all (timeout, gateway 5xx): the `Payment` is written off as `failed` rather than left `pending` where it would block this subscription's renewals for good — if the charge did land at the bank after all, its webhook still arrives long before the next retry and flips the row to `paid`. **A renewal that owes nothing** — a metered period with no usage, a licensed one down to zero seats — advances the period directly instead of attempting a zero debit every gateway rejects. |
 | `billing:reconcile-pending-payments` | every 15 min | Fallback for a `Payment` stuck `pending` because a webhook was lost, or a gateway `expired` status that never gets its own webhook. Only looks at payments older than `config('billing.reconcile_after_minutes')` (default 60 min) — that cutoff already delays how soon a stuck payment qualifies, which is why this runs more often than the other two, not hourly like them. A failure on one payment is reported and skipped, never blocks the rest. |
-| `billing:expire-trials` | daily | Dispatches `TrialWillEnd` at each configured `trial_ending_notices` interval (once per subscription per notice; when several become due at once only the closest fires), then moves `trialing` subscriptions past `trial_ends_at` to `ended`. Converting a trial to paid is a normal `chargeWithMethod()` call, same as any renewal (see "Free trial period" in Recipes). |
-| `billing:expire-pauses` | hourly | Resumes `paused` subscriptions whose `pause_ends_at` (set via `pause($until)`) has passed — hourly rather than daily since a paused subscription has no access (`isActive()` false) and no money is at stake. Indefinite pauses (`pause_ends_at` null) are untouched. |
+| `billing:expire-trials` | hourly | Dispatches `TrialWillEnd` at each configured `trial_ending_notices` interval (once per subscription per notice; when several become due at once only the closest fires), then moves `trialing` subscriptions past `trial_ends_at` to `ended`. Converting a trial to paid is a normal `chargeWithMethod()` call, same as any renewal (see "Free trial period" in Recipes). |
+| `billing:send-period-notices` | hourly | Dispatches `SubscriptionPeriodEnding` at each configured `period_ending_notices` interval before a paid period's `current_period_ends_at` — the advance "we'll charge your card on the 14th" notice, or, when the customer has already cancelled (`cancels_at` set), the "your access ends on the 14th" one; `$event->willRenew` tells the two apart. Same once-per-notice rule as the trial notices, per period, and a successful renewal clears the markers so the next period notifies again. Off unless the list is set — `active`, package-managed subscriptions only, since a `trialing` one has its own notices and a `past_due` one is already being dunned. |
+| `billing:expire-pauses` | hourly | Resumes `paused` subscriptions whose `pause_ends_at` (set via `pause($until)`) has passed. Access itself already came back at that timestamp — this writes the status down and fires `SubscriptionResumed`. Indefinite pauses (`pause_ends_at` null) are untouched. |
 | `model:prune` (BillingWebhookCall) | daily | Deletes stored webhook calls older than `webhook.prune_after_days` (default 30). |
 
 None of this fires on its own — `Schedule::command()`/`->hourly()` etc. just register with Laravel's own scheduler, which still needs the standard system cron entry running `php artisan schedule:run` every minute (the usual Laravel deployment requirement, nothing package-specific).
@@ -640,7 +642,8 @@ None of this fires on its own — `Schedule::command()`/`->hourly()` etc. just r
 // e.g. slow the charging down to a nightly batch, speed reconciliation up:
 Schedule::command('billing:process-recurring-charges')->dailyAt('03:00')->withoutOverlapping();
 Schedule::command('billing:reconcile-pending-payments')->everyFiveMinutes()->withoutOverlapping();
-Schedule::command('billing:expire-trials')->daily();
+Schedule::command('billing:expire-trials')->hourly();
+Schedule::command('billing:send-period-notices')->hourly();
 Schedule::command('billing:expire-pauses')->hourly();
 ```
 
@@ -759,6 +762,32 @@ Event::listen([
     TrialWillEnd::class,
 ], LogSubscriptionTransition::class);
 ```
+
+### Welcome, renewed, or recovered
+
+`SubscriptionRenewed` covers three different moments — a trial converting into the first paid
+period, an ordinary auto-renewal, and a renewal that finally went through after a failed attempt.
+By the time the event fires the subscription is `active` in all three, so the event carries the
+status it came from:
+
+```php
+Event::listen(SubscriptionRenewed::class, function (SubscriptionRenewed $event) {
+    $organization = $event->subscription->billable;
+
+    match ($event->previousStatus) {
+        SubscriptionStatus::Trialing => $organization->notify(new SubscriptionWelcome($event->subscription)),
+        SubscriptionStatus::PastDue => $organization->notify(new SubscriptionRestored($event->subscription)),
+        default => $organization->notify(new SubscriptionRenewalReceipt($event->subscription)),
+    };
+});
+```
+
+`previousStatus` is `null` when the transition isn't the package's to know — a provider-managed
+subscription renewed on the gateway's side and the webhook is the first the package hears of it.
+And when *your* code creates a row that is already `active` and then charges it, its first payment
+looks exactly like a renewal (`previousStatus` is `Active`) — you were the one creating the row,
+so send the welcome from there. Creating the row as `trialing` and converting it with a payment
+(the "Free trial period" recipe) keeps all three cases unambiguous.
 
 ### Tokenization / saved cards
 
@@ -1181,8 +1210,9 @@ Things you'd otherwise write yourself in every consumer:
 
 ```php
 // Subscription
-$subscription->isActive();     // entitled to the service right now — trialing, active,
-                               // or past_due but still inside the dunning grace window
+$subscription->isActive();     // entitled to the service right now — a running trial, active,
+                               // past_due but still inside the dunning grace window, or a pause
+                               // whose resume time has come. NOT the same as status === Active
 $subscription->onTrial();      // trialing and trial_ends_at hasn't passed
 $subscription->onGracePeriod();// a renewal failed but retries are still running
 $subscription->isCanceled();
@@ -1191,8 +1221,8 @@ $subscription->hasGraceAccess();// whether past_due keeps access on for this pri
 $subscription->isProviderManaged(); // the gateway owns this subscription's lifecycle
 $subscription->nextPeriodEnd(); // where the period would move on a successful renewal
 
-Subscription::active()->get();               // same definition as isActive(): trialing + active
-                                             // + past_due still inside the grace window
+Subscription::active()->get();               // the same predicate in SQL — kept identical to
+                                             // isActive() by a parity test
 Subscription::forBillable($organization)->get();
 ```
 
@@ -1218,7 +1248,9 @@ Payment::pending()->get();
 Payment::forBillable($organization)->latest()->get();
 ```
 
-`isActive()` is the one to reach for in a gate/middleware — by default it keeps access on during the dunning grace window, so a customer isn't locked out mid-retry over a card that failed once; `config('billing.grace_access')` (or a per-`Price` override) can flip that to cut access on the first failed renewal instead — see Recipes "Cut access immediately instead of granting a grace credit".
+`isActive()` is the one to reach for in a gate/middleware, and it answers a different question than `status === Active`: entitlement is derived from the row's own dates, never from how recently a scheduled command ran. A trial that lapsed at 15:30, a cancellation the customer scheduled for 15:30, a pause due to resume at 15:30 — all three change the answer at 15:30, whether or not `billing:expire-trials`/`billing:expire-pauses` have run since. Those commands only write the status down and fire the events; **turn the schedule off entirely and access control stays correct.** The one boundary deliberately left soft is the end of a paid period: the renewal charge goes out within the minute and resolves through a webhook, so cutting access at `current_period_ends_at` would blink every customer offline on every renewal — that boundary belongs to dunning.
+
+By default it keeps access on during the dunning grace window, so a customer isn't locked out mid-retry over a card that failed once; `config('billing.grace_access')` (or a per-`Price` override) can flip that to cut access on the first failed renewal instead — see Recipes "Cut access immediately instead of granting a grace credit".
 
 ## Enums
 
@@ -1313,6 +1345,7 @@ Every setting is a config key first; the env vars below are what `config/billing
 | `BILLING_QUEUE` | app default | Queue name for it — give webhooks their own so a busy default queue can't delay marking payments paid. |
 | `BILLING_MAX_RECURRING_ATTEMPTS` | `4` | Charge attempts a renewal gets in total — the first one plus the retries — before the subscription is cancelled. |
 | `billing.retry_intervals` (no env) | `['6 hours', '24 hours', '48 hours']` | How long to wait after each failed renewal; the last entry repeats if the list is shorter than the attempts, `[]` means no retries at all. Per-`Price` override available. |
+| `billing.period_ending_notices` (no env) | `[]` | When `SubscriptionPeriodEnding` fires before a paid period ends — same entry shape as the trial notices. Empty means no advance notices at all. Per-`Price` override available. |
 | `BILLING_GRACE_PERIOD_DAYS` | `3` | How long `past_due` keeps `onGracePeriod()` true past the next retry. |
 | `BILLING_GRACE_ACCESS` | `true` | Whether `isActive()` stays true through that window, or access is cut on the first failed renewal. Per-`Price` override available. |
 | `BILLING_RENEWAL_RECEIPT_ITEMS` | `false` | Whether a scheduled renewal carries a generic one-line fiscal basket (the plan name, the payment's full amount). Bind `RenewalChargeOptionsContract` for a real one — see "Fiscalizing a renewal". |

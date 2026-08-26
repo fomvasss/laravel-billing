@@ -41,6 +41,7 @@ class Subscription extends Model
             'trial_ends_at' => 'datetime',
             'trial_notices_sent' => 'array',
             'current_period_ends_at' => 'datetime',
+            'period_notices_sent' => 'array',
             'cancels_at' => 'datetime',
             'pause_ends_at' => 'datetime',
             'grace_ends_at' => 'datetime',
@@ -192,6 +193,10 @@ class Subscription extends Model
         }
 
         $price = $this->price;
+        // Captured before the update — by dispatch time the row is `active` either way, and the
+        // transition it came from is what tells a welcome apart from a renewal (same reason
+        // recordRenewalFailure() captures $wasPastDue).
+        $previousStatus = $this->status;
 
         $this->update([
             'status' => SubscriptionStatus::Active,
@@ -200,6 +205,9 @@ class Subscription extends Model
             // stamp process-recurring-charges (whereNotNull gateway) would never renew it.
             'gateway' => $this->gateway ?? $gateway,
             'current_period_ends_at' => $this->nextPeriodEnd(),
+            // A fresh period gets a fresh set of ending notices — the old markers described the
+            // period that just got paid for.
+            'period_notices_sent' => null,
             'recurring_attempts' => 0,
             'grace_ends_at' => null,
             'next_retry_at' => null,
@@ -212,7 +220,7 @@ class Subscription extends Model
                 : $this->current_usage,
         ]);
 
-        SubscriptionRenewed::dispatch($this);
+        SubscriptionRenewed::dispatch($this, $previousStatus);
 
         return true;
     }
@@ -307,6 +315,20 @@ class Subscription extends Model
     }
 
     /**
+     * When SubscriptionPeriodEnding fires before current_period_ends_at: the Price's own
+     * period_ending_notices when it has one, otherwise config('billing.period_ending_notices').
+     * null on the Price means "use the global list", [] means "no notices for this price". Same
+     * entry shape as trial_ending_notices (a CarbonInterval string, or an int = minutes), and off
+     * globally by default — an advance renewal notice is a policy, not a universal need.
+     *
+     * @return list<string|int>
+     */
+    public function periodEndingNotices(): array
+    {
+        return array_values($this->price?->period_ending_notices ?? (array) config('billing.period_ending_notices', []));
+    }
+
+    /**
      * Whether isActive() stays true for a past_due subscription while dunning retries run
      * (grace_access=true, the default) or turns false the moment the first renewal fails
      * (grace_access=false) — config('billing.grace_access'), overridable per Price. Purely an
@@ -332,14 +354,37 @@ class Subscription extends Model
 
     /**
      * "Is the customer entitled to the service right now" — the one check most consumer code
-     * actually wants. True while trialing, active, or still inside the dunning grace window
-     * (a failed renewal shouldn't cut access off mid-retry); false once canceled/ended/paused.
+     * actually wants, and deliberately NOT the same question as `status === Active`.
+     *
+     * Entitlement is derived from the row's own dates, never from how recently a scheduled command
+     * ran: `billing:expire-trials`, `billing:expire-pauses` and the cancellation pass of
+     * `billing:process-recurring-charges` only materialize a status that this method already
+     * treats as settled. Turn the whole schedule off and access stays correct — only events and
+     * housekeeping stop. Three boundaries are hard, because nothing that happens later can undo
+     * them: a trial that ran out, a cancellation the customer already scheduled, and a pause whose
+     * resume time has come (access returns at pause_ends_at, not at the next hourly run).
+     *
+     * The end of a paid period is deliberately NOT one of them: the renewal charge goes out within
+     * the minute and resolves asynchronously through a webhook, so cutting access at
+     * current_period_ends_at would blink every customer offline on every renewal. That boundary is
+     * dunning's job — past_due plus the grace window.
+     *
+     * scopeActive() is the same predicate in SQL and is covered by a parity test — change one,
+     * change both.
      */
     public function isActive(): bool
     {
+        if ($this->cancels_at !== null && $this->cancels_at->isPast()) {
+            return false;
+        }
+
         return match ($this->status) {
-            SubscriptionStatus::Trialing, SubscriptionStatus::Active => true,
+            SubscriptionStatus::Trialing => $this->trial_ends_at === null || $this->trial_ends_at->isFuture(),
+            SubscriptionStatus::Active => true,
             SubscriptionStatus::PastDue => $this->hasGraceAccess() && $this->onGracePeriod(),
+            // A scheduled resume that is already due: expire-pauses will flip the status on its
+            // next run, but the customer's own instruction took effect at pause_ends_at.
+            SubscriptionStatus::Paused => $this->pause_ends_at !== null && $this->pause_ends_at->isPast(),
             default => false,
         };
     }
@@ -368,8 +413,10 @@ class Subscription extends Model
     }
 
     /**
-     * Same definition as isActive() — entitled to the service right now, INCLUDING past_due still
-     * inside the dunning grace window.
+     * The SQL half of isActive() — same predicate, same three hard boundaries, including past_due
+     * still inside the dunning grace window. Kept honest by a parity test that runs one fixture
+     * matrix through both halves and demands the same answer, so this is not a comment asking to
+     * be remembered: change one, the test fails until you change the other.
      *
      * @param  Builder<self>  $query
      */
@@ -380,19 +427,28 @@ class Subscription extends Model
         // is actually true (grace_access=false on a Price is never included either way).
         $graceAccessDefault = (bool) config('billing.grace_access', true);
 
-        $query->where(function (Builder $query) use ($graceAccessDefault) {
-            $query->whereIn('status', [SubscriptionStatus::Trialing, SubscriptionStatus::Active])
-                ->orWhere(fn (Builder $query) => $query
-                    ->where('status', SubscriptionStatus::PastDue)
-                    ->where('grace_ends_at', '>', now())
-                    ->whereHas('price', function (Builder $priceQuery) use ($graceAccessDefault) {
-                        $priceQuery->where('grace_access', true);
+        $query
+            ->where(fn (Builder $query) => $query->whereNull('cancels_at')->orWhere('cancels_at', '>', now()))
+            ->where(function (Builder $query) use ($graceAccessDefault) {
+                $query->where(fn (Builder $query) => $query
+                    ->where('status', SubscriptionStatus::Trialing)
+                    ->where(fn (Builder $query) => $query->whereNull('trial_ends_at')->orWhere('trial_ends_at', '>', now())))
+                    ->orWhere('status', SubscriptionStatus::Active)
+                    ->orWhere(fn (Builder $query) => $query
+                        ->where('status', SubscriptionStatus::Paused)
+                        ->whereNotNull('pause_ends_at')
+                        ->where('pause_ends_at', '<=', now()))
+                    ->orWhere(fn (Builder $query) => $query
+                        ->where('status', SubscriptionStatus::PastDue)
+                        ->where('grace_ends_at', '>', now())
+                        ->whereHas('price', function (Builder $priceQuery) use ($graceAccessDefault) {
+                            $priceQuery->where('grace_access', true);
 
-                        if ($graceAccessDefault) {
-                            $priceQuery->orWhereNull('grace_access');
-                        }
-                    }));
-        });
+                            if ($graceAccessDefault) {
+                                $priceQuery->orWhereNull('grace_access');
+                            }
+                        }));
+            });
     }
 
     /** @param  Builder<self>  $query */

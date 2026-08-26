@@ -424,7 +424,8 @@ sequenceDiagram
 | `PaymentSucceeded` / `PaymentFailed` | Статус `Payment` дійшов до термінального стану |
 | `PaymentRefunded` | `Billing::refund()` створив рядок повернення (див. "Повернення коштів") |
 | `PaymentCanceled` | Списання вже не відбудеться — гейтвей його скасував/протермінував, або реконсиляція списала мертвий чекаут. Не те саме, що `PaymentFailed`: картку ніхто не відхиляв, тож писати клієнту зазвичай нема про що |
-| `SubscriptionRenewed` / `SubscriptionPaymentFailed` / `SubscriptionCancelled` | Результат рекурентного списання, оброблений власним лістенером пакета (період посунуто / dunning / скасовано після `max_recurring_attempts` або в момент `cancels_at`) |
+| `SubscriptionRenewed` / `SubscriptionPaymentFailed` / `SubscriptionCancelled` | Результат рекурентного списання, оброблений власним лістенером пакета (період посунуто / dunning / скасовано після `max_recurring_attempts` або в момент `cancels_at`). `SubscriptionRenewed::$previousStatus` каже, який саме це оплачений період — див. «Вітання, продовження чи відновлення» |
+| `SubscriptionPeriodEnding` | З `billing:send-period-notices`, на кожному інтервалі `period_ending_notices` перед `current_period_ends_at` (за замовчуванням вимкнено) — `$event->willRenew` каже, чим завершиться період: списанням чи закінченням підписки, `$event->notice` — яке це нагадування |
 | `SubscriptionAccessSuspended` | Лише коли `grace_access` резолвиться в `false` — фаєриться один раз, у момент коли невдале списання одразу обнулює `isActive()`, замість надання grace-вікна |
 | `SubscriptionCreated` | Лише гейтвеї з нативними підписками — жоден вбудований драйвер поки її не диспатчить |
 | `TrialWillEnd` | З `billing:expire-trials`, на кожному інтервалі `trial_ending_notices` до `trial_ends_at` (дефолт `['3 days']`; напр. `['7 days', '3 days', '1 day']` для річних, `['1 hour', '15 minutes']` для погодинної оренди) — раз на підписку на кожне нагадування, `$event->notice` каже, яке саме спрацювало |
@@ -605,13 +606,13 @@ $subscription->cancel(atPeriodEnd: false); // негайно
 $subscription->swapPlan($newPrice);
 ```
 
-Пауза без `$until` — безстрокова, завершує її лише явний `resume()`. `isActive()` — `false`, поки `paused`, так само, як `canceled`/`ended`.
+Пауза без `$until` — безстрокова, завершує її лише явний `resume()`. `isActive()` — `false`, поки `paused`, окрім випадку, коли `pause_ends_at` уже минув: тоді доступ повертається саме в цей момент, не чекаючи, доки `billing:expire-pauses` перепише статус.
 
 `cancel()` на кінець періоду лише проставляє `cancels_at` — фактична зміна статусу (і гарантія, що клієнта *не* спишуть за наступний період) відбувається в `billing:process-recurring-charges`, коли цей момент настає. Тобто скасування на кінець періоду потребує увімкненого розкладу — так само, як і саме автопродовження.
 
 ### Рекурентні списання, реконсиляція, спливання тріалу
 
-Три artisan-команди, вимкнені за замовчуванням (`billing.schedule.enabled`, бо стосуються грошей і стану підписок):
+П'ять artisan-команд, вимкнені за замовчуванням (`billing.schedule.enabled`, бо стосуються грошей і стану підписок):
 
 ```php
 // config/billing.php
@@ -622,8 +623,9 @@ $subscription->swapPlan($newPrice);
 |---|---|---|
 | `billing:process-recurring-charges` | щохвилини | Спершу фіналізує підписки, чий `cancels_at` настав (статус → `canceled`, диспатчиться `SubscriptionCancelled`) — скасування на кінець періоду ніколи не буде списане ще раз. Далі знаходить підписки з `current_period_ends_at <= now()` і списує зі збереженого `PaymentMethod` через `chargePaymentMethod()` — крім випадку, коли попередній renewal-`Payment` ще `pending` (вебхук не дійшов): це блокує друге списання за той самий період. Лише ІНІЦІЮЄ списання — результат приходить пізніше через звичайний webhook pipeline, обробляється автоматично: період посувається при `PaymentSucceeded`; при `PaymentFailed` підписка стає `past_due` і ретраїться за драбинкою `retry_intervals` (з інтервалами, а *не* кожен запуск планувальника) до вичерпання `max_recurring_attempts`, далі `SubscriptionCancelled`. З дефолтами це саме продовження, потім `+6 год`, `+24 год`, `+48 год`, далі скасування — картку, яка щойно не пройшла, варто спробувати скоро, а третю поспіль невдачу варто перечекати. **Якщо картки для списання нема взагалі** (не токенізована або відв'язана після останнього продовження) — той самий grace/retry цикл через `Subscription::recordRenewalFailure()`, а не завмирання в `active` в очікуванні картки, якої не буде. Так само зі спробою, яка взагалі не дійшла до гейтвея (таймаут, 5xx гейтвея): `Payment` списується як `failed`, а не лишається `pending`, звідки він назавжди блокував би продовження цієї підписки — а якщо списання все ж дійшло до банку, його вебхук прийде задовго до наступного ретраю і переведе рядок у `paid`. **Продовження, за яке нема чого списувати** — metered-період без споживання, licensed із нулем місць — просто посуває період, замість спроби нульового списання, яке відхилить будь-який гейтвей. |
 | `billing:reconcile-pending-payments` | кожні 15 хв | Fallback для `Payment`, що завис `pending` через загублений вебхук, або статус `expired` гейтвея, для якого власного вебхука не буває. Бере лише платежі старші за `config('billing.reconcile_after_minutes')` (дефолт 60 хв) — цей cutoff уже сам по собі відкладає, коли платіж кваліфікується як "завис", тому ця команда запускається частіше за інші дві, не щогодини. Помилка на одному платежі репортиться й пропускається, ніколи не блокує решту. |
-| `billing:expire-trials` | щодня | Диспатчить `TrialWillEnd` на кожному сконфігурованому інтервалі `trial_ending_notices` (раз на підписку на нагадування; якщо кілька стали due одночасно — фаєриться лише найближче), потім переводить `trialing`-підписки з простроченим `trial_ends_at` у `ended`. Конвертація trial у платну підписку — звичайний виклик `chargeWithMethod()`, той самий, що й будь-яке продовження (див. "Безкоштовний період" у Практичних прикладах). |
-| `billing:expire-pauses` | щогодини | Повертає `paused`-підписки з простроченим `pause_ends_at` (виставленим через `pause($until)`) у `active` — щогодини, а не щодня, бо в paused-статусі нема доступу (`isActive()` false) і гроші не рухаються. Безстрокові паузи (`pause_ends_at` null) не чіпає. |
+| `billing:expire-trials` | щогодини | Диспатчить `TrialWillEnd` на кожному сконфігурованому інтервалі `trial_ending_notices` (раз на підписку на нагадування; якщо кілька стали due одночасно — фаєриться лише найближче), потім переводить `trialing`-підписки з простроченим `trial_ends_at` у `ended`. Конвертація trial у платну підписку — звичайний виклик `chargeWithMethod()`, той самий, що й будь-яке продовження (див. "Безкоштовний період" у Практичних прикладах). |
+| `billing:send-period-notices` | щогодини | Диспатчить `SubscriptionPeriodEnding` на кожному інтервалі зі списку `period_ending_notices` перед `current_period_ends_at` оплаченого періоду — попередження «спишемо картку 14-го», а для вже скасованої підписки (виставлений `cancels_at`) — «доступ закінчується 14-го»; розрізняє їх `$event->willRenew`. Правило «одне нагадування раз» те саме, що в тріалів, але на період, і успішне продовження скидає маркери, щоб наступний період нагадав знову. Мовчить, поки список порожній — тільки `active` і тільки підписки, керовані пакетом, бо в `trialing` свої нагадування, а `past_due` уже в dunning. |
+| `billing:expire-pauses` | щогодини | Повертає `paused`-підписки з простроченим `pause_ends_at` (виставленим через `pause($until)`) у `active`. Сам доступ повернувся вже в момент цієї дати — команда записує статус і диспатчить `SubscriptionResumed`. Безстрокові паузи (`pause_ends_at` null) не чіпає. |
 | `model:prune` (BillingWebhookCall) | щодня | Видаляє збережені webhook-виклики, старші за `webhook.prune_after_days` (дефолт 30). |
 
 Ніщо з цього не запускається саме собою — `Schedule::command()`/`->hourly()` тощо лише реєструються у власному Laravel-планувальнику застосунку, якому все одно потрібен стандартний системний cron-запис `php artisan schedule:run` щохвилини (звичайна вимога деплою Laravel, не специфіка пакета).
@@ -636,7 +638,8 @@ $subscription->swapPlan($newPrice);
 // напр. сповільнити списання до нічного батчу, а реконсиляцію пришвидшити:
 Schedule::command('billing:process-recurring-charges')->dailyAt('03:00')->withoutOverlapping();
 Schedule::command('billing:reconcile-pending-payments')->everyFiveMinutes()->withoutOverlapping();
-Schedule::command('billing:expire-trials')->daily();
+Schedule::command('billing:expire-trials')->hourly();
+Schedule::command('billing:send-period-notices')->hourly();
 Schedule::command('billing:expire-pauses')->hourly();
 ```
 
@@ -755,6 +758,31 @@ Event::listen([
     TrialWillEnd::class,
 ], LogSubscriptionTransition::class);
 ```
+
+### Вітання, продовження чи відновлення
+
+`SubscriptionRenewed` покриває три різні моменти — конвертацію тріалу в перший оплачений період,
+звичайне автопродовження і продовження, яке нарешті пройшло після невдалої спроби. На момент
+події підписка в усіх трьох випадках уже `active`, тому подія несе статус, з якого вона прийшла:
+
+```php
+Event::listen(SubscriptionRenewed::class, function (SubscriptionRenewed $event) {
+    $organization = $event->subscription->billable;
+
+    match ($event->previousStatus) {
+        SubscriptionStatus::Trialing => $organization->notify(new SubscriptionWelcome($event->subscription)),
+        SubscriptionStatus::PastDue => $organization->notify(new SubscriptionRestored($event->subscription)),
+        default => $organization->notify(new SubscriptionRenewalReceipt($event->subscription)),
+    };
+});
+```
+
+`previousStatus` — `null`, коли перехід пакету невідомий: підписка керується провайдером,
+продовжилась на його боці, і вебхук — перше, що пакет про це чує. А якщо ваш код створює рядок
+одразу `active` і потім бере з нього платіж, перша оплата виглядає точно як продовження
+(`previousStatus` = `Active`) — рядок створювали ви, тож вітання шліть звідти. Створення рядка
+як `trialing` з конвертацією платежем (рецепт «Безкоштовний період») лишає всі три випадки
+однозначними.
 
 ### Токенізація / збережені картки
 
@@ -1177,7 +1205,7 @@ $shares = $discount->allocate([$line1->amount, $line2->amount]);
 
 ```php
 // Subscription
-$subscription->isActive();     // має право користуватись сервісом прямо зараз — trialing, active,
+$subscription->isActive();     // має право користуватись сервісом прямо зараз — активний тріал, active,
                                // або past_due, але ще в межах grace-вікна dunning'у
 $subscription->onTrial();      // trialing і trial_ends_at ще не минув
 $subscription->onGracePeriod();// продовження не вдалось, але ретраї ще тривають
@@ -1187,7 +1215,7 @@ $subscription->hasGraceAccess();// чи тримає past_due доступ дл�
 $subscription->isProviderManaged(); // життєвим циклом підписки володіє гейтвей
 $subscription->nextPeriodEnd(); // куди зсунеться період при успішному продовженні
 
-Subscription::active()->get();               // те саме визначення, що isActive(): trialing + active
+Subscription::active()->get();               // той самий предикат у SQL — тримається ідентичним
                                              // + past_due, що ще в межах grace-вікна
 Subscription::forBillable($organization)->get();
 ```
@@ -1214,7 +1242,9 @@ Payment::pending()->get();
 Payment::forBillable($organization)->latest()->get();
 ```
 
-`isActive()` — саме те, що варто використовувати в gate/middleware: за замовчуванням він лишає доступ увімкненим на час grace-вікна, щоб клієнта не відрізало посеред ретраїв через картку, яка один раз не пройшла; `config('billing.grace_access')` (або override per `Price`) може перемкнути це на закриття доступу вже при першій невдалій спробі — див. Практичні приклади "Закривати доступ негайно, а не давати кредит часу".
+`isActive()` — саме те, що варто використовувати в gate/middleware, і він відповідає не на те саме питання, що `status === Active`: право доступу виводиться з дат самого рядка, а не з того, коли востаннє відпрацювала команда розкладу. Тріал, що скінчився о 15:30, скасування, призначене клієнтом на 15:30, пауза з поверненням о 15:30 — усі три міняють відповідь саме о 15:30, незалежно від того, чи встигли відпрацювати `billing:expire-trials`/`billing:expire-pauses`. Ці команди лише записують статус і диспатчать події; **вимкни розклад повністю — контроль доступу лишиться коректним.** Єдина межа, свідомо лишена м'якою, — кінець оплаченого періоду: списання йде в ту саму хвилину й резолвиться вебхуком, тож обрізання доступу по `current_period_ends_at` блимало б відключенням у кожного клієнта на кожному продовженні — цю межу обслуговує dunning.
+
+За замовчуванням він лишає доступ увімкненим на час grace-вікна, щоб клієнта не відрізало посеред ретраїв через картку, яка один раз не пройшла; `config('billing.grace_access')` (або override per `Price`) може перемкнути це на закриття доступу вже при першій невдалій спробі — див. Практичні приклади "Закривати доступ негайно, а не давати кредит часу".
 
 ## Enum'и
 
@@ -1309,6 +1339,7 @@ Billing::charge($payment);
 | `BILLING_QUEUE` | дефолт застосунку | Черга для нього — виділи вебхукам власну, щоб завантажена дефолтна не відкладала помітку платежів оплаченими. |
 | `BILLING_MAX_RECURRING_ATTEMPTS` | `4` | Скільки всього спроб списання дістається продовженню — саме продовження плюс ретраї — до скасування підписки. |
 | `billing.retry_intervals` (без env) | `['6 hours', '24 hours', '48 hours']` | Скільки чекати після кожної невдалої спроби; якщо список коротший за кількість спроб — повторюється останній елемент, `[]` означає ретраїв нема взагалі. Є override на рівні `Price`. |
+| `billing.period_ending_notices` (без env) | `[]` | Коли фаєриться `SubscriptionPeriodEnding` перед завершенням оплаченого періоду — формат записів той самий, що в тріальних нагадуваннях. Порожній список = попереджень нема взагалі. Є override на рівні `Price`. |
 | `BILLING_GRACE_PERIOD_DAYS` | `3` | Скільки `past_due` тримає `onGracePeriod()` істинним ПІСЛЯ наступного ретраю. |
 | `BILLING_GRACE_ACCESS` | `true` | Чи лишається `isActive()` істинним у цьому вікні, чи доступ обрізається на першій невдачі. Є override на рівні `Price`. |
 | `BILLING_RENEWAL_RECEIPT_ITEMS` | `false` | Чи несе планове продовження загальний однорядковий фіскальний кошик (назва плану, уся сума платежу). Для справжнього чека — прив'язка `RenewalChargeOptionsContract`, див. «Фіскалізація продовження». |

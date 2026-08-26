@@ -21,6 +21,8 @@ return new class extends Migration
             $table->unsignedInteger('trial_days')->default(0);
             // Per-price override of config('billing.trial_ending_notices'): null = global list, [] = off.
             $table->json('trial_ending_notices')->nullable();
+            // Per-price override of config('billing.period_ending_notices'): null = global list, [] = off.
+            $table->json('period_ending_notices')->nullable();
             // Per-price override of config('billing.retry_intervals'): null = global list, [] = no retries.
             $table->json('retry_intervals')->nullable();
             // Per-price override of config('billing.grace_access'): null = global default.

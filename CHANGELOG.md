@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.5.1] - 2026-08-26
+
+### Added
+- **An article code on the renewal receipt line.** With `billing.renewal.receipt_items` on, the default resolver now also reads `prices.meta['receipt_sku']` and puts it on the basket line as `sku` — which Monobank sends as `basketOrder.code`. Until now the only way to add one was to replace the whole resolver through `RenewalChargeOptionsContract`, which is a lot of ceremony for one string; the name has been readable from `prices.meta['receipt_name']` all along, so this is the missing half of that pair. A price without the key produces a line with no `code` at all, exactly as before.
+
 ## [0.5.0] - 2026-08-26
 
 ### Added

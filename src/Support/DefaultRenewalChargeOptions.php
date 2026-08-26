@@ -27,7 +27,7 @@ class DefaultRenewalChargeOptions implements RenewalChargeOptionsContract
 
         $price = $subscription->price;
 
-        return new ChargeOptions(receiptItems: [[
+        return new ChargeOptions(receiptItems: [array_filter([
             'name' => $price->meta['receipt_name'] ?? $price->plan->name,
             // One line at qty 1 for the payment's full amount, never qty × unit price: a licensed
             // price charges whole seats and a metered one a fractional quantity, while unitAmount
@@ -35,6 +35,10 @@ class DefaultRenewalChargeOptions implements RenewalChargeOptionsContract
             // a kopiyka and fail the receipt-total check before the gateway ever sees it.
             'qty' => 1,
             'unitAmount' => $payment->amount,
-        ]]);
+            // The article code a fiscal receipt carries (Monobank's basketOrder.code). Read from
+            // the price for the same reason as the name above: without it, adding one string to a
+            // receipt would mean replacing this whole resolver through RenewalChargeOptionsContract.
+            'sku' => $price->meta['receipt_sku'] ?? null,
+        ], static fn ($value) => $value !== null)]);
     }
 }

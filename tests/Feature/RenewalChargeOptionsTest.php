@@ -78,6 +78,39 @@ class RenewalChargeOptionsTest extends TestCase
         Http::assertSent(fn ($request) => $request['merchantPaymInfo']['basketOrder'][0]['name'] === 'Послуга "Pro", 1 міс');
     }
 
+    /** The article code a fiscal receipt carries — Monobank maps `sku` onto `basketOrder.code`. */
+    public function test_the_price_can_carry_an_article_code(): void
+    {
+        config()->set('billing.renewal.receipt_items', true);
+
+        Http::fake([
+            'https://api.monobank.ua/api/merchant/wallet/payment' => Http::response(['invoiceId' => 'inv_1']),
+        ]);
+
+        $subscription = $this->makeDueSubscription('monobank');
+        $subscription->price->update(['meta' => ['receipt_sku' => 'pro-month']]);
+
+        $this->artisan('billing:process-recurring-charges')->assertExitCode(0);
+
+        Http::assertSent(fn ($request) => $request['merchantPaymInfo']['basketOrder'][0]['code'] === 'pro-month');
+    }
+
+    /** No code configured — the line goes out without one, not with an empty string. */
+    public function test_the_basket_line_omits_the_code_when_the_price_has_none(): void
+    {
+        config()->set('billing.renewal.receipt_items', true);
+
+        Http::fake([
+            'https://api.monobank.ua/api/merchant/wallet/payment' => Http::response(['invoiceId' => 'inv_1']),
+        ]);
+
+        $this->makeDueSubscription('monobank');
+
+        $this->artisan('billing:process-recurring-charges')->assertExitCode(0);
+
+        Http::assertSent(fn ($request) => ! array_key_exists('code', $request['merchantPaymInfo']['basketOrder'][0]));
+    }
+
     /**
      * The whole point of resolving ChargeOptions rather than just receipt items: a renewal has no
      * request behind it, so the description and the customer's IP (LiqPay demands one for an

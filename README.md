@@ -683,7 +683,7 @@ The cheap way in, for a flat subscription that just needs *a* line on the receip
 'renewal' => ['receipt_items' => true],
 ```
 
-Every renewal now carries a one-line basket — the payment's full amount, `qty` 1, named after the plan (or after `prices.meta['receipt_name']`, if you'd rather write "Підписка «Pro», 1 міс" than "Pro"). That is as far as a generic implementation can go without inventing data: `licensed` charges whole seats and `metered` a fractional quantity, so splitting the total into `qty × unitAmount` would round off a kopiyka and fail the receipt-total check.
+Every renewal now carries a one-line basket — the payment's full amount, `qty` 1, named after the plan (or after `prices.meta['receipt_name']`, if you'd rather write "Підписка «Pro», 1 міс" than "Pro"), and carrying the article code from `prices.meta['receipt_sku']` when it is set (Monobank puts it in `basketOrder.code`; omitted entirely when the price has none). That is as far as a generic implementation can go without inventing data: `licensed` charges whole seats and `metered` a fractional quantity, so splitting the total into `qty × unitAmount` would round off a kopiyka and fail the receipt-total check.
 
 For anything richer — per-seat lines, tax codes, UKTZED, LiqPay's `rro_info` — bind your own. It also fills in what a renewal otherwise has no source for: the description, the customer's email, and the IP (LiqPay requires one for an off-session `paytoken` charge; Hutko sends `127.0.0.1` without it):
 

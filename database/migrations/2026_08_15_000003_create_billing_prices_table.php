@@ -30,6 +30,11 @@ return new class extends Migration
             $table->string('external_price_id')->nullable();
             $table->string('unit_label')->nullable();
             $table->decimal('included_units', 18, 4)->nullable();
+            // A quota cycle of its own, independent of the billing one: "pay yearly, get
+            // included_units every month". Null = the quota lives on the billing period, which is
+            // the ordinary case and stays untouched. Only meaningful together with included_units.
+            $table->string('quota_interval', 20)->nullable();
+            $table->unsignedInteger('quota_interval_count')->default(1);
             $table->boolean('is_active')->default(true);
             // Opaque, consumer-controlled — the package never reads or writes it (same as Plan.meta).
             $table->json('meta')->nullable();

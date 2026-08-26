@@ -33,6 +33,8 @@ class Price extends Model
             'grace_access' => 'boolean',
             'pricing_type' => PricingType::class,
             'included_units' => 'float',
+            'quota_interval' => Interval::class,
+            'quota_interval_count' => 'integer',
             'is_active' => 'boolean',
             'meta' => 'array',
         ];
@@ -55,6 +57,17 @@ class Price extends Model
     public function money(): Money
     {
         return new Money($this->amount, $this->currency);
+    }
+
+    /**
+     * Whether the quota renews on its own cycle instead of on the billing period — the "pay for a
+     * year, get 10 000 units every month" shape. Both halves are required on purpose: a quota
+     * interval without included_units has nothing to reset, so it is treated as absent rather than
+     * as a broken configuration that would silently zero a counter the consumer owns.
+     */
+    public function hasOwnQuotaCycle(): bool
+    {
+        return $this->quota_interval !== null && $this->included_units !== null;
     }
 
     /**

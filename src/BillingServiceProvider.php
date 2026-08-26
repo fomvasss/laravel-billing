@@ -76,6 +76,7 @@ class BillingServiceProvider extends ServiceProvider
                 ExpireTrialsCommand::class,
                 ExpirePausesCommand::class,
                 \Fomvasss\Billing\Console\SendPeriodNoticesCommand::class,
+                \Fomvasss\Billing\Console\ResetUsageQuotasCommand::class,
                 \Fomvasss\Billing\Console\StripeRegisterWebhookCommand::class,
                 \Fomvasss\Billing\Console\HealthCommand::class,
             ]);
@@ -217,6 +218,10 @@ class BillingServiceProvider extends ServiceProvider
             $schedule->command('billing:expire-trials')->hourly();
             $schedule->command('billing:send-period-notices')->hourly();
             $schedule->command('billing:expire-pauses')->hourly();
+            // Same reasoning, one caveat of its own: a late run means the customer keeps hitting
+            // "quota exhausted" past the boundary, so this is the one hourly pass whose lag is
+            // visible to the customer rather than only to reports.
+            $schedule->command('billing:reset-usage-quotas')->hourly();
             $schedule->command('model:prune', ['--model' => [\Fomvasss\Billing\Webhooks\BillingWebhookCall::class]])->daily();
         });
     }

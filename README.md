@@ -438,6 +438,7 @@ One route (`POST /billing/webhooks/{gateway}`) handles every gateway, resolved a
 | `PaymentLinkOpened` | Someone opened the permanent pay link (`billing.pay`, see "Permanent payment link") — analytics only |
 | `PaymentMethodAttached` / `PaymentMethodDetached` | A saved card/token is attached or removed |
 | `UsageLimitReached` | `Subscription::reportUsage()` crosses `price.included_units` |
+| `SubscriptionQuotaReset` | a quota cycle of its own (`price.quota_interval`) rolled over — the allowance is back |
 
 Listen for them the usual way:
 
@@ -599,6 +600,26 @@ $subscription->remainingUsage(); // null if the price has no quota at all
 
 On a successful renewal, `current_usage` resets to 0 whenever the price has a quota (`included_units` set) or is `metered` — a fresh paid period means a fresh allowance, nothing to reset yourself. Quota-less `flat`/`licensed` usage is left untouched: there it's just a counter your app owns.
 
+#### A quota cycle of its own
+
+By default the allowance lives on the billing period, so a yearly price hands out a year's worth up front. When you sell "pay for a year, get 10,000 units **every month**", give the price a quota cycle independent of the billing one:
+
+```php
+Price::create([
+    'interval' => 'year',  'interval_count' => 1,          // charged once a year
+    'quota_interval' => 'month', 'quota_interval_count' => 1,  // allowance renews monthly
+    'included_units' => 10000,
+]);
+```
+
+`billing:reset-usage-quotas` (hourly) zeroes `current_usage` when `subscriptions.quota_period_ends_at` passes, moves the boundary to the next one and fires `SubscriptionQuotaReset`. `remainingUsage()` needs no changes — it reads the same counter either way.
+
+- `quota_interval` is only honoured together with `included_units`: on its own there is nothing to reset, so it is ignored rather than zeroing a counter your app owns.
+- Unused allowance **expires, it does not accumulate**: a gap of three missed cycles (a scheduler outage, say) grants one fresh allowance, not three.
+- A paid renewal restarts the cycle from that moment — the allowance was just zeroed, so the next reset is a full cycle away.
+- Provider-managed subscriptions are reset too, unlike every other scheduled command here: a quota reset touches no gateway and no money, and the counter is the package's own bookkeeping whoever runs the billing.
+- Paused and ended subscriptions keep their stale boundary and get a fresh allowance when they resume — quota for a subscription nobody is paying for would be a quiet giveaway.
+
 ### Pause / resume / cancel
 
 ```php
@@ -630,6 +651,7 @@ Five artisan commands, off by default (`billing.schedule.enabled`, since they to
 | `billing:expire-trials` | hourly | Dispatches `TrialWillEnd` at each configured `trial_ending_notices` interval (once per subscription per notice; when several become due at once only the closest fires), then moves `trialing` subscriptions past `trial_ends_at` to `ended`. Converting a trial to paid is a normal `chargeWithMethod()` call, same as any renewal (see "Free trial period" in Recipes). |
 | `billing:send-period-notices` | hourly | Dispatches `SubscriptionPeriodEnding` at each configured `period_ending_notices` interval before a paid period's `current_period_ends_at` — the advance "we'll charge your card on the 14th" notice, or, when the customer has already cancelled (`cancels_at` set), the "your access ends on the 14th" one; `$event->willRenew` tells the two apart. Same once-per-notice rule as the trial notices, per period, and a successful renewal clears the markers so the next period notifies again. Off unless the list is set — `active`, package-managed subscriptions only, since a `trialing` one has its own notices and a `past_due` one is already being dunned. |
 | `billing:expire-pauses` | hourly | Resumes `paused` subscriptions whose `pause_ends_at` (set via `pause($until)`) has passed. Access itself already came back at that timestamp — this writes the status down and fires `SubscriptionResumed`. Indefinite pauses (`pause_ends_at` null) are untouched. |
+| `billing:reset-usage-quotas` | hourly | Zeroes `current_usage` for prices with a quota cycle of their own (`prices.quota_interval`) once `quota_period_ends_at` passes, and fires `SubscriptionQuotaReset`. Unlike the others it does not skip provider-managed rows — the allowance is local bookkeeping. Prices without `quota_interval` are untouched. |
 | `model:prune` (BillingWebhookCall) | daily | Deletes stored webhook calls older than `webhook.prune_after_days` (default 30). |
 
 None of this fires on its own — `Schedule::command()`/`->hourly()` etc. just register with Laravel's own scheduler, which still needs the standard system cron entry running `php artisan schedule:run` every minute (the usual Laravel deployment requirement, nothing package-specific).
@@ -645,6 +667,7 @@ Schedule::command('billing:reconcile-pending-payments')->everyFiveMinutes()->wit
 Schedule::command('billing:expire-trials')->hourly();
 Schedule::command('billing:send-period-notices')->hourly();
 Schedule::command('billing:expire-pauses')->hourly();
+Schedule::command('billing:reset-usage-quotas')->hourly();
 ```
 
 Keep `withoutOverlapping()` on the money-touching commands, and add `onOneServer()` if the scheduler runs on several servers.

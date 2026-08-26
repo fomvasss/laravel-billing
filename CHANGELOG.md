@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.5.0] - 2026-08-26
+
+### Added
+- **A quota cycle independent of the billing one.** Until now the allowance always lived on the billing period, so a yearly price handed out a year's worth of `included_units` up front — there was no way to sell "pay for a year, get 10,000 units every month". A price can now carry its own cadence: `prices.quota_interval` + `prices.quota_interval_count` (same entry shape as `interval`/`interval_count`), and `subscriptions.quota_period_ends_at` tracks the next boundary. A new scheduled command, `billing:reset-usage-quotas` (hourly), zeroes `current_usage` when that boundary passes, moves it forward and dispatches the new `SubscriptionQuotaReset` event. `remainingUsage()`, `reportUsage()` and `UsageLimitReached` are unchanged — they read the same counter either way.
+
+  `quota_interval` is honoured only together with `included_units` (on its own there is nothing to reset). Unused allowance expires rather than accumulating: a gap of several missed cycles grants one fresh allowance, not several. A paid renewal restarts the cycle from that moment. Provider-managed subscriptions are reset too — unlike every other scheduled command here, a quota reset touches no gateway and no money. Paused and ended subscriptions keep their stale boundary and get a fresh allowance when they resume.
+
+  **Nothing changes for prices without `quota_interval`** — the column is nullable, the default stays "the quota follows the paid period", and existing subscriptions are untouched.
+- `prices.quota_interval`, `prices.quota_interval_count` and `subscriptions.quota_period_ends_at` columns, in the existing `billing-migrations-prices` / `billing-migrations-subscriptions` migration groups.
+
 ## [0.4.0] - 2026-08-26
 
 ### Changed

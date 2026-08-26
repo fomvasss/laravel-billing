@@ -10,6 +10,7 @@ use Fomvasss\Billing\Enums\SubscriptionStatus;
 use Fomvasss\Billing\Events\SubscriptionAccessSuspended;
 use Fomvasss\Billing\Events\SubscriptionCancelled;
 use Fomvasss\Billing\Events\SubscriptionPaused;
+use Fomvasss\Billing\Events\SubscriptionQuotaReset;
 use Fomvasss\Billing\Events\SubscriptionPaymentFailed;
 use Fomvasss\Billing\Events\SubscriptionRenewed;
 use Fomvasss\Billing\Events\SubscriptionResumed;
@@ -41,6 +42,7 @@ class Subscription extends Model
             'trial_ends_at' => 'datetime',
             'trial_notices_sent' => 'array',
             'current_period_ends_at' => 'datetime',
+            'quota_period_ends_at' => 'datetime',
             'period_notices_sent' => 'array',
             'cancels_at' => 'datetime',
             'pause_ends_at' => 'datetime',
@@ -60,6 +62,13 @@ class Subscription extends Model
     protected static function booted(): void
     {
         static::creating(function (self $subscription) {
+            // A price with its own quota cycle needs its first boundary from the moment the
+            // subscription starts — including a trial, where the allowance is already usable and
+            // no renewal has happened yet to stamp one.
+            if ($subscription->quota_period_ends_at === null && $subscription->price?->hasOwnQuotaCycle()) {
+                $subscription->quota_period_ends_at = $subscription->nextQuotaPeriodEnd();
+            }
+
             if ($subscription->trial_ends_at !== null || $subscription->status !== SubscriptionStatus::Trialing) {
                 return;
             }
@@ -218,6 +227,12 @@ class Subscription extends Model
             'current_usage' => $price !== null && ($price->pricing_type === PricingType::Metered || $price->included_units !== null)
                 ? 0
                 : $this->current_usage,
+            // A fresh paid period restarts the quota cycle from now, rather than continuing the
+            // old cadence: the allowance was just zeroed above, so the next reset is a full cycle
+            // away no matter where the previous boundary happened to fall.
+            'quota_period_ends_at' => $price?->hasOwnQuotaCycle()
+                ? $this->nextQuotaPeriodEnd(now())
+                : $this->quota_period_ends_at,
         ]);
 
         SubscriptionRenewed::dispatch($this, $previousStatus);
@@ -234,18 +249,68 @@ class Subscription extends Model
             return null;
         }
 
-        $base = $this->current_period_ends_at ?? now();
-        $count = $price->interval_count;
+        // NoOverflow inside advance(): Jan 30 + 1 month is Feb 28, not "Feb 30" spilling into
+        // Mar 2 (Carbon overflows by default). Known simplification: after one clamp the anchor
+        // day stays clamped (Jan 31 → Feb 28 → Mar 28), we don't keep the original day-of-month
+        // the way Stripe's billing anchor does.
+        return $this->advance($this->current_period_ends_at ?? now(), $price->interval, $price->interval_count);
+    }
 
-        return match ($price->interval) {
+    /**
+     * The next quota boundary for a price that renews its allowance on its own cadence
+     * (price.quota_interval) — null for every other price, where the quota simply lives on the
+     * paid period. $base defaults to the current boundary so repeated calls walk the cycle
+     * forward instead of re-anchoring to the moment the method happened to be called.
+     */
+    public function nextQuotaPeriodEnd(?Carbon $base = null): ?Carbon
+    {
+        $price = $this->price;
+
+        if (! $price?->hasOwnQuotaCycle()) {
+            return null;
+        }
+
+        return $this->advance($base ?? $this->quota_period_ends_at ?? now(), $price->quota_interval, $price->quota_interval_count);
+    }
+
+    /**
+     * Zeroes the allowance and moves the boundary to the next future one. Catch-up is deliberate:
+     * if the scheduler was down for three months the customer gets one fresh allowance, not three
+     * — an unused month expires, it does not accumulate. Returns false when there is nothing to
+     * do, so the caller can tell a real reset from a no-op.
+     */
+    public function resetUsageQuota(): bool
+    {
+        if (! $this->price?->hasOwnQuotaCycle() || $this->quota_period_ends_at === null) {
+            return false;
+        }
+
+        if ($this->quota_period_ends_at->isFuture()) {
+            return false;
+        }
+
+        $boundary = $this->quota_period_ends_at;
+
+        // A loop, not a single add: the gap since the missed boundary can span several cycles.
+        do {
+            $boundary = $this->advance($boundary, $this->price->quota_interval, $this->price->quota_interval_count);
+        } while ($boundary->isPast());
+
+        $this->update(['current_usage' => 0, 'quota_period_ends_at' => $boundary]);
+
+        SubscriptionQuotaReset::dispatch($this);
+
+        return true;
+    }
+
+    private function advance(Carbon $base, Interval $interval, int $count): Carbon
+    {
+        return match ($interval) {
             Interval::Minute => $base->copy()->addMinutes($count),
             Interval::Hour => $base->copy()->addHours($count),
             Interval::Day => $base->copy()->addDays($count),
             Interval::Week => $base->copy()->addWeeks($count),
-            // NoOverflow: Jan 30 + 1 month is Feb 28, not "Feb 30" spilling into Mar 2 (Carbon
-            // overflows by default). Known simplification: after one clamp the anchor day stays
-            // clamped (Jan 31 → Feb 28 → Mar 28), we don't keep the original day-of-month the way
-            // Stripe's billing anchor does.
+            // NoOverflow — see nextPeriodEnd() for why, and for the known anchor-day simplification.
             Interval::Month => $base->copy()->addMonthsNoOverflow($count),
             Interval::Year => $base->copy()->addYearsNoOverflow($count),
         };

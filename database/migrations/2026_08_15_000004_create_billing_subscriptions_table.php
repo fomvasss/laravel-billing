@@ -23,6 +23,9 @@ return new class extends Migration
             // trial_ending_notices entries already fired — each reminder at most once per subscription.
             $table->json('trial_notices_sent')->nullable();
             $table->timestamp('current_period_ends_at')->nullable();
+            // When current_usage goes back to zero, for prices with their own quota cycle
+            // (price.quota_interval). Null = no separate cycle — the quota follows the paid period.
+            $table->timestamp('quota_period_ends_at')->nullable();
             // period_ending_notices entries already fired for the current period — cleared on renewal.
             $table->json('period_notices_sent')->nullable();
             $table->timestamp('cancels_at')->nullable();
@@ -43,6 +46,7 @@ return new class extends Migration
             $table->index(['billable_type', 'billable_id']);
             $table->index(['status', 'current_period_ends_at']);
             $table->index(['status', 'pause_ends_at']);
+            $table->index('quota_period_ends_at');
         });
     }
 

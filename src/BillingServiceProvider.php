@@ -9,6 +9,7 @@ use Fomvasss\Billing\Console\ExpireTrialsCommand;
 use Fomvasss\Billing\Console\ProcessRecurringChargesCommand;
 use Fomvasss\Billing\Console\ReconcilePendingPaymentsCommand;
 use Fomvasss\Billing\Contracts\CredentialResolverContract;
+use Fomvasss\Billing\Contracts\ReissueChargeOptionsContract;
 use Fomvasss\Billing\Contracts\RenewalChargeOptionsContract;
 use Fomvasss\Billing\Events\PaymentCanceled;
 use Fomvasss\Billing\Events\PaymentFailed;
@@ -32,6 +33,7 @@ use Fomvasss\Billing\Http\Controllers\CheckoutReturnController;
 use Fomvasss\Billing\Http\Controllers\WebhookController;
 use Fomvasss\Billing\Listeners\HandleSubscriptionPaymentOutcome;
 use Fomvasss\Billing\Support\DefaultCredentialResolver;
+use Fomvasss\Billing\Support\DefaultReissueChargeOptions;
 use Fomvasss\Billing\Support\DefaultRenewalChargeOptions;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Support\Facades\Event;
@@ -47,6 +49,7 @@ class BillingServiceProvider extends ServiceProvider
         $this->app->singleton(BillingManager::class, static fn () => new BillingManager());
         $this->app->bind(CredentialResolverContract::class, DefaultCredentialResolver::class);
         $this->app->bind(RenewalChargeOptionsContract::class, DefaultRenewalChargeOptions::class);
+        $this->app->bind(ReissueChargeOptionsContract::class, DefaultReissueChargeOptions::class);
     }
 
     public function boot(): void

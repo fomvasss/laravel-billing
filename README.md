@@ -233,7 +233,21 @@ A per-charge `ChargeOptions(successUrl: ..., failUrl: ...)` bypasses the whole m
 - expired, `failed` or `canceled` → a **fresh** checkout is issued via `charge()` on the fly, then redirected to (the old gateway-side invoice is simply left to expire);
 - already `paid` → lands on your `return_urls.success` page with `?payment={id}`.
 
-Every visit fires `PaymentLinkOpened($payment)` — an analytics/sales signal ("opened the invoice twice, never paid"), nothing more. Re-issuing uses default `ChargeOptions` (receipt items still auto-fill from a `HasReceiptItems` payable); per-charge extras from the original call (`saveCard`, `raw`, ...) are not remembered.
+Every visit fires `PaymentLinkOpened($payment)` — an analytics/sales signal ("opened the invoice twice, never paid"), nothing more.
+
+Re-issuing builds its options through `ReissueChargeOptionsContract`, **empty by default**: per-charge extras from the original call (`saveCard`, `description`, `raw`, ...) were never stored and are not guessed, and receipt items only auto-fill from a `HasReceiptItems` payable. Two of those omissions are not cosmetic — `saveCard` (no card token means the subscription can never renew, and nothing complains) and the fiscal basket. Bind your own resolver to carry the original intent across:
+
+```php
+$this->app->bind(ReissueChargeOptionsContract::class, MyReissueOptions::class);
+
+class MyReissueOptions implements ReissueChargeOptionsContract
+{
+    public function resolve(Payment $payment): ChargeOptions
+    {
+        return new ChargeOptions(saveCard: true, description: ..., receiptItems: [...]);
+    }
+}
+```
 
 Re-issues are serialized per payment with a cache lock: this URL is public and unauthenticated by design, so it does get opened concurrently (a double click, a mail client prefetching links), and two re-issues would leave two live invoices on the gateway for one row. The second visitor re-reads the link the first one stored rather than issuing its own. Same cache-store caveat as refunds above.
 

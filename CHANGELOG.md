@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.5.2] - 2026-08-26
+
+### Added
+- **A re-issued checkout can now carry the original charge's options.** The permanent pay link (`billing.pay`) issues a fresh checkout when a payment's own link has gone stale, and until now it did so with default `ChargeOptions` — silently dropping whatever the first charge carried. Two of those omissions are not cosmetic: `saveCard` (no card token means the subscription can never renew, and nothing complains) and the fiscal basket, which only auto-fills from a `HasReceiptItems` payable — something the package's own `Subscription` is not. The re-issue now resolves its options through the new `ReissueChargeOptionsContract`, the sibling of `RenewalChargeOptionsContract`. **The default (`Support\DefaultReissueChargeOptions`) returns empty options, so behaviour is unchanged** until you bind your own.
+
 ## [0.5.1] - 2026-08-26
 
 ### Added

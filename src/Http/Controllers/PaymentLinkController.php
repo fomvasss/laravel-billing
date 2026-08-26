@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Fomvasss\Billing\Http\Controllers;
 
 use Fomvasss\Billing\BillingManager;
+use Fomvasss\Billing\Contracts\ReissueChargeOptionsContract;
 use Fomvasss\Billing\Events\PaymentLinkOpened;
 use Fomvasss\Billing\Models\Payment;
 use Illuminate\Http\RedirectResponse;
@@ -19,10 +20,11 @@ use Illuminate\Routing\Controller;
  * invoice — the old one is simply left to expire on the gateway's side); an already-paid one
  * lands on the success page. Fires PaymentLinkOpened on every visit.
  *
- * Re-issuing uses default ChargeOptions — per-charge extras from the original call (saveCard,
- * description, raw) are not remembered; receiptItems still auto-fill from a HasReceiptItems
- * payable. Note: a gateway may refuse a re-issue for a reference it considers final — that
- * surfaces as the driver's own exception, not silently.
+ * Re-issuing builds its ChargeOptions through ReissueChargeOptionsContract — empty by default,
+ * so per-charge extras from the original call (saveCard, description, raw) are not remembered
+ * unless you bind your own resolver; receiptItems still auto-fill from a HasReceiptItems payable.
+ * Note: a gateway may refuse a re-issue for a reference it considers final — that surfaces as the
+ * driver's own exception, not silently.
  */
 class PaymentLinkController extends Controller
 {
@@ -67,7 +69,7 @@ class PaymentLinkController extends Controller
                 return;
             }
 
-            app(BillingManager::class)->charge($payment);
+            app(BillingManager::class)->charge($payment, app(ReissueChargeOptionsContract::class)->resolve($payment));
             $payment->refresh();
         });
     }

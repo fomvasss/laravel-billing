@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Fomvasss\Billing\Tests\Feature;
 
 use Fomvasss\Billing\Events\PaymentLinkOpened;
+use Fomvasss\Billing\Contracts\ReissueChargeOptionsContract;
+use Fomvasss\Billing\DTO\ChargeOptions;
 use Fomvasss\Billing\Models\Payment;
 use Fomvasss\Billing\Tests\Fixtures\TestUser;
 use Fomvasss\Billing\Tests\TestCase;
@@ -57,6 +59,41 @@ class PaymentLinkTest extends TestCase
             ->assertRedirect('https://pay.mbnk.biz/fresh');
 
         $this->assertSame('inv_new', $payment->fresh()->external_id);
+    }
+
+    /**
+     * Without a resolver a re-issue silently drops what the original charge carried — `saveCard`
+     * above all: no card token means the subscription can never renew, and nothing complains.
+     */
+    public function test_a_bound_resolver_supplies_the_options_for_a_reissue(): void
+    {
+        Http::fake([
+            'https://api.monobank.ua/api/merchant/invoice/create' => Http::response(['invoiceId' => 'inv_new', 'pageUrl' => 'https://pay.mbnk.biz/fresh']),
+        ]);
+
+        $this->app->bind(ReissueChargeOptionsContract::class, fn () => new class implements ReissueChargeOptionsContract {
+            public function resolve(Payment $payment): ChargeOptions
+            {
+                return new ChargeOptions(
+                    saveCard: true,
+                    description: 'Pro, 1 month',
+                    receiptItems: [['name' => 'Pro, 1 month', 'qty' => 1, 'unitAmount' => $payment->amount, 'sku' => 'pro-month']],
+                );
+            }
+        });
+
+        $payment = $this->payment([
+            'payment_url' => 'https://pay.mbnk.biz/stale',
+            'payment_url_expires_at' => now()->subMinute(),
+        ]);
+
+        $this->get(route('billing.pay', $payment))->assertStatus(303);
+
+        Http::assertSent(function ($request) {
+            return $request['saveCardData']['saveCard'] === true
+                && $request['merchantPaymInfo']['destination'] === 'Pro, 1 month'
+                && $request['merchantPaymInfo']['basketOrder'][0]['code'] === 'pro-month';
+        });
     }
 
     public function test_a_failed_payment_gets_a_fresh_checkout_even_if_the_old_link_is_unexpired(): void

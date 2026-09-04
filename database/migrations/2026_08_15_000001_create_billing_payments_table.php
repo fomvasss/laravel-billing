@@ -14,6 +14,11 @@ return new class extends Migration
             $table->uuid('id')->primary();
             $table->string('status', 20)->default('pending');
             $table->string('type', 20)->default('charge');
+            // Who started this charge — 'manual' (a person, right now) or 'automatic' (scheduled
+            // renewal, dunning retry). Nullable: rows written before this column existed, and any
+            // payment a consumer creates without going through charge()/chargeWithMethod(), simply
+            // don't know. See "Who started the charge" in README.
+            $table->string('initiation', 20)->nullable();
             // Human-facing reference ("PAY-2026-000123"); consumer-assigned — see "Payment numbers" in README.
             $table->string('number', 64)->nullable()->unique();
             $table->string('gateway', 50)->nullable();

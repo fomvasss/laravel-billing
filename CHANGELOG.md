@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.6.0] - 2026-09-04
+
+### Added
+- **A payment now records who started it.** "Why did money leave my account?" is a question about the initiator, and until now the row could not answer it: nothing distinguished a checkout a customer opened from a renewal the scheduler charged off-session. The new `payments.initiation` column (`PaymentInitiation::Manual` / `Automatic`) is written at charge time — `charge()` records Manual, `chargeWithMethod()` Automatic — with `Payment::isManual()` / `isAutomatic()` to read it back.
+
+  The defaults follow the usual pair, but the mechanism and the initiator can disagree, so both calls take `ChargeOptions(initiation: ...)`: a one-click "pay with the saved card" button is the off-session code path with a person standing right there, and a retry a consumer's own scheduler pushes through `charge()` is automatic.
+
+  **The column is nullable and never guessed.** A payment created outside those two methods has no initiation, and both helpers answer `false` for it — unknown is not a claim either way. Rows written before this release stay `null`; backfilling them is the consumer's call, since only the consumer's own data can tell the two apart.
+- `payments.initiation` column, in the existing `billing-migrations-payments` migration group.
+
 ## [0.5.2] - 2026-08-26
 
 ### Added

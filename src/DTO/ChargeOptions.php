@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Fomvasss\Billing\DTO;
 
+use Fomvasss\Billing\Enums\PaymentInitiation;
+
 final readonly class ChargeOptions
 {
     public function __construct(
@@ -27,6 +29,14 @@ final readonly class ChargeOptions
         public array $webhookUrlParams = [],
         /** Extra query params forwarded onto the final return_urls.* redirect (e.g. ['order' => 1042]) — display hints for the frontend page, never trusted as-is. */
         public array $returnParams = [],
+        /**
+         * Overrides who gets recorded as having started the charge. Left null, charge() records
+         * Manual and chargeWithMethod() Automatic — right for the usual pair (a checkout a person
+         * opened, a renewal nobody was present for). Set it when the mechanism and the initiator
+         * disagree: a one-click "pay with the saved card" button is chargeWithMethod() but Manual,
+         * and a retry your own scheduler fires through charge() is Automatic.
+         */
+        public ?PaymentInitiation $initiation = null,
         /** Driver-specific: Monobank x_cms/validity, LiqPay rro_info, etc. — read only by the matching driver. */
         public array $raw = [],
     ) {}

@@ -283,6 +283,32 @@ Payment::creating(function (Payment $payment) {
 });
 ```
 
+### Who started the charge
+
+"Why did money leave my account?" is a question about the initiator, not the mechanism — and a payment row cannot answer it after the fact. `payments.initiation` records it at charge time:
+
+| | `manual` | `automatic` |
+|---|---|---|
+| written by | `charge()` | `chargeWithMethod()` |
+| means | a person was there | nobody was — a scheduled renewal, a dunning retry |
+
+```php
+$payment->isManual();     // a person started it
+$payment->isAutomatic();  // the scheduler did
+$payment->initiation;     // PaymentInitiation|null
+```
+
+The defaults follow the usual pair — a checkout somebody opened, a renewal nobody was present for — but the two can disagree, so either call takes an override:
+
+```php
+// A one-click "pay with the saved card" button: off-session code path, person right there.
+Billing::chargeWithMethod($payment, $method, new ChargeOptions(
+    initiation: PaymentInitiation::Manual,
+));
+```
+
+The column is **nullable and never guessed**: a payment your own code created without going through either method has no initiation, and both helpers answer `false` for it — unknown is not a claim either way. Rows written before you upgraded stay `null` too; backfill them yourself only if you can tell the two apart in your own data.
+
 ### Gateway fee and net amount
 
 `amount` is always **what the customer paid** — refund caps, webhook amount verification and reconciliation all depend on that, so nothing ever rewrites it. What the merchant actually receives lives next to it:

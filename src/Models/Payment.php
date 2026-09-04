@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Fomvasss\Billing\Models;
 
+use Fomvasss\Billing\Enums\PaymentInitiation;
 use Fomvasss\Billing\Enums\PaymentStatus;
 use Fomvasss\Billing\Enums\PaymentType;
 use Illuminate\Database\Eloquent\Builder;
@@ -30,6 +31,7 @@ class Payment extends Model
         return [
             'status' => PaymentStatus::class,
             'type' => PaymentType::class,
+            'initiation' => PaymentInitiation::class,
             'amount' => 'integer',
             'fee' => 'integer',
             'exchange_rate' => 'float',
@@ -98,6 +100,21 @@ class Payment extends Model
     public function isRefund(): bool
     {
         return $this->type === PaymentType::Refund;
+    }
+
+    /**
+     * Charged without anyone present — a scheduled renewal or a dunning retry. A null `initiation`
+     * (a row from before the column, or a payment created outside charge()/chargeWithMethod())
+     * answers false here and false to isManual() alike: unknown is not a claim either way.
+     */
+    public function isAutomatic(): bool
+    {
+        return $this->initiation === PaymentInitiation::Automatic;
+    }
+
+    public function isManual(): bool
+    {
+        return $this->initiation === PaymentInitiation::Manual;
     }
 
     /**

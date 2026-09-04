@@ -14,6 +14,7 @@ use Fomvasss\Billing\Contracts\TokenizesPaymentMethod;
 use Fomvasss\Billing\DTO\ChargeOptions;
 use Fomvasss\Billing\DTO\PaymentResult;
 use Fomvasss\Billing\DTO\ResolvedAmount;
+use Fomvasss\Billing\Enums\PaymentInitiation;
 use Fomvasss\Billing\Enums\PaymentStatus;
 use Fomvasss\Billing\Enums\PaymentType;
 use Fomvasss\Billing\DTO\WebhookResult;
@@ -181,6 +182,9 @@ class BillingManager
 
         $payment->fill([
             'external_id' => $result->externalId ?? $payment->external_id,
+            // A checkout is something a person opened; only an explicit override says otherwise
+            // (e.g. a dunning retry the consumer's own scheduler pushes through this method).
+            'initiation' => $options->initiation ?? PaymentInitiation::Manual,
             'payment_url' => $url,
             'payment_url_expires_at' => $urlExpiresAt,
             // Kept for support/debugging: without it the gateway's own account of what it did with
@@ -229,6 +233,9 @@ class BillingManager
 
         $payment->fill([
             'external_id' => $result->externalId ?? $payment->external_id,
+            // Off-session by default — this is the path a scheduled renewal takes. A one-click
+            // "pay with the saved card" is the same call with a Manual override.
+            'initiation' => $options->initiation ?? PaymentInitiation::Automatic,
             'payment_url' => $result->url,
             'payment_url_expires_at' => $result->expiresAt,
             // The decline reason lives here and nowhere else: an off-session charge the gateway

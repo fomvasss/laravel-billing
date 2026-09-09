@@ -284,16 +284,25 @@ abstract class AbstractGateway implements PaymentGatewayContract
         return DB::transaction(function () use (
             $billableType, $billableId, $tenantId, $externalCustomerId, $externalId, $last4, $brand, $expiresAt
         ) {
+            // The billable is part of the match, not of the payload: a token identifies a CARD,
+            // and the same card can be saved by two billables (one person paying for their own
+            // account and for a company's). Matched on the token alone, the second checkout would
+            // find the first billable's row and rewrite its owner — the first billable then has no
+            // card at renewal time and goes into dunning holding a card that never expired.
             $method = PaymentMethod::updateOrCreate(
-                ['gateway' => $this->gatewayName, 'external_customer_id' => $externalCustomerId, 'external_id' => $externalId],
+                [
+                    'gateway' => $this->gatewayName,
+                    'billable_type' => $billableType,
+                    'billable_id' => $billableId,
+                    'external_customer_id' => $externalCustomerId,
+                    'external_id' => $externalId,
+                ],
                 [
                     'type' => 'card',
                     'brand' => $brand,
                     'last4' => $last4,
                     'expires_at' => $expiresAt,
                     'tenant_id' => $tenantId,
-                    'billable_type' => $billableType,
-                    'billable_id' => $billableId,
                 ],
             );
 

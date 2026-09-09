@@ -4,6 +4,32 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.6.1] - 2026-09-09
+
+### Fixed
+- **A saved card is no longer stolen from one billable by another.** Payment methods were keyed on the token alone (`gateway, external_customer_id, external_id`), both in the upsert and in the unique index. A token identifies a *card*, though, not a customer — so when a second billable paid with a card already saved by the first (one person paying for their own account and for a company's, an owner of two organizations), the checkout matched the first billable's row and rewrote its owner. The first billable was left with no payment method at all, and its next renewal failed on "no card" — with no `Payment` row to show for it, straight into dunning, holding a card that never expired. Both are now scoped by `billable_type` + `billable_id`, so each billable keeps its own row for the same card.
+
+### Changed
+- `billing_payment_methods.external_customer_id` and `.external_id` are now `varchar(191)` instead of `varchar(255)`, to keep the widened unique index under InnoDB's 3072-byte key limit. Gateway tokens are tens of characters; nothing in the package or its drivers approaches the old length.
+
+### Upgrading
+The change lives in the existing `billing-migrations-payment-methods` migration — a fresh install needs nothing. An existing database has to be migrated by hand:
+
+```sql
+ALTER TABLE billing_payment_methods
+    MODIFY external_customer_id VARCHAR(191) NOT NULL,
+    MODIFY external_id VARCHAR(191) NOT NULL;
+
+DROP INDEX billing_payment_methods_unique_token ON billing_payment_methods;
+
+CREATE UNIQUE INDEX billing_payment_methods_unique_token
+    ON billing_payment_methods (gateway, billable_type, billable_id, external_customer_id, external_id);
+```
+
+(PostgreSQL: `ALTER TABLE ... ALTER COLUMN ... TYPE varchar(191)`, `DROP INDEX billing_payment_methods_unique_token`, then the same `CREATE UNIQUE INDEX`.)
+
+A card that was already moved off its original billable by the old key stays where the last checkout left it — the row has no history of the previous owner. Restore it by re-saving the card on the affected billable (any checkout with `saveCard`), or by inserting the row directly.
+
 ## [0.6.0] - 2026-09-04
 
 ### Added

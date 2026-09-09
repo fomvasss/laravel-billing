@@ -286,7 +286,7 @@ Three shapes exist in the wild, and which one you get decides how you write it:
 2. **Async, separate webhook delivery** (Monobank): the token arrives in its own webhook, distinct from the payment-status one. Return `WebhookResult(type: PaymentMethod, status: 'attached')` from `handleWebhook()` and let `WebhookResultDispatcher` fire the event.
 3. **Async, same delivery as the payment status** (LiqPay, WayForPay, Hutko): the token rides along in the payment-status callback. That `WebhookResult` is already reporting the `Payment` outcome, so persist the method as a side effect and dispatch `PaymentMethodAttached` **directly** — there's no second return value for the dispatcher to work with. Guard the dispatch with `$method->wasRecentlyCreated`: a direct dispatch runs before the job-level dedup claim, so without the guard a re-delivered callback fires the event again.
 
-Use `AbstractGateway::persistPaymentMethod()` for the actual row-writing in all three cases; it demotes the previous default and upserts on `(gateway, external_customer_id, external_id)`, deliberately without dispatching, precisely because the three cases dispatch at different times.
+Use `AbstractGateway::persistPaymentMethod()` for the actual row-writing in all three cases; it demotes the previous default and upserts on `(gateway, billable_type, billable_id, external_customer_id, external_id)` — the billable is part of the key, since one physical card may be saved by two billables — deliberately without dispatching, precisely because the three cases dispatch at different times.
 
 ## HTTP calls
 

@@ -217,6 +217,45 @@ class MonobankTokenizationTest extends TestCase
         Http::assertSent(fn ($request) => isset($request['saveCardData']['walletId']));
     }
 
+    /**
+     * One physical card, two billables — the incident this scoping exists for: a person who pays
+     * for a second organization with the card already saved on the first one. Keyed on the token
+     * alone, the second checkout rewrote the first row's owner, and the first billable's next
+     * renewal found no card and went into dunning.
+     */
+    public function test_the_same_card_saved_by_two_billables_keeps_a_row_for_each(): void
+    {
+        $first = TestUser::create(['name' => 'First']);
+        $second = TestUser::create(['name' => 'Second']);
+
+        foreach ([$first, $second] as $index => $user) {
+            ProcessWebhookJob::dispatch(BillingWebhookCall::create([
+                'name' => 'monobank',
+                'url' => 'https://example.test/billing/webhooks/monobank',
+                'payload' => [
+                    'invoiceId' => 'inv_shared_' . $index,
+                    'status' => 'success',
+                    'reference' => (string) $this->pendingMonobankPayment($user)->id,
+                    'paymentInfo' => ['maskedPan' => '444403******1902', 'paymentSystem' => 'visa'],
+                    'walletData' => ['walletId' => 'wallet_shared', 'cardToken' => 'card_tok_shared', 'status' => 'created'],
+                ],
+            ]));
+        }
+
+        $this->assertSame(2, PaymentMethod::query()->where('external_id', 'card_tok_shared')->count());
+
+        foreach ([$first, $second] as $user) {
+            $method = PaymentMethod::query()
+                ->where('billable_type', TestUser::class)
+                ->where('billable_id', $user->id)
+                ->where('external_id', 'card_tok_shared')
+                ->first();
+
+            $this->assertNotNull($method, 'each billable keeps its own row for the shared card');
+            $this->assertTrue($method->is_default);
+        }
+    }
+
     private function pendingMonobankPayment(TestUser $user): Payment
     {
         return Payment::create([

@@ -28,11 +28,23 @@ return new class extends Migration
             // Not nullable: NULLs don't collide in a unique index, so a nullable column would let
             // the token uniqueness below be bypassed. Drivers without a gateway-side customer
             // object derive a stable id of their own (see MonobankGateway::walletId()).
-            $table->string('external_customer_id');
-            $table->string('external_id');
+            // 191, not the default 255: both columns sit in the unique index below, which has to
+            // stay under InnoDB's 3072-byte key limit on utf8mb4. Gateway tokens are far shorter
+            // than that (a Stripe pm_/cus_ id, a Monobank card token: tens of characters).
+            $table->string('external_customer_id', 191);
+            $table->string('external_id', 191);
 
             $table->index(['billable_type', 'billable_id']);
-            $table->unique(['gateway', 'external_customer_id', 'external_id'], 'billing_payment_methods_unique_token');
+            // Scoped to the billable, NOT globally unique per token: the token identifies a CARD,
+            // and one physical card may legitimately be saved by two different billables (a person
+            // paying for their own account and for a company's, an owner of two organizations).
+            // Keyed on the token alone, the second checkout would match the first one's row and
+            // overwrite its billable — silently moving the card off the first billable, whose next
+            // renewal then finds no card and goes into dunning for a card the customer still has.
+            $table->unique(
+                ['gateway', 'billable_type', 'billable_id', 'external_customer_id', 'external_id'],
+                'billing_payment_methods_unique_token',
+            );
         });
     }
 

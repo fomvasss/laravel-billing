@@ -12,24 +12,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Changed
 - `billing_payment_methods.external_customer_id` and `.external_id` are now `varchar(191)` instead of `varchar(255)`, to keep the widened unique index under InnoDB's 3072-byte key limit. Gateway tokens are tens of characters; nothing in the package or its drivers approaches the old length.
 
-### Upgrading
-The change lives in the existing `billing-migrations-payment-methods` migration — a fresh install needs nothing. An existing database has to be migrated by hand:
-
-```sql
-ALTER TABLE billing_payment_methods
-    MODIFY external_customer_id VARCHAR(191) NOT NULL,
-    MODIFY external_id VARCHAR(191) NOT NULL;
-
-DROP INDEX billing_payment_methods_unique_token ON billing_payment_methods;
-
-CREATE UNIQUE INDEX billing_payment_methods_unique_token
-    ON billing_payment_methods (gateway, billable_type, billable_id, external_customer_id, external_id);
-```
-
-(PostgreSQL: `ALTER TABLE ... ALTER COLUMN ... TYPE varchar(191)`, `DROP INDEX billing_payment_methods_unique_token`, then the same `CREATE UNIQUE INDEX`.)
-
-A card that was already moved off its original billable by the old key stays where the last checkout left it — the row has no history of the previous owner. Restore it by re-saving the card on the affected billable (any checkout with `saveCard`), or by inserting the row directly.
-
 ## [0.6.0] - 2026-09-04
 
 ### Added

@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.7.0] - 2026-09-10
+
+### Added
+- **`TrialEnded` — the event for a trial that ran out.** `billing:expire-trials` moved expired trials to `ended` silently, so the only hook a consumer had was `TrialWillEnd`, which fires *before* the deadline. "Your free period ends in 3 days" and "your free period is over, here's how to come back" are different letters, and the second one had nothing to hang on: a consumer wanting it had to re-derive the transition from `status` + `trial_ends_at` on a schedule of its own, next to the command that already knew. The command now expires trials row by row and dispatches `TrialEnded` for each, re-checking `trialing` inside the update so a concurrent run can't announce the same trial twice.
+
+### Fixed
+- **Cancelling no longer leaves a retry date and a grace window behind.** `next_retry_at`/`grace_ends_at` describe a live dunning episode, and every path into `canceled` — `cancel()`, the `max_recurring_attempts` cut-off, a failed renewal with no saved card, `cancels_at` coming due — left them stamped on the canceled row. Access was never actually granted by them (`active()` only honours a grace window for `past_due`), but everything that renders a subscription read them back: an admin card showing "next attempt: tomorrow" for a subscription nobody will charge again, a cancellation email with both dates among its tokens. All four paths now go through the new `Subscription::markCanceled()`, which clears the schedule and dispatches `SubscriptionCancelled`. `recurring_attempts` is deliberately kept — it's the record of how many tries the episode took.
+
 ## [0.6.2] - 2026-09-10
 
 ### Fixed

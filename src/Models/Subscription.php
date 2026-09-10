@@ -170,7 +170,27 @@ class Subscription extends Model
             return;
         }
 
-        $this->update(['status' => SubscriptionStatus::Canceled, 'cancels_at' => now()]);
+        $this->markCanceled(['cancels_at' => now()]);
+    }
+
+    /**
+     * The one way into `canceled`: stamps the status, clears the dunning schedule and dispatches
+     * SubscriptionCancelled. next_retry_at/grace_ends_at describe a live dunning episode, and the
+     * episode is over — kept on a canceled row they are a retry date that will never come and a
+     * grace window nothing honours, read back by everything that renders a subscription (admin
+     * cards, a "your subscription was cancelled" email that has both dates in its tokens).
+     * recurring_attempts stays: it's the record of how many tries the episode took, not a promise
+     * of another one.
+     */
+    public function markCanceled(array $attributes = []): void
+    {
+        $this->update([
+            ...$attributes,
+            'status' => SubscriptionStatus::Canceled,
+            'cancels_at' => $attributes['cancels_at'] ?? $this->cancels_at ?? now(),
+            'grace_ends_at' => null,
+            'next_retry_at' => null,
+        ]);
 
         SubscriptionCancelled::dispatch($this);
     }
@@ -339,9 +359,7 @@ class Subscription extends Model
         // An empty interval list means "don't retry at all" (the same "[] = off" the trial notices
         // use) — the first failed renewal is then also the last.
         if ($intervals === [] || $attempts >= $maxAttempts) {
-            $this->update(['status' => SubscriptionStatus::Canceled, 'recurring_attempts' => $attempts, 'cancels_at' => now()]);
-
-            SubscriptionCancelled::dispatch($this);
+            $this->markCanceled(['recurring_attempts' => $attempts, 'cancels_at' => now()]);
 
             return;
         }

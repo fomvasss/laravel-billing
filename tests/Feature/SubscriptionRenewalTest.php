@@ -77,6 +77,29 @@ class SubscriptionRenewalTest extends TestCase
 
         $this->assertSame(SubscriptionStatus::Canceled, $subscription->status);
         $this->assertSame(3, $subscription->recurring_attempts);
+        // The dunning schedule dies with the episode — a canceled row must not keep promising a
+        // retry that is never coming, nor a grace window hasGraceAccess() would still honour.
+        $this->assertNull($subscription->next_retry_at);
+        $this->assertNull($subscription->grace_ends_at);
+    }
+
+    public function test_cancelling_mid_dunning_clears_the_retry_schedule(): void
+    {
+        $subscription = $this->activeMonthlySubscription();
+
+        PaymentFailed::dispatch($this->renewalPayment($subscription)); // past_due, retry + grace stamped
+        $subscription->refresh();
+        $this->assertNotNull($subscription->next_retry_at);
+
+        $subscription->cancel(atPeriodEnd: false);
+        $subscription->refresh();
+
+        $this->assertSame(SubscriptionStatus::Canceled, $subscription->status);
+        $this->assertNull($subscription->next_retry_at);
+        $this->assertNull($subscription->grace_ends_at);
+        $this->assertFalse($subscription->isActive());
+        // Kept: how many attempts the episode took is history, not a pending promise.
+        $this->assertSame(1, $subscription->recurring_attempts);
     }
 
     public function test_each_failure_waits_longer_than_the_last(): void

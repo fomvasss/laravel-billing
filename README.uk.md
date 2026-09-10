@@ -457,6 +457,7 @@ sequenceDiagram
 | `SubscriptionAccessSuspended` | Лише коли `grace_access` резолвиться в `false` — фаєриться один раз, у момент коли невдале списання одразу обнулює `isActive()`, замість надання grace-вікна |
 | `SubscriptionCreated` | Лише гейтвеї з нативними підписками — жоден вбудований драйвер поки її не диспатчить |
 | `TrialWillEnd` | З `billing:expire-trials`, на кожному інтервалі `trial_ending_notices` до `trial_ends_at` (дефолт `['3 days']`; напр. `['7 days', '3 days', '1 day']` для річних, `['1 hour', '15 minutes']` для погодинної оренди) — раз на підписку на кожне нагадування, `$event->notice` каже, яке саме спрацювало |
+| `TrialEnded` | З `billing:expire-trials`, одразу після того, як тріал, який ніхто не оплатив, перейшов у `ended` — раз на підписку. Це «безкоштовний період завершився», на відміну від «ось-ось завершиться» в `TrialWillEnd` |
 | `SubscriptionPaused` / `SubscriptionResumed` | Лише локально, через `$subscription->pause()`/`resume()` — гейтвей не бере участі |
 | `CheckoutReturned` | Браузер клієнта повернувся з каси (див. "Сторінки повернення") — лише UX/аналітика, ніколи не доказ оплати |
 | `PaymentLinkOpened` | Хтось відкрив постійне посилання на оплату (`billing.pay`, див. "Постійне посилання") — лише аналітика |
@@ -672,7 +673,7 @@ $subscription->swapPlan($newPrice);
 |---|---|---|
 | `billing:process-recurring-charges` | щохвилини | Спершу фіналізує підписки, чий `cancels_at` настав (статус → `canceled`, диспатчиться `SubscriptionCancelled`) — скасування на кінець періоду ніколи не буде списане ще раз. Далі знаходить підписки з `current_period_ends_at <= now()` і списує зі збереженого `PaymentMethod` через `chargePaymentMethod()` — крім випадку, коли попередній renewal-`Payment` ще `pending` (вебхук не дійшов): це блокує друге списання за той самий період. Лише ІНІЦІЮЄ списання — результат приходить пізніше через звичайний webhook pipeline, обробляється автоматично: період посувається при `PaymentSucceeded`; при `PaymentFailed` підписка стає `past_due` і ретраїться за драбинкою `retry_intervals` (з інтервалами, а *не* кожен запуск планувальника) до вичерпання `max_recurring_attempts`, далі `SubscriptionCancelled`. З дефолтами це саме продовження, потім `+6 год`, `+24 год`, `+48 год`, далі скасування — картку, яка щойно не пройшла, варто спробувати скоро, а третю поспіль невдачу варто перечекати. **Якщо картки для списання нема взагалі** (не токенізована або відв'язана після останнього продовження) — той самий grace/retry цикл через `Subscription::recordRenewalFailure()`, а не завмирання в `active` в очікуванні картки, якої не буде. Так само зі спробою, яка взагалі не дійшла до гейтвея (таймаут, 5xx гейтвея): `Payment` списується як `failed`, а не лишається `pending`, звідки він назавжди блокував би продовження цієї підписки — а якщо списання все ж дійшло до банку, його вебхук прийде задовго до наступного ретраю і переведе рядок у `paid`. **Продовження, за яке нема чого списувати** — metered-період без споживання, licensed із нулем місць — просто посуває період, замість спроби нульового списання, яке відхилить будь-який гейтвей. |
 | `billing:reconcile-pending-payments` | кожні 15 хв | Fallback для `Payment`, що завис `pending` через загублений вебхук, або статус `expired` гейтвея, для якого власного вебхука не буває. Бере лише платежі старші за `config('billing.reconcile_after_minutes')` (дефолт 60 хв) — цей cutoff уже сам по собі відкладає, коли платіж кваліфікується як "завис", тому ця команда запускається частіше за інші дві, не щогодини. Помилка на одному платежі репортиться й пропускається, ніколи не блокує решту. |
-| `billing:expire-trials` | щогодини | Диспатчить `TrialWillEnd` на кожному сконфігурованому інтервалі `trial_ending_notices` (раз на підписку на нагадування; якщо кілька стали due одночасно — фаєриться лише найближче), потім переводить `trialing`-підписки з простроченим `trial_ends_at` у `ended`. Конвертація trial у платну підписку — звичайний виклик `chargeWithMethod()`, той самий, що й будь-яке продовження (див. "Безкоштовний період" у Практичних прикладах). |
+| `billing:expire-trials` | щогодини | Диспатчить `TrialWillEnd` на кожному сконфігурованому інтервалі `trial_ending_notices` (раз на підписку на нагадування; якщо кілька стали due одночасно — фаєриться лише найближче), потім переводить `trialing`-підписки з простроченим `trial_ends_at` у `ended`, диспатчачи `TrialEnded` на кожну. Конвертація trial у платну підписку — звичайний виклик `chargeWithMethod()`, той самий, що й будь-яке продовження (див. "Безкоштовний період" у Практичних прикладах). |
 | `billing:send-period-notices` | щогодини | Диспатчить `SubscriptionPeriodEnding` на кожному інтервалі зі списку `period_ending_notices` перед `current_period_ends_at` оплаченого періоду — попередження «спишемо картку 14-го», а для вже скасованої підписки (виставлений `cancels_at`) — «доступ закінчується 14-го»; розрізняє їх `$event->willRenew`. Правило «одне нагадування раз» те саме, що в тріалів, але на період, і успішне продовження скидає маркери, щоб наступний період нагадав знову. Мовчить, поки список порожній — тільки `active` і тільки підписки, керовані пакетом, бо в `trialing` свої нагадування, а `past_due` уже в dunning. |
 | `billing:expire-pauses` | щогодини | Повертає `paused`-підписки з простроченим `pause_ends_at` (виставленим через `pause($until)`) у `active`. Сам доступ повернувся вже в момент цієї дати — команда записує статус і диспатчить `SubscriptionResumed`. Безстрокові паузи (`pause_ends_at` null) не чіпає. |
 | `billing:reset-usage-quotas` | щогодини | Занулює `current_usage` для цін із власним циклом квоти (`prices.quota_interval`), коли минув `quota_period_ends_at`, і диспатчить `SubscriptionQuotaReset`. На відміну від решти, не пропускає підписки під керуванням провайдера — ліміт це локальна бухгалтерія. Ціни без `quota_interval` не чіпає. |
@@ -785,11 +786,11 @@ stateDiagram-v2
 
 ```php
 use Fomvasss\Billing\Events\{SubscriptionRenewed, SubscriptionPaymentFailed,
-    SubscriptionCancelled, SubscriptionPaused, SubscriptionResumed, TrialWillEnd};
+    SubscriptionCancelled, SubscriptionPaused, SubscriptionResumed, TrialWillEnd, TrialEnded};
 
 class LogSubscriptionTransition
 {
-    public function handle(SubscriptionRenewed|SubscriptionPaymentFailed|SubscriptionCancelled|SubscriptionPaused|SubscriptionResumed|TrialWillEnd $event): void
+    public function handle(SubscriptionRenewed|SubscriptionPaymentFailed|SubscriptionCancelled|SubscriptionPaused|SubscriptionResumed|TrialWillEnd|TrialEnded $event): void
     {
         SubscriptionLog::create([
             'subscription_id' => $event->subscription->id,
@@ -807,6 +808,7 @@ Event::listen([
     SubscriptionPaused::class,
     SubscriptionResumed::class,
     TrialWillEnd::class,
+    TrialEnded::class,
 ], LogSubscriptionTransition::class);
 ```
 
@@ -1059,7 +1061,7 @@ $subscription = Subscription::create([
 ]);
 ```
 
-`TrialWillEnd` спрацьовує на кожному інтервалі `trial_ending_notices` до `trial_ends_at` (дефолт `['3 days']`; для річного плану став `['7 days', '3 days', '1 day']`, для погодинної оренди — `['1 hour', '15 minutes']` і ганяй `billing:expire-trials` частіше за щодня) — із запуску `billing:expire-trials`, тож потребує увімкненого розкладу. `$event->notice` каже лістенеру, яке нагадування формулювати. `Price` може мати і власний `trial_ending_notices` (json-колонка): `null` = глобальний список, `[]` = без нагадувань для цієї ціни, власний масив = власна каденція — річний план і погодинна оренда співіснують в одному проєкті. Це твій хук **запропонувати клієнту оформити підписку** (лист/пуш із посиланням на твою сторінку оплати). Якщо ніхто не конвертувався — та сама команда переводить `trialing`-підписки з простроченим `trial_ends_at` у `ended`.
+`TrialWillEnd` спрацьовує на кожному інтервалі `trial_ending_notices` до `trial_ends_at` (дефолт `['3 days']`; для річного плану став `['7 days', '3 days', '1 day']`, для погодинної оренди — `['1 hour', '15 minutes']` і ганяй `billing:expire-trials` частіше за щодня) — із запуску `billing:expire-trials`, тож потребує увімкненого розкладу. `$event->notice` каже лістенеру, яке нагадування формулювати. `Price` може мати і власний `trial_ending_notices` (json-колонка): `null` = глобальний список, `[]` = без нагадувань для цієї ціни, власний масив = власна каденція — річний план і погодинна оренда співіснують в одному проєкті. Це твій хук **запропонувати клієнту оформити підписку** (лист/пуш із посиланням на твою сторінку оплати). Якщо ніхто не конвертувався — та сама команда переводить `trialing`-підписки з простроченим `trial_ends_at` у `ended` і диспатчить `TrialEnded` на кожну: лист про сам факт — це вже інший лист, ніж нагадування до дедлайну.
 
 Конвертація — це просто оплата по цій підписці, окремого методу "конвертувати trial" немає. Створюєш `Payment` з `payable = $subscription` і відправляєш клієнта на касу; `PaymentSucceeded` одразу переводить рядок в `active` (лістенеру байдуже, що він починався як `trialing`):
 

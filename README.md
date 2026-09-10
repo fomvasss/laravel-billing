@@ -473,6 +473,7 @@ One route (`POST /billing/webhooks/{gateway}`) handles every gateway, resolved a
 | `SubscriptionAccessSuspended` | Only when `grace_access` resolves `false` — fires once, the moment a failed renewal cuts `isActive()` to `false` immediately instead of granting the grace window |
 | `SubscriptionCreated` | Native-subscription gateways only — no built-in driver dispatches it yet |
 | `TrialWillEnd` | From `billing:expire-trials`, at each `trial_ending_notices` interval before `trial_ends_at` (default `['3 days']`; e.g. `['7 days', '3 days', '1 day']` for yearly plans, `['1 hour', '15 minutes']` for hourly rentals) — once per subscription per notice, `$event->notice` says which one fired |
+| `TrialEnded` | From `billing:expire-trials`, right after a trial that nobody converted moves to `ended` — once per subscription. The "your free period is over" message, as opposed to `TrialWillEnd`'s "it's about to be" |
 | `SubscriptionPaused` / `SubscriptionResumed` | Local-only, via `$subscription->pause()`/`resume()` — never gateway-driven |
 | `CheckoutReturned` | The customer's browser came back from checkout (see "Return pages") — UX/analytics only, never proof of payment |
 | `PaymentLinkOpened` | Someone opened the permanent pay link (`billing.pay`, see "Permanent payment link") — analytics only |
@@ -688,7 +689,7 @@ Five artisan commands, off by default (`billing.schedule.enabled`, since they to
 |---|---|---|
 | `billing:process-recurring-charges` | every minute | First finalizes subscriptions whose `cancels_at` has passed (status → `canceled`, `SubscriptionCancelled` fires) so a period-end cancellation is never billed again. Then finds subscriptions where `current_period_ends_at <= now()` and charges the saved `PaymentMethod` via `chargePaymentMethod()` — unless an earlier renewal `Payment` is still `pending` (webhook not yet resolved), which blocks a second charge for the same period. Only *initiates* the charge — the outcome arrives later through the normal webhook pipeline, handled automatically: the period advances on `PaymentSucceeded`; on `PaymentFailed` the subscription goes `past_due` and is retried on the `retry_intervals` ladder (spaced out, *not* every scheduler run) until `max_recurring_attempts` is reached, then `SubscriptionCancelled`. With the defaults that's the renewal charge, then `+6h`, `+24h`, `+48h`, then cancelled — a card that just failed is worth retrying soon, the third failure in a row is worth waiting on. **No saved card to charge** (never tokenized, or detached since the last renewal) gets the identical grace/retry treatment via `Subscription::recordRenewalFailure()` — it doesn't stall in `active` waiting for a card that never arrives. So does an attempt that never reached the gateway at all (timeout, gateway 5xx): the `Payment` is written off as `failed` rather than left `pending` where it would block this subscription's renewals for good — if the charge did land at the bank after all, its webhook still arrives long before the next retry and flips the row to `paid`. **A renewal that owes nothing** — a metered period with no usage, a licensed one down to zero seats — advances the period directly instead of attempting a zero debit every gateway rejects. |
 | `billing:reconcile-pending-payments` | every 15 min | Fallback for a `Payment` stuck `pending` because a webhook was lost, or a gateway `expired` status that never gets its own webhook. Only looks at payments older than `config('billing.reconcile_after_minutes')` (default 60 min) — that cutoff already delays how soon a stuck payment qualifies, which is why this runs more often than the other two, not hourly like them. A failure on one payment is reported and skipped, never blocks the rest. |
-| `billing:expire-trials` | hourly | Dispatches `TrialWillEnd` at each configured `trial_ending_notices` interval (once per subscription per notice; when several become due at once only the closest fires), then moves `trialing` subscriptions past `trial_ends_at` to `ended`. Converting a trial to paid is a normal `chargeWithMethod()` call, same as any renewal (see "Free trial period" in Recipes). |
+| `billing:expire-trials` | hourly | Dispatches `TrialWillEnd` at each configured `trial_ending_notices` interval (once per subscription per notice; when several become due at once only the closest fires), then moves `trialing` subscriptions past `trial_ends_at` to `ended`, dispatching `TrialEnded` for each. Converting a trial to paid is a normal `chargeWithMethod()` call, same as any renewal (see "Free trial period" in Recipes). |
 | `billing:send-period-notices` | hourly | Dispatches `SubscriptionPeriodEnding` at each configured `period_ending_notices` interval before a paid period's `current_period_ends_at` — the advance "we'll charge your card on the 14th" notice, or, when the customer has already cancelled (`cancels_at` set), the "your access ends on the 14th" one; `$event->willRenew` tells the two apart. Same once-per-notice rule as the trial notices, per period, and a successful renewal clears the markers so the next period notifies again. Off unless the list is set — `active`, package-managed subscriptions only, since a `trialing` one has its own notices and a `past_due` one is already being dunned. |
 | `billing:expire-pauses` | hourly | Resumes `paused` subscriptions whose `pause_ends_at` (set via `pause($until)`) has passed. Access itself already came back at that timestamp — this writes the status down and fires `SubscriptionResumed`. Indefinite pauses (`pause_ends_at` null) are untouched. |
 | `billing:reset-usage-quotas` | hourly | Zeroes `current_usage` for prices with a quota cycle of their own (`prices.quota_interval`) once `quota_period_ends_at` passes, and fires `SubscriptionQuotaReset`. Unlike the others it does not skip provider-managed rows — the allowance is local bookkeeping. Prices without `quota_interval` are untouched. |
@@ -801,11 +802,11 @@ If you want that chronology, every transition already fires an event — one lis
 
 ```php
 use Fomvasss\Billing\Events\{SubscriptionRenewed, SubscriptionPaymentFailed,
-    SubscriptionCancelled, SubscriptionPaused, SubscriptionResumed, TrialWillEnd};
+    SubscriptionCancelled, SubscriptionPaused, SubscriptionResumed, TrialWillEnd, TrialEnded};
 
 class LogSubscriptionTransition
 {
-    public function handle(SubscriptionRenewed|SubscriptionPaymentFailed|SubscriptionCancelled|SubscriptionPaused|SubscriptionResumed|TrialWillEnd $event): void
+    public function handle(SubscriptionRenewed|SubscriptionPaymentFailed|SubscriptionCancelled|SubscriptionPaused|SubscriptionResumed|TrialWillEnd|TrialEnded $event): void
     {
         SubscriptionLog::create([
             'subscription_id' => $event->subscription->id,
@@ -823,6 +824,7 @@ Event::listen([
     SubscriptionPaused::class,
     SubscriptionResumed::class,
     TrialWillEnd::class,
+    TrialEnded::class,
 ], LogSubscriptionTransition::class);
 ```
 
@@ -1076,7 +1078,7 @@ $subscription = Subscription::create([
 ]);
 ```
 
-`TrialWillEnd` fires at each `trial_ending_notices` interval before `trial_ends_at` (default `['3 days']`; tune to `['7 days', '3 days', '1 day']` for a yearly plan or `['1 hour', '15 minutes']` for an hourly rental — then run `billing:expire-trials` more often than daily) — from the `billing:expire-trials` run, so it needs the schedule enabled. `$event->notice` tells the listener which reminder to word. A `Price` can also carry its own `trial_ending_notices` (json column): `null` = the global list, `[]` = no reminders for that price, its own array = its own cadence — so a yearly plan and an hourly rental coexist in one project. It's your hook to **prompt the customer to subscribe** (an email/push with a link to your payment page). If nobody converts, the same command moves `trialing` subscriptions past `trial_ends_at` to `ended`.
+`TrialWillEnd` fires at each `trial_ending_notices` interval before `trial_ends_at` (default `['3 days']`; tune to `['7 days', '3 days', '1 day']` for a yearly plan or `['1 hour', '15 minutes']` for an hourly rental — then run `billing:expire-trials` more often than daily) — from the `billing:expire-trials` run, so it needs the schedule enabled. `$event->notice` tells the listener which reminder to word. A `Price` can also carry its own `trial_ending_notices` (json column): `null` = the global list, `[]` = no reminders for that price, its own array = its own cadence — so a yearly plan and an hourly rental coexist in one project. It's your hook to **prompt the customer to subscribe** (an email/push with a link to your payment page). If nobody converts, the same command moves `trialing` subscriptions past `trial_ends_at` to `ended` and dispatches `TrialEnded` for each — the hook for the letter that announces the fact, which is a different letter from the reminders that came before the deadline.
 
 Converting is just a payment against this subscription — no separate "convert trial" method. Create a `Payment` with `payable = $subscription` and send the customer to checkout; `PaymentSucceeded` flips the row straight to `active` (the listener doesn't care it started as `trialing`):
 

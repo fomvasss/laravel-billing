@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Fomvasss\Billing\Tests\Feature;
 
 use Fomvasss\Billing\Enums\SubscriptionStatus;
+use Fomvasss\Billing\Events\TrialEnded;
 use Fomvasss\Billing\Events\TrialWillEnd;
 use Fomvasss\Billing\Models\Plan;
 use Fomvasss\Billing\Models\Price;
@@ -24,6 +25,22 @@ class ExpireTrialsTest extends TestCase
 
         $this->assertSame(SubscriptionStatus::Ended, $expired->fresh()->status);
         $this->assertSame(SubscriptionStatus::Trialing, $stillRunning->fresh()->status);
+    }
+
+    public function test_trial_ended_fires_once_per_expired_trial(): void
+    {
+        Event::fake([TrialEnded::class]);
+
+        $expired = $this->trialSubscription(now()->subDay());
+        $stillRunning = $this->trialSubscription(now()->addWeek());
+
+        $this->artisan('billing:expire-trials')->assertSuccessful();
+        $this->artisan('billing:expire-trials')->assertSuccessful(); // second run — the row is `ended` now
+
+        Event::assertDispatchedTimes(TrialEnded::class, 1);
+        Event::assertDispatched(TrialEnded::class, fn ($event) => $event->subscription->is($expired)
+            && $event->subscription->status === SubscriptionStatus::Ended);
+        Event::assertNotDispatched(TrialEnded::class, fn ($event) => $event->subscription->is($stillRunning));
     }
 
     public function test_trial_will_end_fires_once_within_the_notice_window(): void

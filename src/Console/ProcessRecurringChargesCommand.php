@@ -11,7 +11,6 @@ use Fomvasss\Billing\Enums\PaymentStatus;
 use Fomvasss\Billing\Enums\PaymentType;
 use Fomvasss\Billing\Enums\SubscriptionStatus;
 use Fomvasss\Billing\Events\PaymentFailed;
-use Fomvasss\Billing\Events\SubscriptionCancelled;
 use Fomvasss\Billing\Models\Payment;
 use Fomvasss\Billing\Models\PaymentMethod;
 use Fomvasss\Billing\Models\Subscription;
@@ -100,9 +99,8 @@ class ProcessRecurringChargesCommand extends Command
             ->where('cancels_at', '<=', now())
             ->chunkById(200, function ($subscriptions) {
                 foreach ($subscriptions as $subscription) {
-                    $subscription->update(['status' => SubscriptionStatus::Canceled]);
-
-                    SubscriptionCancelled::dispatch($subscription);
+                    // No cancels_at here — it's the date the customer asked for, already stamped.
+                    $subscription->markCanceled();
                 }
             });
     }

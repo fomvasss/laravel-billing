@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Fomvasss\Billing\Console;
 
 use Fomvasss\Billing\Enums\SubscriptionStatus;
+use Fomvasss\Billing\Events\TrialEnded;
 use Fomvasss\Billing\Events\TrialWillEnd;
 use Fomvasss\Billing\Models\Subscription;
 use Fomvasss\Billing\Support\Intervals;
@@ -12,9 +13,8 @@ use Illuminate\Console\Command;
 
 /**
  * Two passes: TrialWillEnd for trials about to run out (the "prompt for a card" hook — once per
- * subscription per notice, trial_notices_sent is the marker), then the expiry itself. No event on expiry
- * on purpose — the consumer just reads `status` to decide what to block (see the itschats trial
- * case in "Бізнес-модель itschats" in the package plan).
+ * subscription per notice, trial_notices_sent is the marker), then the expiry itself, which
+ * dispatches TrialEnded per subscription.
  */
 class ExpireTrialsCommand extends Command
 {
@@ -26,18 +26,50 @@ class ExpireTrialsCommand extends Command
     {
         $this->dispatchTrialEndingNotices();
 
-        $count = Subscription::query()
+        $count = $this->expireTrials();
+
+        $this->info("Expired {$count} trial subscription(s).");
+
+        return self::SUCCESS;
+    }
+
+    /**
+     * Row by row rather than one mass update: TrialEnded carries the subscription, so the consumer
+     * knows whose trial ran out. The status is re-checked inside the update, so a concurrent run
+     * (or a conversion landing mid-pass) can't have the same trial expire — and be announced —
+     * twice.
+     */
+    protected function expireTrials(): int
+    {
+        $count = 0;
+
+        Subscription::query()
             ->where('status', SubscriptionStatus::Trialing)
             // Provider-managed trials convert (or lapse) on the gateway's side and report back via
             // webhooks — ending one locally would fight the provider's own transition.
             ->whereNull('external_id')
             ->whereNotNull('trial_ends_at')
             ->where('trial_ends_at', '<=', now())
-            ->update(['status' => SubscriptionStatus::Ended]);
+            ->chunkById(200, function ($subscriptions) use (&$count) {
+                foreach ($subscriptions as $subscription) {
+                    $claimed = Subscription::query()
+                        ->whereKey($subscription->getKey())
+                        ->where('status', SubscriptionStatus::Trialing)
+                        ->update(['status' => SubscriptionStatus::Ended]);
 
-        $this->info("Expired {$count} trial subscription(s).");
+                    if ($claimed === 0) {
+                        continue;
+                    }
 
-        return self::SUCCESS;
+                    $count++;
+                    $subscription->status = SubscriptionStatus::Ended;
+                    $subscription->syncOriginalAttribute('status');
+
+                    TrialEnded::dispatch($subscription);
+                }
+            });
+
+        return $count;
     }
 
     /**

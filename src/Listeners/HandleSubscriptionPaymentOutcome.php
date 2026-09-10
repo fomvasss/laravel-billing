@@ -8,7 +8,6 @@ use Fomvasss\Billing\Enums\SubscriptionStatus;
 use Fomvasss\Billing\Events\PaymentCanceled;
 use Fomvasss\Billing\Events\PaymentFailed;
 use Fomvasss\Billing\Events\PaymentSucceeded;
-use Fomvasss\Billing\Events\SubscriptionCancelled;
 use Fomvasss\Billing\Models\Subscription;
 use Illuminate\Support\Facades\Log;
 
@@ -78,8 +77,7 @@ class HandleSubscriptionPaymentOutcome
         // Grace/retries only for gateway-managed recurring charges — a manually-paid subscription
         // (gateway=null) has no saved method to retry against, so there's nothing to wait for.
         if ($subscription->gateway === null) {
-            $subscription->update(['status' => SubscriptionStatus::Canceled, 'cancels_at' => now()]);
-            SubscriptionCancelled::dispatch($subscription);
+            $subscription->markCanceled(['cancels_at' => now()]);
 
             return;
         }

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Fomvasss\Billing\Models;
 
+use Fomvasss\Billing\Concerns\DerivesTenantId;
 use Fomvasss\Billing\Enums\PaymentInitiation;
 use Fomvasss\Billing\Enums\PaymentStatus;
 use Fomvasss\Billing\Enums\PaymentType;
@@ -19,6 +20,7 @@ use Illuminate\Support\Facades\Log;
 
 class Payment extends Model
 {
+    use DerivesTenantId;
     use HasUuids;
     use SoftDeletes;
 

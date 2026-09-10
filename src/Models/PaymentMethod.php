@@ -4,12 +4,14 @@ declare(strict_types=1);
 
 namespace Fomvasss\Billing\Models;
 
+use Fomvasss\Billing\Concerns\DerivesTenantId;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
 
 class PaymentMethod extends Model
 {
+    use DerivesTenantId;
     use HasUuids;
 
     protected $table = 'billing_payment_methods';

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Fomvasss\Billing\Models;
 
+use Fomvasss\Billing\Concerns\DerivesTenantId;
 use Fomvasss\Billing\Enums\Interval;
 use Fomvasss\Billing\Enums\PricingType;
 use Fomvasss\Billing\Enums\SubscriptionStatus;
@@ -27,6 +28,7 @@ use Illuminate\Support\Facades\Log;
 
 class Subscription extends Model
 {
+    use DerivesTenantId;
     use HasUuids;
 
     protected $table = 'billing_subscriptions';

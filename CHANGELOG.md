@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.6.2] - 2026-09-10
+
+### Fixed
+- **`tenant_id` is now derived from the billable instead of being left empty.** The column is filled by the package's own writes (renewals, refunds), but a consumer creating a row by hand — `$billable->payments()->create([...])`, the documented way — set only `billable_type`/`billable_id` and left the tenant null. Nothing failed: the row was simply invisible to every tenant-scoped query and report, and nobody found out until a report came back short. `Payment`, `Subscription` and `PaymentMethod` now fill it on create from `Billable::tenantId()` when the caller left it empty; a tenant the caller passed itself is never overwritten (a cross-tenant row is a legitimate record), and a billable outside multi-tenancy keeps the column null.
+
+  Existing rows are not touched — backfill with `UPDATE billing_payments SET tenant_id = <the billable's tenant> WHERE tenant_id IS NULL` if your reports need them.
+
 ## [0.6.1] - 2026-09-09
 
 ### Fixed

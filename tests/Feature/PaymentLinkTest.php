@@ -7,6 +7,7 @@ namespace Fomvasss\Billing\Tests\Feature;
 use Fomvasss\Billing\Events\PaymentLinkOpened;
 use Fomvasss\Billing\Contracts\ReissueChargeOptionsContract;
 use Fomvasss\Billing\DTO\ChargeOptions;
+use Fomvasss\Billing\Enums\PaymentStatus;
 use Fomvasss\Billing\Models\Payment;
 use Fomvasss\Billing\Tests\Fixtures\TestUser;
 use Fomvasss\Billing\Tests\TestCase;
@@ -111,6 +112,29 @@ class PaymentLinkTest extends TestCase
         $this->get(route('billing.pay', $payment))
             ->assertStatus(303)
             ->assertRedirect('https://pay.mbnk.biz/retry');
+    }
+
+    /**
+     * The re-issued row has to go back to pending: reconcile-pending-payments only ever polls
+     * pending rows, so a canceled one left pointing at a live invoice is outside the safety net —
+     * lose the success webhook and the customer has paid for nothing, with no pass to fix it.
+     */
+    public function test_a_reissued_checkout_puts_the_payment_back_to_pending(): void
+    {
+        Http::fake([
+            'https://api.monobank.ua/api/merchant/invoice/create' => Http::response(['invoiceId' => 'inv_again', 'pageUrl' => 'https://pay.mbnk.biz/again']),
+        ]);
+
+        $payment = $this->payment([
+            'status' => 'canceled',
+            'payment_url' => 'https://pay.mbnk.biz/expired',
+            'payment_url_expires_at' => now()->subHour(),
+        ]);
+
+        $this->get(route('billing.pay', $payment))->assertStatus(303);
+
+        $this->assertSame(PaymentStatus::Pending, $payment->refresh()->status);
+        $this->assertSame('inv_again', $payment->external_id);
     }
 
     public function test_a_paid_payment_lands_on_the_success_page(): void

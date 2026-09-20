@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.8.1] - 2026-09-20
+
+### Fixed
+- **A re-issued checkout now puts the payment back to `pending`.** `billing.pay` is the permanent link precisely because it hands a dead checkout a fresh invoice — but `charge()` wrote only the new `external_id`, URL and expiry, leaving the row's status as it was. A customer returning to an abandoned checkout an hour later (by then `canceled`, courtesy of `billing:reconcile-pending-payments`) therefore paid against a row still marked `canceled`, and `billing:reconcile-pending-payments` — which polls `pending` rows and nothing else — no longer watched it. The happy path was fine: the webhook arrives, `transitionTo(Paid)` accepts it, the subscription activates. Lose that one webhook, though, and the payment was outside the safety net that exists for exactly this: money taken, nothing delivered, and no scheduled pass that would ever notice. Any row the consumer shows by status was also misreporting a live checkout as canceled.
+
+  `charge()` now resets the status to `pending` whenever it issues a checkout for a payment that is not already `paid`. A `paid` row is never reopened, and `PaymentLinkController` still refuses to recharge one.
+
 ## [0.8.0] - 2026-09-20
 
 ### Added

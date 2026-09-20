@@ -190,6 +190,12 @@ class BillingManager
             // Kept for support/debugging: without it the gateway's own account of what it did with
             // this charge exists nowhere (a webhook only ever reports the outcome).
             'raw_response' => $result->raw !== [] ? $result->raw : $payment->raw_response,
+            // A fresh invoice means this payment is awaiting its outcome again. Without the reset a
+            // re-issue through billing.pay leaves a canceled/failed row pointing at a LIVE checkout,
+            // and reconcile-pending-payments only ever polls Pending ones — so a lost success
+            // webhook would strand a paid invoice for good, money taken and nothing delivered.
+            // Paid is never reopened: that row's outcome is already known.
+            ...($payment->status === PaymentStatus::Paid ? [] : ['status' => PaymentStatus::Pending]),
         ])->save();
 
         return $result;

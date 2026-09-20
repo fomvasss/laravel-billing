@@ -768,12 +768,14 @@ The split is **per subscription, not per gateway** — deliberately, since a gat
 
 ### Statuses and history
 
-A `Subscription` is **one row for its whole life** — the first payment flips a `trialing` row to `active`, renewals move `current_period_ends_at` forward, dunning takes it through `past_due` and back; a new row only appears if the customer signs up again after `canceled`/`ended`.
+A `Subscription` is **one row for its whole life** — the first payment flips an `incomplete` or `trialing` row to `active`, renewals move `current_period_ends_at` forward, dunning takes it through `past_due` and back; a new row only appears if the customer signs up again after `canceled`/`ended`.
 
 ```mermaid
 stateDiagram-v2
+    [*] --> incomplete: checkout started, nothing paid yet
     [*] --> trialing: registration, free period
     [*] --> active: direct paid signup
+    incomplete --> active: first payment (PaymentSucceeded)
     trialing --> active: first payment (PaymentSucceeded)
     trialing --> ended: trial expired without converting
     active --> active: renewal paid — period +1 interval
@@ -787,6 +789,7 @@ stateDiagram-v2
 
 | Status | Meaning |
 |---|---|
+| `incomplete` | The row a checkout created so the payment has something to point at — **no access**, and every scheduled command ignores it |
 | `trialing` | Free period, no card needed — still counts as active for access checks |
 | `active` | Paid and current |
 | `past_due` | A renewal failed; retried on the `retry_intervals` ladder — `isActive()` stays true until `grace_ends_at`, which is always stamped past the next retry |
@@ -794,7 +797,7 @@ stateDiagram-v2
 | `canceled` | Cancelled (immediately, at period end, or by dunning exhausting `max_recurring_attempts`) |
 | `ended` | Trial expired without converting |
 
-**Renewing vs re-subscribing** — the package doesn't decide this, *which row the payment points to* does. A `Payment` with `payable` = an existing subscription row is a renewal/reactivation: the built-in listener flips whatever status it finds (`trialing`, `past_due`, even `canceled`) to `active` and advances the period. `canceled`/`ended` rows are never touched automatically — no auto-charges against them — so "coming back" is always your code's move, and the rule of thumb is: within the grace window (`past_due`) pay against the **same row**; after `canceled`/`ended` create a **new row**. Two reasons: history stays clean (the old row remains a finished episode), and a period-anchor gotcha — the listener advances the period from `current_period_ends_at`, which on a long-dead row is months in the past, so a payment against it would produce a "new" period that has already ended (fixable by nulling `current_period_ends_at` first, but a fresh row simply doesn't have the problem).
+**Renewing vs re-subscribing** — the package doesn't decide this, *which row the payment points to* does. A `Payment` with `payable` = an existing subscription row is a renewal/reactivation: the built-in listener flips any row that is still running (`incomplete`, `trialing`, `active`, `past_due`) to `active` and advances the period. `canceled`/`ended`/`paused` rows are refused — a late or replayed webhook must not revive a finished episode or cut a pause short — and are never touched automatically — no auto-charges against them — so "coming back" is always your code's move, and the rule of thumb is: within the grace window (`past_due`) pay against the **same row**; after `canceled`/`ended` create a **new row**. Two reasons: history stays clean (the old row remains a finished episode), and a period-anchor gotcha — the listener advances the period from `current_period_ends_at`, which on a long-dead row is months in the past, so a payment against it would produce a "new" period that has already ended (fixable by nulling `current_period_ends_at` first, but a fresh row simply doesn't have the problem).
 
 What's recorded out of the box: every charge is an immutable `Payment` row (the full financial history, forever), raw webhooks live in `billing_webhook_calls` (pruned after `prune_after_days`), and the subscription row itself keeps the key timestamps (`trial_ends_at`, `cancels_at`, `pause_ends_at`, `grace_ends_at`, `recurring_attempts`). What's **not** recorded: a status-transition log — `status` is overwritten in place.
 
@@ -993,6 +996,26 @@ $subscription = Subscription::create([
     'current_period_ends_at' => now()->addMonth(),
 ]);
 ```
+
+That row says "already paid for, the period runs to `current_period_ends_at`" — right when the money came first (an invoice settled out of band, a plan you grant). **When the payment comes after the row** — the ordinary redirect checkout, where the `Payment` needs a `payable` to point at before the customer even sees the gateway — create it as `incomplete` and let the payment activate it:
+
+```php
+$subscription = Subscription::create([
+    'status' => SubscriptionStatus::Incomplete,
+    'gateway' => null, // the successful payment stamps the gateway it came through
+    'price_id' => $price->id,
+    'billable_type' => $organization::class,
+    'billable_id' => $organization->id,
+]);
+
+$payment = Payment::create([/* ... */, 'payable_type' => $subscription->getMorphClass(), 'payable_id' => $subscription->id]);
+
+Billing::charge($payment, new ChargeOptions(saveCard: true));
+
+return redirect($payment->payment_url);
+```
+
+`incomplete` grants no access (`isActive()` is false, `scopeActive()` skips it) and no scheduled command touches it, so it can sit there as long as the customer needs to pay; `PaymentSucceeded` flips it to `active` and stamps the first period. A declined card leaves it `incomplete` — a failed checkout is not a failed renewal, so dunning stays out of it and the customer can try again against the same row. Do **not** spell this state as a `trialing` row with an already-past `trial_ends_at`: `billing:expire-trials` cannot tell that from a lapsed trial and moves it to `ended` within the hour, after which the payment that finally arrives is refused.
 
 The first charge tokenizes the card (`saveCard: true`, see "Tokenization" above). Auto-renewal itself is `billing:process-recurring-charges` — off by default, so turn on the schedule (`config('billing.schedule.enabled', true)`, see the table above for what it does and when it runs); everything past that (advancing the period, dunning on failure) is already wired up, nothing else to write.
 
@@ -1325,7 +1348,7 @@ Every status/type column is backed by a string enum in `Fomvasss\Billing\Enums`,
 |---|---|---|
 | `PaymentStatus` | `payments.status` | `pending`, `paid`, `failed`, `canceled` |
 | `PaymentType` | `payments.type` | `charge`, `refund` |
-| `SubscriptionStatus` | `subscriptions.status` | `trialing`, `active`, `paused`, `past_due`, `canceled`, `ended` |
+| `SubscriptionStatus` | `subscriptions.status` | `incomplete`, `trialing`, `active`, `paused`, `past_due`, `canceled`, `ended` |
 | `PricingType` | `prices.pricing_type` | `flat`, `licensed`, `metered` |
 | `Interval` | `prices.interval` | `minute`, `hour`, `day`, `week`, `month`, `year` (nullable — `null` = one-off/lifetime price, no cycle) |
 

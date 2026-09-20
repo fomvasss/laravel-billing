@@ -203,7 +203,8 @@ class Subscription extends Model
 
     /**
      * The successful counterpart of recordRenewalFailure(): moves into the next period and clears
-     * the whole dunning state. Shared by a paid renewal (HandleSubscriptionPaymentOutcome) and by a
+     * the whole dunning state. Shared by a paid renewal (HandleSubscriptionPaymentOutcome), by the
+     * first payment of an `incomplete` subscription — the checkout that created the row — and by a
      * renewal that owed nothing at all and so never reached a gateway (ProcessRecurringChargesCommand
      * on a metered period with zero consumption).
      *
@@ -214,7 +215,7 @@ class Subscription extends Model
      */
     public function recordRenewalSuccess(?string $gateway = null): bool
     {
-        if (! in_array($this->status, [SubscriptionStatus::Trialing, SubscriptionStatus::Active, SubscriptionStatus::PastDue], true)) {
+        if (! in_array($this->status, [SubscriptionStatus::Incomplete, SubscriptionStatus::Trialing, SubscriptionStatus::Active, SubscriptionStatus::PastDue], true)) {
             Log::warning('Billing: ignored a renewal success for a subscription that is no longer running', [
                 'subscription_id' => $this->id,
                 'status' => $this->status->value,

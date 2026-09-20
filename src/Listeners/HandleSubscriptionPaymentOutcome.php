@@ -55,10 +55,12 @@ class HandleSubscriptionPaymentOutcome
             return;
         }
 
-        // A failed charge against a still-trialing subscription is a failed conversion attempt at
-        // checkout, not a failed renewal — dunning here would cancel the trial after a few
-        // declined cards. The trial keeps running; expire-trials ends it if nobody converts.
-        if ($subscription->status === SubscriptionStatus::Trialing) {
+        // A failed charge against a subscription that has never been paid for is a failed attempt
+        // at checkout, not a failed renewal — dunning here would cancel the trial after a few
+        // declined cards, and would put an `incomplete` row into past_due, a dunning episode for a
+        // period nobody ever bought. The trial keeps running (expire-trials ends it if nobody
+        // converts); the incomplete row keeps waiting for a payment that may still come.
+        if (in_array($subscription->status, [SubscriptionStatus::Incomplete, SubscriptionStatus::Trialing], true)) {
             return;
         }
 

@@ -95,6 +95,7 @@ class AccessInvariantsTest extends TestCase
         $user = TestUser::create(['name' => 'Buyer']);
 
         $rows = [
+            'incomplete, waiting for the first payment' => ['status' => SubscriptionStatus::Incomplete],
             'trialing, ends tomorrow' => ['status' => SubscriptionStatus::Trialing, 'trial_ends_at' => now()->addDay()],
             'trialing, lapsed an hour ago' => ['status' => SubscriptionStatus::Trialing, 'trial_ends_at' => now()->subHour()],
             'trialing, open-ended' => ['status' => SubscriptionStatus::Trialing],

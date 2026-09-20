@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.8.0] - 2026-09-20
+
+### Added
+- **`SubscriptionStatus::Incomplete` — the row a checkout creates before anything is paid.** A `Payment` needs a `payable` to point at, so on a redirect checkout the subscription row has to exist before the customer ever reaches the gateway — and the package had no status for "exists, grants nothing, waiting for the first payment". The shape everyone reached for instead was a `trialing` row with an already-past `trial_ends_at` (a past date, not `null`, because `trialing` with no end date means an *open-ended* trial, i.e. access granted before payment). `billing:expire-trials` cannot tell that from a trial that ran out: it runs hourly, moves the row to `ended`, and the payment the customer is still making then lands on a subscription `recordRenewalSuccess()` refuses — money taken, no access, one warning in the log. Pressing "subscribe" again makes a second row rather than reusing the first, since the dead one no longer looks like anything a checkout can resume.
+
+  `incomplete` is that state with a name: `isActive()` is false and `scopeActive()` skips it, and every scheduled command ignores it — it is neither a trial to expire, nor a period to renew, nor a quota to reset — so it can wait as long as the customer needs. `PaymentSucceeded` activates it: `recordRenewalSuccess()` now accepts it alongside `trialing`/`active`/`past_due`, stamping the gateway the payment came through and the first period. `PaymentFailed`/`PaymentCanceled` leave it `incomplete` — a declined card at checkout is not a failed renewal, so dunning stays out of it and the customer can retry against the same row. `SubscriptionRenewed::$previousStatus` reports `Incomplete`, which is how a listener tells a first purchase from a renewal.
+
+  **No migration** — `subscriptions.status` is a plain string column, and existing rows keep their status. If your checkout uses the past-`trial_ends_at` trick, switch it to `Incomplete` (see "Subscribe to a 15 GB plan" in Recipes) and the whole failure mode goes away.
+
+### Fixed
+- **Docs: the built-in payment listener never revived a `canceled` subscription.** The "Statuses and history" section claimed it "flips whatever status it finds (`trialing`, `past_due`, even `canceled`) to `active`" — `recordRenewalSuccess()` has always refused anything past `past_due`, precisely so a replayed webhook cannot resurrect a finished episode or cut a pause short. The README said the opposite of the code; only the README was wrong.
+
 ## [0.7.0] - 2026-09-10
 
 ### Added

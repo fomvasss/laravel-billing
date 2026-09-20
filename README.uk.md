@@ -752,12 +752,14 @@ $this->app->bind(RenewalChargeOptionsContract::class, fn () => new class impleme
 
 ### Статуси та історія
 
-`Subscription` — **один рядок на все життя**: перша оплата переводить `trialing` в `active`, продовження посувають `current_period_ends_at`, dunning проводить через `past_due` і назад; новий рядок з'являється лише якщо клієнт оформлюється заново після `canceled`/`ended`.
+`Subscription` — **один рядок на все життя**: перша оплата переводить `incomplete` або `trialing` в `active`, продовження посувають `current_period_ends_at`, dunning проводить через `past_due` і назад; новий рядок з'являється лише якщо клієнт оформлюється заново після `canceled`/`ended`.
 
 ```mermaid
 stateDiagram-v2
+    [*] --> incomplete: оформлення почалось, ще нічого не оплачено
     [*] --> trialing: реєстрація, безкоштовний період
     [*] --> active: одразу платне оформлення
+    incomplete --> active: перша оплата (PaymentSucceeded)
     trialing --> active: перша оплата (PaymentSucceeded)
     trialing --> ended: тріал сплив без конвертації
     active --> active: продовження оплачено — період +1 інтервал
@@ -771,6 +773,7 @@ stateDiagram-v2
 
 | Статус | Значення |
 |---|---|
+| `incomplete` | Рядок, який створило оформлення, щоб платежу було на що вказувати — **доступу не дає**, і жодна з планових команд його не чіпає |
 | `trialing` | Безкоштовний період, картка не потрібна — для перевірок доступу рахується активною |
 | `active` | Оплачена й актуальна |
 | `past_due` | Продовження не вдалось; ретраїться за драбинкою `retry_intervals` — `isActive()` лишається true до `grace_ends_at`, яке завжди штампується за наступний ретрай |
@@ -778,7 +781,7 @@ stateDiagram-v2
 | `canceled` | Скасована (негайно, в кінці періоду, або dunning'ом після `max_recurring_attempts`) |
 | `ended` | Тріал сплив без конвертації |
 
-**Продовження чи оформлення заново** — пакет це не вирішує, вирішує те, *на який рядок вказує платіж*. `Payment` з `payable` = існуючий рядок підписки — це продовження/реанімація: вбудований лістенер переводить будь-який знайдений статус (`trialing`, `past_due`, навіть `canceled`) в `active` і посуває період. Рядки `canceled`/`ended` ніколи не чіпаються автоматично — жодних автосписань по них — тож "повернення" завжди ініціює твій код, і правило таке: в межах grace-вікна (`past_due`) — оплата по **тому самому рядку**; після `canceled`/`ended` — створюй **новий рядок**. Дві причини: історія чистіша (старий рядок лишається завершеним епізодом), і пастка з якорем періоду — лістенер посуває період від `current_period_ends_at`, який у давно мертвого рядка на місяці в минулому, тож оплата по ньому дасть "новий" період, що вже закінчився (лікується обнуленням `current_period_ends_at`, але свіжий рядок просто не має цієї проблеми).
+**Продовження чи оформлення заново** — пакет це не вирішує, вирішує те, *на який рядок вказує платіж*. `Payment` з `payable` = існуючий рядок підписки — це продовження/реанімація: вбудований лістенер переводить в `active` будь-який рядок, що ще живий (`incomplete`, `trialing`, `active`, `past_due`), і посуває період. Рядки `canceled`/`ended`/`paused` відхиляються — запізнілий чи повторений вебхук не має воскрешати завершений епізод або обривати паузу — і ніколи не чіпаються автоматично — жодних автосписань по них — тож "повернення" завжди ініціює твій код, і правило таке: в межах grace-вікна (`past_due`) — оплата по **тому самому рядку**; після `canceled`/`ended` — створюй **новий рядок**. Дві причини: історія чистіша (старий рядок лишається завершеним епізодом), і пастка з якорем періоду — лістенер посуває період від `current_period_ends_at`, який у давно мертвого рядка на місяці в минулому, тож оплата по ньому дасть "новий" період, що вже закінчився (лікується обнуленням `current_period_ends_at`, але свіжий рядок просто не має цієї проблеми).
 
 Що фіксується з коробки: кожне списання — незмінний рядок `Payment` (повна фінансова історія, назавжди), сирі вебхуки — у `billing_webhook_calls` (чистяться через `prune_after_days`), а сам рядок підписки тримає ключові мітки (`trial_ends_at`, `cancels_at`, `pause_ends_at`, `grace_ends_at`, `recurring_attempts`). Що **не** фіксується: журнал переходів статусу — `status` перезаписується на місці.
 
@@ -976,6 +979,26 @@ $subscription = Subscription::create([
     'current_period_ends_at' => now()->addMonth(),
 ]);
 ```
+
+Такий рядок каже "уже оплачено, період триває до `current_period_ends_at`" — доречно, коли гроші прийшли першими (рахунок оплачено повз систему, план виданий вручну). **Коли оплата приходить після рядка** — звичайне оформлення з редіректом, де `Payment` має на що вказувати ще до того, як клієнт побачить касу — створюй рядок як `incomplete` і дай оплаті його активувати:
+
+```php
+$subscription = Subscription::create([
+    'status' => SubscriptionStatus::Incomplete,
+    'gateway' => null, // успішна оплата сама проштампує гейтвей, через який пройшла
+    'price_id' => $price->id,
+    'billable_type' => $organization::class,
+    'billable_id' => $organization->id,
+]);
+
+$payment = Payment::create([/* ... */, 'payable_type' => $subscription->getMorphClass(), 'payable_id' => $subscription->id]);
+
+Billing::charge($payment, new ChargeOptions(saveCard: true));
+
+return redirect($payment->payment_url);
+```
+
+`incomplete` не дає доступу (`isActive()` — false, `scopeActive()` його не бачить) і жодна планова команда його не чіпає, тож він може чекати рівно стільки, скільки клієнт платитиме; `PaymentSucceeded` переводить його в `active` і штампує перший період. Відхилена картка лишає його `incomplete` — невдала каса це не невдале продовження, тож dunning сюди не лізе, і клієнт може спробувати ще раз по тому самому рядку. **Не** записуй цей стан як `trialing` з простроченим `trial_ends_at`: `billing:expire-trials` не відрізнить його від протермінованого тріалу і протягом години переведе в `ended`, після чого оплату, яка нарешті прийде, буде відхилено.
 
 Перша оплата токенізує картку (`saveCard: true`, див. "Токенізація" вище). Саме автопродовження — це `billing:process-recurring-charges`, вимкнена за замовчуванням, тож треба увімкнути розклад (`config('billing.schedule.enabled', true)`, що саме вона робить і коли запускається — таблиця вище); усе решта (посування періоду, dunning при невдачі) уже підключено, більше нічого писати не треба.
 
@@ -1307,7 +1330,7 @@ Payment::forBillable($organization)->latest()->get();
 |---|---|---|
 | `PaymentStatus` | `payments.status` | `pending`, `paid`, `failed`, `canceled` |
 | `PaymentType` | `payments.type` | `charge`, `refund` |
-| `SubscriptionStatus` | `subscriptions.status` | `trialing`, `active`, `paused`, `past_due`, `canceled`, `ended` |
+| `SubscriptionStatus` | `subscriptions.status` | `incomplete`, `trialing`, `active`, `paused`, `past_due`, `canceled`, `ended` |
 | `PricingType` | `prices.pricing_type` | `flat`, `licensed`, `metered` |
 | `Interval` | `prices.interval` | `minute`, `hour`, `day`, `week`, `month`, `year` (nullable — `null` = разова/lifetime-ціна без циклу) |
 

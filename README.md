@@ -188,7 +188,7 @@ From there everything follows the name: a payment with `'gateway' => 'liqpay_sho
 
 - **WayForPay** needs its responder as the third `registerWebhook()` argument (`WayForPayWebhookResponder::class`) — without the signed acknowledgment WayForPay keeps re-delivering.
 - **Stripe and Paddle** only deliver to endpoints registered on their side, so the extra name's webhook has to be registered too: `php artisan billing:stripe-register-webhook --gateway=stripe_eu` (same `--gateway` for `billing:paddle-register-webhook`).
-- **Paddle**: point every account's default payment link at the same `/billing/paddle/checkout` — the page finds the payment by its transaction and uses the client token of the name it went through.
+- **Paddle**: point every account's default payment link at the same `/billing/paddle/checkout` — the page finds the payment by its transaction and uses the client token of the name it went through. Several sites on *one* Paddle account: one name per site with the same keys and its own `checkout_url`.
 - **Credentials in the database** (accounts added from an admin panel): bind your own `CredentialResolverContract`, which receives the gateway name (and tenant) and returns the credentials array — then those names need no config block, only the `extend()` call. The names themselves still have to be registered at boot: the gateway registry is built once, not per request.
 
 Tenants and names combine: a name picks the account type, the tenant picks whose credentials — a resolver gets both.
@@ -590,6 +590,8 @@ Paddle also needs its **checkout page** set up, because it has no hosted checkou
 
 - **Checkout → Checkout settings → Default payment link** — set it to `https://your-domain/billing/paddle/checkout`. Paddle refuses to create any transaction without one, and sends customers there to update a subscription's card too.
 - **Checkout → Website approval** — add your domain and wait for approval before going live.
+
+One default payment link per account can be too few: several sites of one business, or staging next to production on the same sandbox account. `PADDLE_CHECKOUT_URL` (the `checkout_url` credential) sends each transaction to that site's own `https://that-site/billing/paddle/checkout` instead. Its domain must pass Website approval first — Paddle refuses an unapproved one even in the sandbox — which is why it's opt-in. The default payment link stays required either way.
 
 The page initializes Paddle.js with `PADDLE_CLIENT_TOKEN` (a client-side token, `live_...` / `test_...`; a `test_` token switches it to the sandbox). Products and prices go inline in every transaction, so nothing has to be created in Paddle's catalog — only `PADDLE_TAX_CATEGORY` (default `standard`) has to be a category enabled on your account.
 
@@ -1523,7 +1525,7 @@ Per gateway, all optional until you use that gateway:
 | `WAYFORPAY_MERCHANT_ACCOUNT`, `WAYFORPAY_MERCHANT_DOMAIN`, `WAYFORPAY_SECRET_KEY`, `WAYFORPAY_LINK_TTL_MINUTES` (1440) | WayForPay |
 | `HUTKO_MERCHANT_ID`, `HUTKO_SECRET_KEY`, `HUTKO_LINK_TTL_MINUTES` (1440) | Hutko |
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | Stripe (link TTL comes from the Checkout Session's own `expires_at`) |
-| `PADDLE_API_KEY`, `PADDLE_CLIENT_TOKEN`, `PADDLE_WEBHOOK_SECRET`, `PADDLE_TAX_CATEGORY` (standard), `PADDLE_LINK_TTL_MINUTES` (1440) | Paddle (a `pdl_sdbx_` key talks to the sandbox API) |
+| `PADDLE_API_KEY`, `PADDLE_CLIENT_TOKEN`, `PADDLE_WEBHOOK_SECRET`, `PADDLE_CHECKOUT_URL` (optional), `PADDLE_TAX_CATEGORY` (standard), `PADDLE_LINK_TTL_MINUTES` (1440) | Paddle (a `pdl_sdbx_` key talks to the sandbox API) |
 
 ## Routes
 

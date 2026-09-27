@@ -184,7 +184,7 @@ Billing::extend('stripe_eu', StripeGateway::class)
 
 - **WayForPay** потребує респондера третім аргументом `registerWebhook()` (`WayForPayWebhookResponder::class`) — без підписаного підтвердження WayForPay шле callback повторно.
 - **Stripe і Paddle** доставляють лише на ендпоінти, зареєстровані на їхньому боці, тож вебхук додаткового імені теж треба зареєструвати: `php artisan billing:stripe-register-webhook --gateway=stripe_eu` (той самий `--gateway` у `billing:paddle-register-webhook`).
-- **Paddle**: default payment link кожного акаунта став на ту саму `/billing/paddle/checkout` — сторінка знаходить платіж за транзакцією і бере client token того імені, через яке він пройшов.
+- **Paddle**: default payment link кожного акаунта став на ту саму `/billing/paddle/checkout` — сторінка знаходить платіж за транзакцією і бере client token того імені, через яке він пройшов. Кілька сайтів на *одному* Paddle-акаунті: ім'я на кожен сайт з тими самими ключами і своїм `checkout_url`.
 - **Креди в БД** (акаунти додаються з адмінки): прив'яжи власний `CredentialResolverContract`, який отримує ім'я гейтвея (і tenant) і повертає масив кредів — тоді блок у конфізі для цих імен не потрібен, лише виклик `extend()`. Самі імена все одно мають бути зареєстровані на boot: реєстр гейтвеїв будується один раз, а не на кожен запит.
 
 Tenant і ім'я комбінуються: ім'я обирає тип акаунта, tenant — чиї креди; резолвер отримує обидва.
@@ -574,6 +574,8 @@ php artisan billing:paddle-register-webhook   # створює або оновл
 
 - **Checkout → Checkout settings → Default payment link** — постав `https://твій-домен/billing/paddle/checkout`. Без нього Paddle не створює жодної транзакції, і саме туди він шле клієнтів оновлювати картку підписки.
 - **Checkout → Website approval** — додай свій домен і дочекайся схвалення перед запуском на проді.
+
+Одного default payment link на акаунт буває замало: кілька сайтів одного бізнесу або staging поруч із продом на тому самому sandbox-акаунті. `PADDLE_CHECKOUT_URL` (кред `checkout_url`) шле кожну транзакцію на власну `https://той-сайт/billing/paddle/checkout`. Її домен спершу має пройти Website approval — Paddle відхиляє несхвалений навіть у sandbox — тому це опція, а не поведінка за замовчуванням. Default payment link лишається обов'язковим у будь-якому разі.
 
 Сторінка ініціалізує Paddle.js з `PADDLE_CLIENT_TOKEN` (client-side token, `live_...` / `test_...`; `test_`-токен вмикає sandbox). Продукти й ціни йдуть inline у кожній транзакції, тож у каталозі Paddle нічого створювати не треба — лише `PADDLE_TAX_CATEGORY` (за замовчуванням `standard`) має бути категорією, увімкненою в акаунті.
 
@@ -1505,7 +1507,7 @@ Billing::charge($payment);
 | `WAYFORPAY_MERCHANT_ACCOUNT`, `WAYFORPAY_MERCHANT_DOMAIN`, `WAYFORPAY_SECRET_KEY`, `WAYFORPAY_LINK_TTL_MINUTES` (1440) | WayForPay |
 | `HUTKO_MERCHANT_ID`, `HUTKO_SECRET_KEY`, `HUTKO_LINK_TTL_MINUTES` (1440) | Hutko |
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | Stripe (TTL лінка бере з власного `expires_at` Checkout Session) |
-| `PADDLE_API_KEY`, `PADDLE_CLIENT_TOKEN`, `PADDLE_WEBHOOK_SECRET`, `PADDLE_TAX_CATEGORY` (standard), `PADDLE_LINK_TTL_MINUTES` (1440) | Paddle (ключ `pdl_sdbx_` працює з sandbox API) |
+| `PADDLE_API_KEY`, `PADDLE_CLIENT_TOKEN`, `PADDLE_WEBHOOK_SECRET`, `PADDLE_CHECKOUT_URL` (опційно), `PADDLE_TAX_CATEGORY` (standard), `PADDLE_LINK_TTL_MINUTES` (1440) | Paddle (ключ `pdl_sdbx_` працює з sandbox API) |
 
 ## Маршрути
 

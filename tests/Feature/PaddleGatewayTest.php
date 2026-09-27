@@ -68,6 +68,18 @@ class PaddleGatewayTest extends TestCase
             && $request['items'][0]['price']['product']['tax_category'] === 'standard');
     }
 
+    public function test_an_explicit_checkout_url_opens_the_checkout_on_that_site_instead_of_the_default_link(): void
+    {
+        config()->set('billing.gateways.paddle.checkout_url', 'https://shop2.example.test/billing/paddle/checkout');
+
+        Http::fake(['https://sandbox-api.paddle.com/transactions' => Http::response(['data' => ['id' => 'txn_1', 'checkout' => ['url' => 'https://shop2.example.test/billing/paddle/checkout?_ptxn=txn_1']]])]);
+
+        $result = Billing::charge($this->pendingPayment());
+
+        Http::assertSent(fn ($request) => $request['checkout'] === ['url' => 'https://shop2.example.test/billing/paddle/checkout']);
+        $this->assertSame('https://shop2.example.test/billing/paddle/checkout?_ptxn=txn_1', $result->url);
+    }
+
     public function test_a_live_key_goes_to_the_live_api(): void
     {
         config()->set('billing.gateways.paddle.api_key', 'pdl_live_apikey_test');

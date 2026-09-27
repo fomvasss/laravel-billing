@@ -63,10 +63,12 @@ class PaddleGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             'items' => $this->items($payment, $options),
             'currency_code' => $payment->currency,
             'custom_data' => ['payment_id' => (string) $payment->id],
-            // No checkout.url: Paddle then uses the account's default payment link, which is the
-            // billing.paddle.checkout page. Passing our own URL instead is refused unless its domain
-            // went through Website approval — even in the sandbox (live-verified) — and the page
-            // finds the payment by the ?_ptxn= Paddle appends anyway.
+            // Opt-in only. Without it Paddle uses the account's default payment link — the
+            // billing.paddle.checkout page. An explicit URL (one site of several, staging next to
+            // production on one account) is refused unless its domain went through Website approval,
+            // even in the sandbox (live-verified), so sending one by default would break every
+            // install that hasn't been approved yet.
+            ...(empty($this->credentials['checkout_url']) ? [] : ['checkout' => ['url' => $this->credentials['checkout_url']]]),
         ])->throw()->json('data');
 
         $expiresAt = now()->addMinutes($this->linkTtlMinutes());
@@ -220,6 +222,7 @@ class PaddleGateway extends AbstractGateway implements RefundsPayments, ChecksPa
         return [
             ['name' => 'api_key', 'type' => 'text', 'secret' => true, 'help' => 'API key (pdl_live_apikey_... / pdl_sdbx_apikey_...) — Paddle > Developer tools > Authentication'],
             ['name' => 'client_token', 'type' => 'text', 'secret' => false, 'help' => 'Client-side token (live_... / test_...) для Paddle.js на сторінці оплати'],
+            ['name' => 'checkout_url', 'type' => 'text', 'secret' => false, 'help' => 'Необов\'язково: сторінка оплати цього сайту (https://сайт/billing/paddle/checkout, домен має пройти Website approval). Порожньо — default payment link акаунта'],
             ['name' => 'webhook_secret', 'type' => 'text', 'secret' => true, 'help' => 'Secret key notification destination (pdl_ntfset_...)'],
             ['name' => 'tax_category', 'type' => 'text', 'secret' => false, 'help' => 'Податкова категорія inline-продукту: standard, saas, digital-goods, ... (має бути увімкнена в акаунті)'],
             ['name' => 'link_ttl_minutes', 'type' => 'number', 'secret' => false, 'help' => 'Скільки хвилин живе посилання на оплату (за замовчуванням 1440)'],

@@ -143,8 +143,55 @@ Multi-merchant setups work in both directions out of the box. Outgoing calls res
 ```php
 use Fomvasss\Billing\Support\WebhookTenant;
 
-$credentials = app(CredentialResolverContract::class)->resolve('mygateway', WebhookTenant::fromRequest($request));
+$credentials = app(CredentialResolverContract::class)->resolve($request->route('gateway'), WebhookTenant::fromRequest($request));
 ```
+
+### Several accounts of one gateway
+
+Two LiqPay merchants, a second Stripe account for another region — each account is its own gateway **name** with its own config block. The built-in names (`liqpay`, `stripe`, `paddle`, ...) are registered by the package; register every extra name for the same driver class yourself:
+
+```php
+// config/billing.php
+'gateways' => [
+    'liqpay' => [
+        'public_key' => env('LIQPAY_PUBLIC_KEY'),
+        'private_key' => env('LIQPAY_PRIVATE_KEY'),
+    ],
+    'liqpay_shop2' => [
+        'public_key' => env('LIQPAY_SHOP2_PUBLIC_KEY'),
+        'private_key' => env('LIQPAY_SHOP2_PRIVATE_KEY'),
+    ],
+    'stripe_eu' => [
+        'secret_key' => env('STRIPE_EU_SECRET_KEY'),
+        'webhook_secret' => env('STRIPE_EU_WEBHOOK_SECRET'),
+    ],
+    // ...
+],
+```
+
+```php
+// AppServiceProvider::boot()
+use Fomvasss\Billing\Facades\Billing;
+use Fomvasss\Billing\Gateways\LiqPay\LiqPayGateway;
+use Fomvasss\Billing\Gateways\LiqPay\LiqPaySignatureValidator;
+use Fomvasss\Billing\Gateways\Stripe\StripeGateway;
+use Fomvasss\Billing\Gateways\Stripe\StripeSignatureValidator;
+
+Billing::extend('liqpay_shop2', LiqPayGateway::class)
+    ->registerWebhook('liqpay_shop2', LiqPaySignatureValidator::class);
+
+Billing::extend('stripe_eu', StripeGateway::class)
+    ->registerWebhook('stripe_eu', StripeSignatureValidator::class);
+```
+
+From there everything follows the name: a payment with `'gateway' => 'liqpay_shop2'` charges with that block's credentials, its webhooks arrive at `/billing/webhooks/liqpay_shop2` and are verified with that block's secret, and `Billing::gateways()` lists it as a gateway of its own. Things to know:
+
+- **WayForPay** needs its responder as the third `registerWebhook()` argument (`WayForPayWebhookResponder::class`) — without the signed acknowledgment WayForPay keeps re-delivering.
+- **Stripe and Paddle** only deliver to endpoints registered on their side, so the extra name's webhook has to be registered too — its URL is `Billing::gateway('stripe_eu')['webhook_url']`.
+- **Paddle**: point every account's default payment link at the same `/billing/paddle/checkout` — the page finds the payment by its transaction and uses the client token of the name it went through.
+- **Credentials in the database** (accounts added from an admin panel): bind your own `CredentialResolverContract`, which receives the gateway name (and tenant) and returns the credentials array — then those names need no config block, only the `extend()` call. The names themselves still have to be registered at boot: the gateway registry is built once, not per request.
+
+Tenants and names combine: a name picks the account type, the tenant picks whose credentials — a resolver gets both.
 
 ## `Payable` and `Billable`
 

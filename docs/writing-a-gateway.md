@@ -170,12 +170,16 @@ A separate class, run synchronously in `WebhookController` **before** the call i
 ```php
 use Fomvasss\Billing\Contracts\CredentialResolverContract;
 use Fomvasss\Billing\Contracts\SignatureValidator;
+use Fomvasss\Billing\Support\WebhookTenant;
 
 class AcmePaySignatureValidator implements SignatureValidator
 {
     public function isValid(Request $request): bool
     {
-        $secret = app(CredentialResolverContract::class)->resolve('acmepay', null)['api_key'] ?? null;
+        // The name this webhook came in on, not a hardcoded 'acmepay': your gateway may be
+        // registered twice (two merchant accounts), each name with its own credentials.
+        $gateway = $request->route('gateway') ?? 'acmepay';
+        $secret = app(CredentialResolverContract::class)->resolve($gateway, WebhookTenant::fromRequest($request))['api_key'] ?? null;
 
         // Fail closed: the webhook route exists even when the gateway isn't configured — with no
         // key an attacker could compute the "signature" themselves.
@@ -196,7 +200,7 @@ Things the built-in drivers learned the hard way:
 - **Use `hash_equals()`**, not `===`, for signature comparison.
 - **Read fields through `Support\WebhookPayload::fromRequest()`**, not `$request->input()`/`all()`, if your signature covers body fields rather than the raw content. Two real reasons: WayForPay POSTs raw JSON under a *form* content type (the framework-parsed body is one garbled key), and `$request->all()` merges query-string extras (the package's `webhookUrlParams` routing hints) into payload-wide signature schemes like Hutko's.
 - **If the gateway publishes a rotating key, cache it and retry once on failure** rather than refetching per webhook — and throttle the refetch so a flood of garbage signatures can't hammer the gateway's API. `MonobankSignatureValidator` is the worked example.
-- **Resolve the secret via `CredentialResolverContract`** (with `tenantId: null`), not `config()` directly — so a host that binds its own resolver keeps webhook verification working.
+- **Resolve the secret via `CredentialResolverContract`**, not `config()` directly — so a host that binds its own resolver keeps webhook verification working. Pass the gateway name from the route (`$request->route('gateway')`) and the tenant hint (`WebhookTenant::fromRequest($request)`), never literals: a second merchant account registered as `acmepay_shop2`, or a second tenant, would otherwise be verified against the first one's secret and get a 403.
 
 Note the asymmetry: this class runs before the payload is trusted, so it can't look up per-tenant credentials keyed by anything *in* the payload. A genuinely multi-merchant setup needs a per-tenant webhook URL — see the note in `MonobankSignatureValidator`.
 

@@ -21,7 +21,7 @@ class WayForPaySignatureValidator implements SignatureValidator
 {
     public function isValid(Request $request): bool
     {
-        $secret = app(CredentialResolverContract::class)->resolve('wayforpay', WebhookTenant::fromRequest($request))['secret_key'] ?? null;
+        $secret = app(CredentialResolverContract::class)->resolve($request->route('gateway') ?? 'wayforpay', WebhookTenant::fromRequest($request))['secret_key'] ?? null;
 
         // Fail closed — an unconfigured gateway's webhook route must reject, not verify against ''.
         if (! is_string($secret) || $secret === '') {

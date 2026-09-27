@@ -139,8 +139,55 @@ $this->app->bind(\Fomvasss\Billing\Contracts\CredentialResolverContract::class, 
 ```php
 use Fomvasss\Billing\Support\WebhookTenant;
 
-$credentials = app(CredentialResolverContract::class)->resolve('mygateway', WebhookTenant::fromRequest($request));
+$credentials = app(CredentialResolverContract::class)->resolve($request->route('gateway'), WebhookTenant::fromRequest($request));
 ```
+
+### Кілька акаунтів одного гейтвея
+
+Два мерчанти LiqPay, другий акаунт Stripe для іншого регіону — кожен акаунт це окреме **ім'я** гейтвея зі своїм блоком у конфізі. Вбудовані імена (`liqpay`, `stripe`, `paddle`, ...) реєструє пакет; кожне додаткове ім'я для того самого класу драйвера реєструєш сам:
+
+```php
+// config/billing.php
+'gateways' => [
+    'liqpay' => [
+        'public_key' => env('LIQPAY_PUBLIC_KEY'),
+        'private_key' => env('LIQPAY_PRIVATE_KEY'),
+    ],
+    'liqpay_shop2' => [
+        'public_key' => env('LIQPAY_SHOP2_PUBLIC_KEY'),
+        'private_key' => env('LIQPAY_SHOP2_PRIVATE_KEY'),
+    ],
+    'stripe_eu' => [
+        'secret_key' => env('STRIPE_EU_SECRET_KEY'),
+        'webhook_secret' => env('STRIPE_EU_WEBHOOK_SECRET'),
+    ],
+    // ...
+],
+```
+
+```php
+// AppServiceProvider::boot()
+use Fomvasss\Billing\Facades\Billing;
+use Fomvasss\Billing\Gateways\LiqPay\LiqPayGateway;
+use Fomvasss\Billing\Gateways\LiqPay\LiqPaySignatureValidator;
+use Fomvasss\Billing\Gateways\Stripe\StripeGateway;
+use Fomvasss\Billing\Gateways\Stripe\StripeSignatureValidator;
+
+Billing::extend('liqpay_shop2', LiqPayGateway::class)
+    ->registerWebhook('liqpay_shop2', LiqPaySignatureValidator::class);
+
+Billing::extend('stripe_eu', StripeGateway::class)
+    ->registerWebhook('stripe_eu', StripeSignatureValidator::class);
+```
+
+Далі все йде за іменем: платіж з `'gateway' => 'liqpay_shop2'` списується кредами цього блоку, його вебхуки приходять на `/billing/webhooks/liqpay_shop2` і перевіряються секретом цього блоку, а `Billing::gateways()` показує його окремим гейтвеєм. Що варто знати:
+
+- **WayForPay** потребує респондера третім аргументом `registerWebhook()` (`WayForPayWebhookResponder::class`) — без підписаного підтвердження WayForPay шле callback повторно.
+- **Stripe і Paddle** доставляють лише на ендпоінти, зареєстровані на їхньому боці, тож вебхук додаткового імені теж треба зареєструвати — його URL: `Billing::gateway('stripe_eu')['webhook_url']`.
+- **Paddle**: default payment link кожного акаунта став на ту саму `/billing/paddle/checkout` — сторінка знаходить платіж за транзакцією і бере client token того імені, через яке він пройшов.
+- **Креди в БД** (акаунти додаються з адмінки): прив'яжи власний `CredentialResolverContract`, який отримує ім'я гейтвея (і tenant) і повертає масив кредів — тоді блок у конфізі для цих імен не потрібен, лише виклик `extend()`. Самі імена все одно мають бути зареєстровані на boot: реєстр гейтвеїв будується один раз, а не на кожен запит.
+
+Tenant і ім'я комбінуються: ім'я обирає тип акаунта, tenant — чиї креди; резолвер отримує обидва.
 
 ## `Payable` і `Billable`
 

@@ -22,7 +22,7 @@ class HutkoSignatureValidator implements SignatureValidator
 {
     public function isValid(Request $request): bool
     {
-        $secretKey = app(CredentialResolverContract::class)->resolve('hutko', WebhookTenant::fromRequest($request))['secret_key'] ?? null;
+        $secretKey = app(CredentialResolverContract::class)->resolve($request->route('gateway') ?? 'hutko', WebhookTenant::fromRequest($request))['secret_key'] ?? null;
 
         // Fail closed — an unconfigured gateway's webhook route must reject, not verify against ''.
         if (! is_string($secretKey) || $secretKey === '') {

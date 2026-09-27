@@ -24,7 +24,7 @@ class MonobankSignatureValidator implements SignatureValidator
 {
     public function isValid(Request $request): bool
     {
-        $token = app(CredentialResolverContract::class)->resolve('monobank', WebhookTenant::fromRequest($request))['token'] ?? null;
+        $token = app(CredentialResolverContract::class)->resolve($request->route('gateway') ?? 'monobank', WebhookTenant::fromRequest($request))['token'] ?? null;
 
         // Fail closed — without a token there's no way to fetch the pubkey to verify against.
         if (! is_string($token) || $token === '') {

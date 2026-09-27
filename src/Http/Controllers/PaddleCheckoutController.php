@@ -24,10 +24,12 @@ class PaddleCheckoutController extends Controller
     {
         $transactionId = $request->query('_ptxn');
         $payment = is_string($transactionId) && $transactionId !== ''
-            ? Payment::query()->where('gateway', 'paddle')->where('external_id', $transactionId)->first()
+            ? Payment::query()->where('external_id', $transactionId)->first()
             : null;
 
-        $credentials = app(CredentialResolverContract::class)->resolve('paddle', $payment?->billable?->tenantId());
+        // The gateway name the payment went through — a second Paddle account registered under
+        // another name points its default payment link at this same page, with its own token.
+        $credentials = app(CredentialResolverContract::class)->resolve($payment->gateway ?? 'paddle', $payment?->billable?->tenantId());
         $token = $credentials['client_token'] ?? null;
 
         abort_if(! is_string($token) || $token === '', 404, 'Paddle checkout is not configured.');

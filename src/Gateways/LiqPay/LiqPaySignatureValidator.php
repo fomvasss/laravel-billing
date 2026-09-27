@@ -19,7 +19,7 @@ class LiqPaySignatureValidator implements SignatureValidator
 {
     public function isValid(Request $request): bool
     {
-        $privateKey = app(CredentialResolverContract::class)->resolve('liqpay', WebhookTenant::fromRequest($request))['private_key'] ?? null;
+        $privateKey = app(CredentialResolverContract::class)->resolve($request->route('gateway') ?? 'liqpay', WebhookTenant::fromRequest($request))['private_key'] ?? null;
 
         // Fail closed: every built-in gateway's webhook route exists even when the gateway is not
         // configured — with no key an attacker could compute the "signature" themselves.

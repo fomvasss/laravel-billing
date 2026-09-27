@@ -20,7 +20,7 @@ class StripeSignatureValidator implements SignatureValidator
 
     public function isValid(Request $request): bool
     {
-        $secret = app(CredentialResolverContract::class)->resolve('stripe', WebhookTenant::fromRequest($request))['webhook_secret'] ?? null;
+        $secret = app(CredentialResolverContract::class)->resolve($request->route('gateway') ?? 'stripe', WebhookTenant::fromRequest($request))['webhook_secret'] ?? null;
 
         // Fail closed — an unconfigured gateway's webhook route must reject, not verify against ''.
         if (! is_string($secret) || $secret === '') {

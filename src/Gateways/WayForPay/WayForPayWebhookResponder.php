@@ -31,7 +31,7 @@ class WayForPayWebhookResponder implements WebhookResponder
 
         // The tenant the validator verified against — the default tenant's secret would sign another
         // merchant's acknowledgment, which WayForPay rejects and keeps retrying.
-        $secret = app(CredentialResolverContract::class)->resolve('wayforpay', WebhookTenant::fromRequest($request))['secret_key'] ?? '';
+        $secret = app(CredentialResolverContract::class)->resolve($request->route('gateway') ?? 'wayforpay', WebhookTenant::fromRequest($request))['secret_key'] ?? '';
 
         $signature = hash_hmac(
             'md5',

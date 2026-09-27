@@ -84,6 +84,49 @@ class StripeRegisterWebhookCommandTest extends TestCase
             ->assertSuccessful();
     }
 
+    public function test_a_tenant_gets_its_own_endpoint_registered_with_its_own_key(): void
+    {
+        $this->app->bind(\Fomvasss\Billing\Contracts\CredentialResolverContract::class, fn () => new class implements \Fomvasss\Billing\Contracts\CredentialResolverContract {
+            public function resolve(string $gateway, ?string $tenantId): array
+            {
+                return $tenantId === 'acme' ? ['secret_key' => 'sk_acme'] : config("billing.gateways.{$gateway}", []);
+            }
+        });
+
+        Http::fake([
+            'https://api.stripe.com/v1/webhook_endpoints?*' => Http::response(['data' => []]),
+            'https://api.stripe.com/v1/webhook_endpoints' => Http::response(['id' => 'we_acme', 'secret' => 'whsec_acme']),
+        ]);
+
+        $this->artisan('billing:stripe-register-webhook', ['--tenant' => 'acme'])
+            ->expectsOutputToContain('for tenant acme')
+            ->expectsOutputToContain('whsec_acme')
+            ->assertSuccessful();
+
+        Http::assertSent(fn ($request) => $request->method() === 'POST'
+            && $request->hasHeader('Authorization', 'Bearer sk_acme')
+            // the hint the validator picks the secret by — Stripe can't be given it per payment
+            && $request['url'] === route('billing.webhook', ['gateway' => 'stripe', 'tenant' => 'acme']));
+    }
+
+    public function test_a_second_stripe_account_registers_under_its_own_gateway_name(): void
+    {
+        config()->set('billing.gateways.stripe_eu', ['secret_key' => 'sk_eu']);
+
+        Http::fake([
+            'https://api.stripe.com/v1/webhook_endpoints?*' => Http::response(['data' => []]),
+            'https://api.stripe.com/v1/webhook_endpoints' => Http::response(['id' => 'we_eu', 'secret' => 'whsec_eu']),
+        ]);
+
+        $this->artisan('billing:stripe-register-webhook', ['--gateway' => 'stripe_eu'])
+            ->expectsOutputToContain('webhook_secret of "stripe_eu"')
+            ->assertSuccessful();
+
+        Http::assertSent(fn ($request) => $request->method() === 'POST'
+            && $request->hasHeader('Authorization', 'Bearer sk_eu')
+            && $request['url'] === route('billing.webhook', ['gateway' => 'stripe_eu']));
+    }
+
     public function test_fails_cleanly_without_a_secret_key(): void
     {
         config()->set('billing.gateways.stripe.secret_key', null);

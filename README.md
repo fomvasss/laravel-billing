@@ -187,11 +187,13 @@ Billing::extend('stripe_eu', StripeGateway::class)
 From there everything follows the name: a payment with `'gateway' => 'liqpay_shop2'` charges with that block's credentials, its webhooks arrive at `/billing/webhooks/liqpay_shop2` and are verified with that block's secret, and `Billing::gateways()` lists it as a gateway of its own. Things to know:
 
 - **WayForPay** needs its responder as the third `registerWebhook()` argument (`WayForPayWebhookResponder::class`) — without the signed acknowledgment WayForPay keeps re-delivering.
-- **Stripe and Paddle** only deliver to endpoints registered on their side, so the extra name's webhook has to be registered too — its URL is `Billing::gateway('stripe_eu')['webhook_url']`.
+- **Stripe and Paddle** only deliver to endpoints registered on their side, so the extra name's webhook has to be registered too: `php artisan billing:stripe-register-webhook --gateway=stripe_eu` (same `--gateway` for `billing:paddle-register-webhook`).
 - **Paddle**: point every account's default payment link at the same `/billing/paddle/checkout` — the page finds the payment by its transaction and uses the client token of the name it went through.
 - **Credentials in the database** (accounts added from an admin panel): bind your own `CredentialResolverContract`, which receives the gateway name (and tenant) and returns the credentials array — then those names need no config block, only the `extend()` call. The names themselves still have to be registered at boot: the gateway registry is built once, not per request.
 
 Tenants and names combine: a name picks the account type, the tenant picks whose credentials — a resolver gets both.
+
+**Stripe and Paddle with per-tenant accounts.** The other gateways get the `?tenant=` hint in the callback URL of every payment; Stripe and Paddle deliver only to a URL registered in advance, so each tenant's account needs its own endpoint with the hint baked in. Both commands take `--tenant`: they register with that tenant's credentials and put `?tenant={id}` on the URL, and print the secret to store for that tenant (`--gateway` and `--tenant` combine). Tenants sharing one Stripe/Paddle account need nothing extra — one endpoint serves them all.
 
 ## `Payable` and `Billable`
 

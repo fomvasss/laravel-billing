@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Fomvasss\Billing\Console;
 
 use Fomvasss\Billing\Contracts\CredentialResolverContract;
+use Fomvasss\Billing\Support\WebhookTenant;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Http;
 
@@ -35,22 +36,29 @@ class StripeRegisterWebhookCommand extends Command
     ];
 
     protected $signature = 'billing:stripe-register-webhook
-        {--url= : Override the endpoint URL (defaults to route("billing.webhook", stripe))}
+        {--url= : Override the endpoint URL (defaults to route("billing.webhook", <gateway>))}
+        {--gateway=stripe : The gateway name — a second Stripe account registered via Billing::extend()}
+        {--tenant= : Register for this tenant\'s Stripe account — its credentials, and ?tenant= on the URL}
         {--fresh : Delete existing endpoint(s) for this URL first and re-create (new whsec_)}';
 
     protected $description = "Register this app's webhook endpoint in Stripe via API and print the signing secret";
 
     public function handle(): int
     {
-        $secretKey = app(CredentialResolverContract::class)->resolve('stripe', null)['secret_key'] ?? null;
+        $gateway = $this->option('gateway');
+        $tenant = $this->option('tenant') ?: null;
+
+        $secretKey = app(CredentialResolverContract::class)->resolve($gateway, $tenant)['secret_key'] ?? null;
 
         if (! is_string($secretKey) || $secretKey === '') {
-            $this->error('Stripe secret_key is not configured (STRIPE_SECRET_KEY).');
+            $this->error("Stripe secret_key is not configured for \"{$gateway}\"" . ($tenant !== null ? " (tenant {$tenant})." : '.'));
 
             return self::FAILURE;
         }
 
-        $url = $this->option('url') ?: route('billing.webhook', ['gateway' => 'stripe']);
+        // Stripe can't be handed a callback URL per payment, so the tenant hint the validator needs
+        // has to be part of the registered URL itself — one endpoint per tenant's account.
+        $url = $this->option('url') ?: route('billing.webhook', array_filter(['gateway' => $gateway, WebhookTenant::QUERY_KEY => $tenant]));
 
         $http = Http::baseUrl('https://api.stripe.com/v1')->withToken($secretKey)->timeout(15);
 
@@ -60,7 +68,7 @@ class StripeRegisterWebhookCommand extends Command
             foreach ($existing as $endpoint) {
                 $this->warn("Already registered: {$endpoint['id']} → {$url}");
             }
-            $this->line('Stripe never re-shows a signing secret. Keep using the STRIPE_WEBHOOK_SECRET you saved at creation, or re-create with --fresh to get a new one.');
+            $this->line('Stripe never re-shows a signing secret. Keep using the webhook_secret you saved at creation, or re-create with --fresh to get a new one.');
 
             return self::FAILURE;
         }
@@ -80,8 +88,13 @@ class StripeRegisterWebhookCommand extends Command
         $this->info("Registered {$created['id']} → {$url}");
         $this->line('Events: ' . implode(', ', self::EVENTS));
         $this->newLine();
-        $this->line('Add to your .env (shown ONLY now — Stripe never returns it again):');
-        $this->info("STRIPE_WEBHOOK_SECRET={$created['secret']}");
+        if ($gateway === 'stripe' && $tenant === null) {
+            $this->line('Add to your .env (shown ONLY now — Stripe never returns it again):');
+            $this->info("STRIPE_WEBHOOK_SECRET={$created['secret']}");
+        } else {
+            $this->line("Store it as the webhook_secret of \"{$gateway}\"" . ($tenant !== null ? " for tenant {$tenant}" : '') . ' (shown ONLY now — Stripe never returns it again):');
+            $this->info($created['secret']);
+        }
 
         return self::SUCCESS;
     }

@@ -554,6 +554,51 @@ class PaddleGatewayTest extends TestCase
         return $payment;
     }
 
+    public function test_register_webhook_for_a_tenant_uses_its_key_and_puts_the_hint_on_the_url(): void
+    {
+        $this->app->bind(\Fomvasss\Billing\Contracts\CredentialResolverContract::class, fn () => new class implements \Fomvasss\Billing\Contracts\CredentialResolverContract {
+            public function resolve(string $gateway, ?string $tenantId): array
+            {
+                return $tenantId === 'acme' ? ['api_key' => 'pdl_live_apikey_acme'] : config("billing.gateways.{$gateway}", []);
+            }
+        });
+
+        Http::fake([
+            'https://api.paddle.com/notification-settings' => Http::sequence()
+                ->push(['data' => [], 'meta' => ['pagination' => ['has_more' => false]]])
+                ->push(['data' => ['id' => 'ntfset_acme', 'endpoint_secret_key' => 'pdl_ntfset_acme']]),
+        ]);
+
+        $this->artisan('billing:paddle-register-webhook', ['--tenant' => 'acme'])
+            ->expectsOutputToContain('for tenant acme')
+            ->expectsOutputToContain('pdl_ntfset_acme')
+            ->assertSuccessful();
+
+        // A live key talks to the live API — the tenant's own account, not the sandbox default.
+        Http::assertSent(fn ($request) => $request->method() === 'POST'
+            && $request->hasHeader('Authorization', 'Bearer pdl_live_apikey_acme')
+            && $request['destination'] === route('billing.webhook', ['gateway' => 'paddle', 'tenant' => 'acme']));
+    }
+
+    public function test_register_webhook_for_a_second_paddle_account_uses_its_gateway_name(): void
+    {
+        config()->set('billing.gateways.paddle_eu', ['api_key' => 'pdl_sdbx_apikey_eu']);
+
+        Http::fake([
+            'https://sandbox-api.paddle.com/notification-settings' => Http::sequence()
+                ->push(['data' => [], 'meta' => ['pagination' => ['has_more' => false]]])
+                ->push(['data' => ['id' => 'ntfset_eu', 'endpoint_secret_key' => 'pdl_ntfset_eu']]),
+        ]);
+
+        $this->artisan('billing:paddle-register-webhook', ['--gateway' => 'paddle_eu'])
+            ->expectsOutputToContain('webhook_secret of "paddle_eu"')
+            ->assertSuccessful();
+
+        Http::assertSent(fn ($request) => $request->method() === 'POST'
+            && $request->hasHeader('Authorization', 'Bearer pdl_sdbx_apikey_eu')
+            && $request['destination'] === route('billing.webhook', ['gateway' => 'paddle_eu']));
+    }
+
     private function postSigned(string $body, string $signature): \Illuminate\Testing\TestResponse
     {
         return $this->call('POST', route('billing.webhook', ['gateway' => 'paddle']), [], [], [],

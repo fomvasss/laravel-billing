@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Fomvasss\Billing\Console;
 
 use Fomvasss\Billing\Contracts\CredentialResolverContract;
+use Fomvasss\Billing\Support\WebhookTenant;
 use Illuminate\Console\Command;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Collection;
@@ -30,21 +31,28 @@ class PaddleRegisterWebhookCommand extends Command
     ];
 
     protected $signature = 'billing:paddle-register-webhook
-        {--url= : Override the endpoint URL (defaults to route("billing.webhook", paddle))}';
+        {--url= : Override the endpoint URL (defaults to route("billing.webhook", <gateway>))}
+        {--gateway=paddle : The gateway name — a second Paddle account registered via Billing::extend()}
+        {--tenant= : Register for this tenant\'s Paddle account — its credentials, and ?tenant= on the URL}';
 
     protected $description = "Register this app's webhook endpoint in Paddle via API and print the secret key";
 
     public function handle(): int
     {
-        $apiKey = app(CredentialResolverContract::class)->resolve('paddle', null)['api_key'] ?? null;
+        $gateway = $this->option('gateway');
+        $tenant = $this->option('tenant') ?: null;
+
+        $apiKey = app(CredentialResolverContract::class)->resolve($gateway, $tenant)['api_key'] ?? null;
 
         if (! is_string($apiKey) || $apiKey === '') {
-            $this->error('Paddle api_key is not configured (PADDLE_API_KEY).');
+            $this->error("Paddle api_key is not configured for \"{$gateway}\"" . ($tenant !== null ? " (tenant {$tenant})." : '.'));
 
             return self::FAILURE;
         }
 
-        $url = $this->option('url') ?: route('billing.webhook', ['gateway' => 'paddle']);
+        // Paddle can't be handed a callback URL per transaction, so the tenant hint the validator
+        // needs has to be part of the registered URL itself — one destination per tenant's account.
+        $url = $this->option('url') ?: route('billing.webhook', array_filter(['gateway' => $gateway, WebhookTenant::QUERY_KEY => $tenant]));
 
         $http = Http::baseUrl(str_starts_with($apiKey, 'pdl_sdbx_') ? 'https://sandbox-api.paddle.com' : 'https://api.paddle.com')
             ->withToken($apiKey)
@@ -75,8 +83,13 @@ class PaddleRegisterWebhookCommand extends Command
 
         $this->line('Events: ' . implode(', ', self::EVENTS));
         $this->newLine();
-        $this->line('Add to your .env:');
-        $this->info("PADDLE_WEBHOOK_SECRET={$destination['endpoint_secret_key']}");
+        if ($gateway === 'paddle' && $tenant === null) {
+            $this->line('Add to your .env:');
+            $this->info("PADDLE_WEBHOOK_SECRET={$destination['endpoint_secret_key']}");
+        } else {
+            $this->line("Store it as the webhook_secret of \"{$gateway}\"" . ($tenant !== null ? " for tenant {$tenant}" : '') . ':');
+            $this->info($destination['endpoint_secret_key']);
+        }
 
         return self::SUCCESS;
     }

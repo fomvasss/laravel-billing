@@ -13,6 +13,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
   Setup: `billing:paddle-register-webhook` registers the notification destination via the API and prints its secret (safe to re-run — Paddle returns the secret on every read); in the Paddle dashboard, set the default payment link to `/billing/paddle/checkout` (and get the domain approved before going live). Capabilities: status polling and health checks. Not yet: refunds (Paddle's refunds need approval — the package's refund flow will learn that first), saved cards (Paddle can't charge a saved method outside its own subscriptions), and subscriptions (Paddle-managed, planned). Live-verified end to end on a Paddle sandbox account: checkout, `transaction.completed` with the fee, re-issue canceling the previous transaction.
 
+### Fixed
+- **WayForPay acknowledgments are now signed with the merchant the callback came for.** WayForPay only counts a callback as delivered when the response is `{orderReference, status: "accept", time, signature}` signed with the merchant's secret. The validator already picked the secret by the `?tenant=` hint, but the responder always signed with the default tenant's — so in a multi-merchant app every other merchant's callback was processed correctly and then acknowledged with a signature WayForPay rejects, and it kept re-delivering for four days. The dedup claim kept those re-deliveries from firing events twice, which is why nothing visibly broke. Single-merchant apps were never affected.
+
 ## [0.8.1] - 2026-09-20
 
 ### Fixed

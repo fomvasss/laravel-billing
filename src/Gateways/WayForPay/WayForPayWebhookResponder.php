@@ -7,6 +7,7 @@ namespace Fomvasss\Billing\Gateways\WayForPay;
 use Fomvasss\Billing\Contracts\CredentialResolverContract;
 use Fomvasss\Billing\Contracts\WebhookResponder;
 use Fomvasss\Billing\Support\WebhookPayload;
+use Fomvasss\Billing\Support\WebhookTenant;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
 
@@ -28,7 +29,9 @@ class WayForPayWebhookResponder implements WebhookResponder
         $orderReference = (string) ($payload['orderReference'] ?? '');
         $time = now()->timestamp;
 
-        $secret = app(CredentialResolverContract::class)->resolve('wayforpay', null)['secret_key'] ?? '';
+        // The tenant the validator verified against — the default tenant's secret would sign another
+        // merchant's acknowledgment, which WayForPay rejects and keeps retrying.
+        $secret = app(CredentialResolverContract::class)->resolve('wayforpay', WebhookTenant::fromRequest($request))['secret_key'] ?? '';
 
         $signature = hash_hmac(
             'md5',

@@ -68,8 +68,16 @@ class MultiTenantWebhookTest extends TestCase
 
         $url = route('billing.webhook', ['gateway' => 'wayforpay', WebhookTenant::QUERY_KEY => 'acme']);
 
-        $this->postJson($url, $payload)->assertOk();
+        $json = $this->postJson($url, $payload)->assertOk()->json();
         $this->assertSame('paid', $payment->fresh()->status->value);
+
+        // The acknowledgment is signed too, and WayForPay checks it against the same merchant's
+        // secret — signed with the default tenant's, it counts as undelivered and is retried for
+        // four days.
+        $this->assertSame(
+            hash_hmac('md5', implode(';', [$payment->id, 'accept', $json['time']]), 'acme_secret'),
+            $json['signature'],
+        );
     }
 
     /** Without the hint the default secret is used, which can't verify this tenant's signature. */

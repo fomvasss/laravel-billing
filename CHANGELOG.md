@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Added
+- **Paddle (Paddle Billing) as a built-in gateway — one-off payments.** Paddle is a Merchant of Record, and that shapes the driver: there is no Paddle-hosted checkout page for the web, so a transaction's payment link opens a page on your own domain that loads Paddle.js. The package ships that page as `billing.paddle.checkout` — set it as the account's default payment link — and `payment_url` stays a plain link like every other gateway's. The checkout's quantity is pinned, so a customer can't pay for a different amount than the payment is for. Prices and products travel inline in each transaction, so nothing has to be mirrored into Paddle's catalog. A payment counts as paid on `transaction.completed` — the event that already carries Paddle's fee, which lands in `payments.fee`. The paid-amount check compares against the unit prices the transaction was issued at, not a totals field, since Paddle's tax can sit either inside or on top of the price.
+
+  Paddle never expires a transaction on its own, so the driver does it: a re-issue through `billing.pay` cancels the previous transaction before creating the next one (two live links for one payment could otherwise both be paid), and `billing:reconcile-pending-payments` cancels an open checkout once its link TTL (`link_ttl_minutes`, default 1440) has passed.
+
+  Setup: `billing:paddle-register-webhook` registers the notification destination via the API and prints its secret (safe to re-run — Paddle returns the secret on every read); in the Paddle dashboard, set the default payment link to `/billing/paddle/checkout` (and get the domain approved before going live). Capabilities: status polling and health checks. Not yet: refunds (Paddle's refunds need approval — the package's refund flow will learn that first), saved cards (Paddle can't charge a saved method outside its own subscriptions), and subscriptions (Paddle-managed, planned). Live-verified end to end on a Paddle sandbox account: checkout, `transaction.completed` with the fee, re-issue canceling the previous transaction.
+
 ## [0.8.1] - 2026-09-20
 
 ### Fixed

@@ -23,6 +23,8 @@ use Fomvasss\Billing\Gateways\LiqPay\LiqPayGateway;
 use Fomvasss\Billing\Gateways\LiqPay\LiqPaySignatureValidator;
 use Fomvasss\Billing\Gateways\Monobank\MonobankGateway;
 use Fomvasss\Billing\Gateways\Monobank\MonobankSignatureValidator;
+use Fomvasss\Billing\Gateways\Paddle\PaddleGateway;
+use Fomvasss\Billing\Gateways\Paddle\PaddleSignatureValidator;
 use Fomvasss\Billing\Gateways\Stripe\StripeGateway;
 use Fomvasss\Billing\Gateways\Stripe\StripeSignatureValidator;
 use Fomvasss\Billing\Gateways\WayForPay\WayForPayGateway;
@@ -66,6 +68,7 @@ class BillingServiceProvider extends ServiceProvider
 
         $this->registerWebhookRoute();
         $this->registerCheckoutFormRoute();
+        $this->registerPaddleCheckoutRoute();
         $this->registerReturnRoute();
         $this->registerPayLinkRoute();
         $this->registerFakeGateway();
@@ -81,6 +84,7 @@ class BillingServiceProvider extends ServiceProvider
                 \Fomvasss\Billing\Console\SendPeriodNoticesCommand::class,
                 \Fomvasss\Billing\Console\ResetUsageQuotasCommand::class,
                 \Fomvasss\Billing\Console\StripeRegisterWebhookCommand::class,
+                \Fomvasss\Billing\Console\PaddleRegisterWebhookCommand::class,
                 \Fomvasss\Billing\Console\HealthCommand::class,
             ]);
 
@@ -152,6 +156,16 @@ class BillingServiceProvider extends ServiceProvider
         // genuinely missing route param, which is the wrong kind of 404 for the wrong reason.
         Route::middleware('web')->get('billing/checkout/{payment}', [CheckoutFormController::class, 'show'])
             ->name('billing.checkout-form');
+    }
+
+    /**
+     * The page to set as Paddle's default payment link — every Paddle payment link opens it with
+     * `?_ptxn=`. See PaddleCheckoutController.
+     */
+    protected function registerPaddleCheckoutRoute(): void
+    {
+        Route::get('billing/paddle/checkout', [\Fomvasss\Billing\Http\Controllers\PaddleCheckoutController::class, 'show'])
+            ->name('billing.paddle.checkout');
     }
 
     /**
@@ -244,7 +258,7 @@ class BillingServiceProvider extends ServiceProvider
     }
 
     /**
-     * The 5 gateways priorit­ized for v1 ship inside core (see "Погоджені рішення" in the package
+     * The built-in gateways ship inside core (see "Погоджені рішення" in the package
      * plan) — unlike third-party drivers, which register themselves via extend() from their own
      * satellite package's ServiceProvider::boot().
      */
@@ -266,5 +280,8 @@ class BillingServiceProvider extends ServiceProvider
 
         $manager->extend('hutko', HutkoGateway::class)
             ->registerWebhook('hutko', HutkoSignatureValidator::class);
+
+        $manager->extend('paddle', PaddleGateway::class)
+            ->registerWebhook('paddle', PaddleSignatureValidator::class);
     }
 }

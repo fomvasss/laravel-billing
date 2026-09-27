@@ -31,9 +31,10 @@ class ConfigStubsTest extends TestCase
     {
         $gateways = Billing::gateways();
 
-        // Stripe is the only built-in that delivers webhooks solely to a Dashboard-registered
-        // endpoint; the rest pass the callback URL in every charge request.
+        // Stripe and Paddle deliver webhooks solely to an endpoint registered on their side; the
+        // rest pass the callback URL in every charge request.
         $this->assertTrue($gateways['stripe']['webhook_requires_dashboard_setup']);
+        $this->assertTrue($gateways['paddle']['webhook_requires_dashboard_setup']);
 
         foreach (['monobank', 'liqpay', 'wayforpay', 'hutko', 'fake'] as $gateway) {
             $this->assertFalse($gateways[$gateway]['webhook_requires_dashboard_setup'], $gateway);

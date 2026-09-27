@@ -291,6 +291,14 @@ return [
             'link_ttl_minutes' => env('HUTKO_LINK_TTL_MINUTES', 1440),
         ],
 
+        'paddle' => [
+            'api_key' => env('PADDLE_API_KEY'),
+            'client_token' => env('PADDLE_CLIENT_TOKEN'),
+            'webhook_secret' => env('PADDLE_WEBHOOK_SECRET'),
+            'tax_category' => env('PADDLE_TAX_CATEGORY', 'standard'),
+            'link_ttl_minutes' => env('PADDLE_LINK_TTL_MINUTES', 1440),
+        ],
+
     ],
 
 ];

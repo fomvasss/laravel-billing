@@ -8,7 +8,7 @@ Universal billing/payments package for Laravel: pluggable payment gateways, one-
 
 [Українська документація](README.uk.md)
 
-Built-in gateways: **LiqPay**, **WayForPay**, **Monobank Acquiring**, **Stripe**, **Hutko**. Add your own with a single `Billing::extend()` call — no core changes required.
+Built-in gateways: **LiqPay**, **WayForPay**, **Monobank Acquiring**, **Stripe**, **Hutko**, **Paddle**. Add your own with a single `Billing::extend()` call — no core changes required.
 
 ## Requirements
 
@@ -70,7 +70,7 @@ Clicking a button POSTs straight to the real, registered webhook endpoint — th
 
 ## Configuring a real gateway
 
-The published config already stubs all five built-in gateways — just fill in the `.env` values for the ones you use:
+The published config already stubs all built-in gateways — just fill in the `.env` values for the ones you use:
 
 ```dotenv
 MONOBANK_TOKEN=
@@ -87,6 +87,10 @@ STRIPE_WEBHOOK_SECRET=
 
 HUTKO_MERCHANT_ID=
 HUTKO_SECRET_KEY=
+
+PADDLE_API_KEY=
+PADDLE_CLIENT_TOKEN=
+PADDLE_WEBHOOK_SECRET=
 ```
 
 Leave the rest alone — an unset gateway stays unconfigured and only ever errors if something actually tries to charge through it.
@@ -313,7 +317,7 @@ The column is **nullable and never guessed**: a payment your own code created wi
 
 `amount` is always **what the customer paid** — refund caps, webhook amount verification and reconciliation all depend on that, so nothing ever rewrites it. What the merchant actually receives lives next to it:
 
-- `payments.fee` — the gateway's commission, minor units, same currency as `amount`. Drivers parse it from the payment callback where the gateway reports it: Monobank (`paymentInfo.fee`), LiqPay (`receiver_commission`), WayForPay (`fee`), Hutko (`fee`). Stripe doesn't include the fee in its webhook (it lives on the balance transaction, a separate API object) — `fee` stays `null` there.
+- `payments.fee` — the gateway's commission, minor units, same currency as `amount`. Drivers parse it from the payment callback where the gateway reports it: Monobank (`paymentInfo.fee`), LiqPay (`receiver_commission`), WayForPay (`fee`), Hutko (`fee`). Stripe doesn't include the fee in its webhook (it lives on the balance transaction, a separate API object) — `fee` stays `null` there. Paddle reports it on `transaction.completed` (`details.totals.fee`, in the transaction's currency).
 - `$payment->netAmount()` — `amount - fee`, or `null` while the fee is unknown. Derived, never stored.
 
 `null` genuinely means "unknown": the package never guesses a commission, while a reported `0` records as "known, zero". If you'd rather book your **own** commission policy (a flat percent you've agreed to absorb, different rates for foreign cards) — the column is yours to write, and `PaymentSucceeded` fires after the driver has already filled whatever the bank reported:
@@ -500,6 +504,7 @@ Every gateway's callback URL is `https://your-domain/billing/webhooks/{gateway}`
 | WayForPay | `serviceUrl` in every Purchase/Charge | none |
 | Hutko | `server_callback_url` in every request | none |
 | **Stripe** | Pre-registered endpoints only (Dashboard **or** one API call) | **required** |
+| **Paddle** | Pre-registered notification destinations only (Dashboard **or** one API call) | **required** |
 
 Stripe — the package can register the endpoint for you:
 
@@ -523,11 +528,24 @@ curl https://api.stripe.com/v1/webhook_endpoints -u "sk_test_...:" \
 
 Either way the secret goes into `STRIPE_WEBHOOK_SECRET` — without it the validator rejects everything (fail-closed). Note the registered URL is fixed on Stripe's side: changing your domain/tunnel means re-creating the endpoint.
 
+Paddle — the package registers the notification destination for you, and re-running it is safe (Paddle returns the secret on every read, so an existing destination for the same URL just gets its event list refreshed):
+
+```bash
+php artisan billing:paddle-register-webhook   # creates or updates the destination, prints PADDLE_WEBHOOK_SECRET
+```
+
+Paddle also needs its **checkout page** set up, because it has no hosted checkout of its own for the web: a transaction's payment link points at a page on *your* domain that loads Paddle.js. The package ships that page (`billing.paddle.checkout`); it becomes every transaction's payment link by being the account's default one. One-time steps in the Paddle dashboard:
+
+- **Checkout → Checkout settings → Default payment link** — set it to `https://your-domain/billing/paddle/checkout`. Paddle refuses to create any transaction without one, and sends customers there to update a subscription's card too.
+- **Checkout → Website approval** — add your domain and wait for approval before going live.
+
+The page initializes Paddle.js with `PADDLE_CLIENT_TOKEN` (a client-side token, `live_...` / `test_...`; a `test_` token switches it to the sandbox). Products and prices go inline in every transaction, so nothing has to be created in Paddle's catalog — only `PADDLE_TAX_CATEGORY` (default `standard`) has to be a category enabled on your account.
+
 Applies to all of them: `APP_URL` must be your real public URL (`route()` builds the callback from it), the path must be reachable over HTTPS without basic auth/IP blocks (CSRF is already not an issue — the route lives outside the `web` group), and on a local machine a bank can't reach you at all — use a tunnel (ngrok/expose) or just the `fake` gateway, which runs the same pipeline. Every accepted webhook leaves a row in `billing_webhook_calls`; a 403 in the logs means a signature/secret problem.
 
 ### What the pipeline guarantees
 
-- **Signature validators fail closed.** All five webhook routes exist even for gateways you never configured — a route whose gateway has no secret set responds 403 to everything instead of "verifying" against an empty key.
+- **Signature validators fail closed.** Every built-in gateway's webhook route exists even for gateways you never configured — a route whose gateway has no secret set responds 403 to everything instead of "verifying" against an empty key.
 - **A paid callback must match the payment's amount and currency.** A signed callback whose sum differs (classic case: a stale checkout link paid after the order's amount was edited and `charge()` re-issued) does *not* mark the payment paid — it's logged as a warning and left `pending` for manual review. Status polling applies the same check, so reconciliation can't quietly accept an hour later what the webhook just refused.
 - **A paid payment is never reverted by a webhook.** Gateway deliveries are neither ordered nor unique — an earlier decline can arrive after the success it lost the race to, and a stale link's `expired` can arrive after `billing.pay` re-issued the checkout and the customer paid it. Once a `Payment` is `paid`, any callback (or status poll) claiming otherwise is ignored and logged as a warning; the row keeps its `paid_at`, its `external_id` and its refundability. Re-issuing works in the other direction: a `failed`/`canceled` payment can still become `paid`.
 - **Events are deduplicated per outcome, not per reference.** A re-delivered "paid" callback never fires `PaymentSucceeded` twice — but "declined, then the customer retries the same checkout and pays" dispatches both `PaymentFailed` and `PaymentSucceeded`, even on gateways that reuse one reference across attempts. The reconciliation command shares the same dedup, so a poll racing a late webhook can't double-dispatch either.
@@ -916,7 +934,7 @@ class Order extends Model implements Payable, HasReceiptItems
 }
 ```
 
-What each gateway does with it differs — **Monobank** (`basketOrder`), **WayForPay** (`productName[]`/`productPrice[]`/`productCount[]`), **Stripe** (`line_items`) and **Hutko** (`reservation_data`, its programmable-RRO fiscal basket) all take it as-is. The exception is **LiqPay**: its `rro_info` line items reference goods registered in your LiqPay account by their catalog id — a value this neutral shape has no field for — so pass that one explicitly via `ChargeOptions::$raw` (see below).
+What each gateway does with it differs — **Monobank** (`basketOrder`), **WayForPay** (`productName[]`/`productPrice[]`/`productCount[]`), **Stripe** (`line_items`), **Paddle** (transaction items, one per line) and **Hutko** (`reservation_data`, its programmable-RRO fiscal basket) all take it as-is. The exception is **LiqPay**: its `rro_info` line items reference goods registered in your LiqPay account by their catalog id — a value this neutral shape has no field for — so pass that one explicitly via `ChargeOptions::$raw` (see below).
 
 The same auto-fill applies to `chargeWithMethod()` — an off-session charge (overage, a top-up, the postpaid-ride charge in use-case #7) is fiscalized exactly like a redirect checkout, as long as `$payment->payable` implements `HasReceiptItems`. The one place the auto-fill can't reach is a scheduled renewal, whose payable is always the package's own `Subscription` row: see "Fiscalizing a renewal" below for the hook that covers it.
 
@@ -1439,7 +1457,7 @@ Every setting is a config key first; the env vars below are what `config/billing
 | `BILLING_RENEWAL_RECEIPT_ITEMS` | `false` | Whether a scheduled renewal carries a generic one-line fiscal basket (the plan name, the payment's full amount). Bind `RenewalChargeOptionsContract` for a real one — see "Fiscalizing a renewal". |
 | `BILLING_RECONCILE_AFTER_MINUTES` | `60` | How old a `pending` payment must be before reconciliation polls the gateway for it. |
 | `BILLING_WEBHOOK_PATH` | `billing/webhooks/{gateway}` | Webhook route path. `{gateway}` must stay somewhere in it. |
-| `BILLING_WEBHOOK_PRUNE_AFTER_DAYS` | `30` | How long stored webhook calls are kept. Lowering it below a gateway's retry horizon lets an old re-delivery fire its events again — 30 days is beyond all five (WayForPay's four days is the longest). |
+| `BILLING_WEBHOOK_PRUNE_AFTER_DAYS` | `30` | How long stored webhook calls are kept. Lowering it below a gateway's retry horizon lets an old re-delivery fire its events again — 30 days is beyond every built-in gateway (WayForPay's four days is the longest). |
 | `BILLING_RETURN_URL_SUCCESS` | — | Where the customer lands after a successful checkout. |
 | `BILLING_RETURN_URL_FAILED` | — | ...and after a failed one. |
 | `BILLING_DEBUG` | `false` | Verbose driver logging. Never on in production — payloads carry card data. |
@@ -1453,6 +1471,7 @@ Per gateway, all optional until you use that gateway:
 | `WAYFORPAY_MERCHANT_ACCOUNT`, `WAYFORPAY_MERCHANT_DOMAIN`, `WAYFORPAY_SECRET_KEY`, `WAYFORPAY_LINK_TTL_MINUTES` (1440) | WayForPay |
 | `HUTKO_MERCHANT_ID`, `HUTKO_SECRET_KEY`, `HUTKO_LINK_TTL_MINUTES` (1440) | Hutko |
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | Stripe (link TTL comes from the Checkout Session's own `expires_at`) |
+| `PADDLE_API_KEY`, `PADDLE_CLIENT_TOKEN`, `PADDLE_WEBHOOK_SECRET`, `PADDLE_TAX_CATEGORY` (standard), `PADDLE_LINK_TTL_MINUTES` (1440) | Paddle (a `pdl_sdbx_` key talks to the sandbox API) |
 
 ## Routes
 
@@ -1462,6 +1481,7 @@ Per gateway, all optional until you use that gateway:
 | `billing.return` | GET + POST | public, no CSRF | Where gateways send the browser back; fires `CheckoutReturned`, 303s to your `return_urls.*`. POST because WayForPay/Hutko return the customer that way. |
 | `billing.pay` | GET | public | The permanent pay link for emails/invoices (see "Permanent payment link"). |
 | `billing.checkout-form` | GET | public | Renders a form-only gateway's cached checkout as an auto-submit page, so `payment_url` is always a plain link. LiqPay only. |
+| `billing.paddle.checkout` | GET | public | The page Paddle's payment links open: loads Paddle.js, which opens the checkout for `?_ptxn=`. Also your Paddle default payment link (without a payment in the path). |
 | `billing.fake.show` | GET | local/testing only | The fake gateway's two-button checkout. |
 
 ## Testing

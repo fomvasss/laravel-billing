@@ -180,11 +180,13 @@ class Payment extends Model
      * The one place a refund row is built, whether it came from our own Billing::refund() call or
      * from the gateway telling us about one issued elsewhere (its dashboard, a cardholder dispute).
      * A refund is always its own row with a positive amount — the original charge is immutable.
+     * Pending is a refund the gateway accepted but still has to approve (Paddle) — the money hasn't
+     * moved yet, so refundedAmount() leaves it out while refundableRemainder() reserves it.
      */
-    public static function recordRefundOf(self $charge, Money $money, ?string $externalId = null, array $raw = []): self
+    public static function recordRefundOf(self $charge, Money $money, ?string $externalId = null, array $raw = [], PaymentStatus $status = PaymentStatus::Paid): self
     {
         return static::create([
-            'status' => PaymentStatus::Paid,
+            'status' => $status,
             'type' => PaymentType::Refund,
             'gateway' => $charge->gateway,
             'amount' => $money->amount,
@@ -200,10 +202,16 @@ class Payment extends Model
         ]);
     }
 
-    /** What can still be refunded against this charge, minor units. */
+    /**
+     * What can still be refunded against this charge, minor units. A refund still awaiting the
+     * gateway's approval is reserved here even though refundedAmount() doesn't count it yet —
+     * otherwise a second refund could be requested for money the first one is about to return.
+     */
     public function refundableRemainder(): int
     {
-        return $this->amount - $this->refundedAmount();
+        return $this->amount - (int) $this->refunds()->withTrashed()
+            ->whereIn('status', [PaymentStatus::Paid, PaymentStatus::Pending])
+            ->sum('amount');
     }
 
     /** refundableRemainder() as Money — see money(). */

@@ -16,5 +16,10 @@ final readonly class PaymentResult
         public ?string $externalId = null,
         /** Raw gateway response — refund()/chargePaymentMethod() callers that need more than externalId. */
         public array $raw = [],
+        /**
+         * refund() only: the gateway accepted the refund but has yet to approve it (Paddle). The row
+         * is recorded as pending and PaymentRefunded waits for the driver's approval webhook.
+         */
+        public bool $pending = false,
     ) {}
 }

@@ -360,7 +360,7 @@ class BillingManager
             throw new BillingException("Refund currency \"{$money->currency}\" does not match the charge's \"{$payment->currency}\".");
         }
 
-        if ($money->amount <= 0 || $money->amount + $payment->refundedAmount() > $payment->amount) {
+        if ($money->amount <= 0 || $money->amount > $payment->refundableRemainder()) {
             throw new BillingException("Refund of {$money->amount} exceeds the refundable remainder of payment {$payment->id}.");
         }
 
@@ -369,6 +369,12 @@ class BillingManager
         // refund throws from here — the child row below is only ever written for money that is
         // actually on its way back.
         $result = $driver->refund($payment, $money);
+
+        // Awaiting the gateway's approval: recorded so the amount is reserved, but nothing has been
+        // returned yet — PaymentRefunded fires when the driver's webhook reports the approval.
+        if ($result->pending) {
+            return Payment::recordRefundOf($payment, $money, $result->externalId, $result->raw, PaymentStatus::Pending);
+        }
 
         $refund = Payment::recordRefundOf($payment, $money, $result->externalId, $result->raw);
 

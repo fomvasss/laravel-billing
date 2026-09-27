@@ -6,7 +6,10 @@ namespace Fomvasss\Billing\Tests\Feature;
 
 use Fomvasss\Billing\Enums\PaymentStatus;
 use Fomvasss\Billing\Enums\WebhookEventType;
+use Fomvasss\Billing\Events\PaymentFailed;
+use Fomvasss\Billing\Events\PaymentRefunded;
 use Fomvasss\Billing\Events\PaymentSucceeded;
+use Fomvasss\Billing\Support\Money;
 use Fomvasss\Billing\Facades\Billing;
 use Fomvasss\Billing\Models\Payment;
 use Fomvasss\Billing\Tests\Fixtures\TestUser;
@@ -343,7 +346,7 @@ class PaddleGatewayTest extends TestCase
         Http::assertSent(fn ($request) => $request->method() === 'POST'
             && $request['destination'] === route('billing.webhook', ['gateway' => 'paddle'])
             && $request['type'] === 'url'
-            && $request['subscribed_events'] === ['transaction.completed', 'transaction.canceled']);
+            && $request['subscribed_events'] === ['transaction.completed', 'transaction.canceled', 'adjustment.created', 'adjustment.updated']);
     }
 
     public function test_register_webhook_updates_an_existing_destination_instead_of_duplicating_it(): void
@@ -361,6 +364,194 @@ class PaddleGatewayTest extends TestCase
             ->assertSuccessful();
 
         Http::assertNotSent(fn ($request) => $request->method() === 'POST');
+    }
+
+    public function test_a_full_refund_awaiting_approval_reserves_the_amount_without_announcing_a_refund(): void
+    {
+        Event::fake([PaymentRefunded::class]);
+        $payment = $this->paidPayment();
+
+        Http::fake(['https://sandbox-api.paddle.com/adjustments' => Http::response(['data' => $this->adjustment('pending_approval', type: 'full')])]);
+
+        $refund = Billing::refund($payment);
+
+        Http::assertSent(fn ($request) => $request->url() === 'https://sandbox-api.paddle.com/adjustments'
+            && $request['action'] === 'refund'
+            && $request['type'] === 'full'
+            && $request['transaction_id'] === 'txn_1'
+            && ! isset($request['items']));
+
+        $this->assertSame(PaymentStatus::Pending, $refund->status);
+        $this->assertSame('adj_1', $refund->external_id);
+        $this->assertSame(0, $payment->refundedAmount(), 'no money has moved yet');
+        $this->assertSame(0, $payment->refundableRemainder(), 'but the amount is spoken for');
+        Event::assertNotDispatched(PaymentRefunded::class);
+
+        $this->expectException(\Fomvasss\Billing\Exceptions\BillingException::class);
+        Billing::refund($payment, new Money(100, 'UAH'));
+    }
+
+    public function test_a_refund_paddle_approves_on_the_spot_is_final_and_its_webhook_echo_is_dropped(): void
+    {
+        Event::fake([PaymentRefunded::class]);
+        $payment = $this->paidPayment();
+
+        Http::fake(['https://sandbox-api.paddle.com/adjustments' => Http::response(['data' => $this->adjustment('approved', type: 'full')])]);
+
+        $refund = Billing::refund($payment);
+
+        $this->assertSame(PaymentStatus::Paid, $refund->status);
+        $this->assertSame(10000, $payment->refundedAmount());
+
+        $this->postAdjustment('adjustment.created', $this->adjustment('approved', type: 'full'));
+
+        Event::assertDispatchedTimes(PaymentRefunded::class, 1);
+        $this->assertSame(1, $payment->refunds()->count());
+    }
+
+    public function test_a_partial_refund_is_scaled_to_what_was_paid_and_spread_over_lines_with_room_left(): void
+    {
+        $payment = $this->paidPayment();
+
+        // Exclusive tax: 10000 issued, 12000 paid. Line 1 (6000) already gave 3000 to an earlier
+        // refund, so a 5000 refund — 6000 in paid terms — takes the 3000 left there and 3000 from
+        // line 2.
+        Http::fake([
+            'https://sandbox-api.paddle.com/transactions/txn_1*' => Http::response(['data' => [
+                'id' => 'txn_1',
+                'details' => [
+                    'totals' => ['grand_total' => '12000'],
+                    'line_items' => [
+                        ['id' => 'txnitm_1', 'totals' => ['total' => '6000']],
+                        ['id' => 'txnitm_2', 'totals' => ['total' => '6000']],
+                    ],
+                ],
+                'adjustments' => [
+                    ['action' => 'refund', 'status' => 'approved', 'items' => [['item_id' => 'txnitm_1', 'totals' => ['total' => '3000']]]],
+                    ['action' => 'refund', 'status' => 'rejected', 'items' => [['item_id' => 'txnitm_2', 'totals' => ['total' => '6000']]]],
+                ],
+            ]]),
+            'https://sandbox-api.paddle.com/adjustments' => Http::response(['data' => $this->adjustment('pending_approval')]),
+        ]);
+
+        Billing::refund($payment, new Money(5000, 'UAH'));
+
+        Http::assertSent(fn ($request) => $request->method() === 'POST'
+            && $request['type'] === 'partial'
+            && $request['items'] === [
+                ['item_id' => 'txnitm_1', 'type' => 'partial', 'amount' => '3000'],
+                ['item_id' => 'txnitm_2', 'type' => 'partial', 'amount' => '3000'],
+            ]);
+    }
+
+    public function test_approval_completes_our_pending_refund_and_announces_it_once(): void
+    {
+        Event::fake([PaymentRefunded::class]);
+        $payment = $this->paidPayment();
+        $refund = Payment::recordRefundOf($payment, new Money(10000, 'UAH'), 'adj_1', [], PaymentStatus::Pending);
+
+        $this->postAdjustment('adjustment.updated', $this->adjustment('approved', type: 'full'));
+        $this->postAdjustment('adjustment.updated', $this->adjustment('approved', type: 'full'));
+
+        $this->assertSame(PaymentStatus::Paid, $refund->fresh()->status);
+        $this->assertSame(10000, $payment->refundedAmount());
+        Event::assertDispatchedTimes(PaymentRefunded::class, 1);
+    }
+
+    public function test_a_rejected_refund_fails_quietly_and_frees_the_amount(): void
+    {
+        Event::fake([PaymentRefunded::class, PaymentFailed::class]);
+        $payment = $this->paidPayment();
+        $refund = Payment::recordRefundOf($payment, new Money(10000, 'UAH'), 'adj_1', [], PaymentStatus::Pending);
+
+        $this->postAdjustment('adjustment.updated', $this->adjustment('rejected', type: 'full'));
+
+        $this->assertSame(PaymentStatus::Failed, $refund->fresh()->status);
+        $this->assertSame(10000, $payment->refundableRemainder());
+        Event::assertNotDispatched(PaymentRefunded::class);
+        // PaymentFailed on a renewal's refund row would put its subscription into dunning.
+        Event::assertNotDispatched(PaymentFailed::class);
+    }
+
+    public function test_a_full_refund_from_the_paddle_dashboard_is_recorded_once_approved(): void
+    {
+        Event::fake([PaymentRefunded::class]);
+        $payment = $this->paidPayment();
+
+        $this->postAdjustment('adjustment.created', $this->adjustment('pending_approval', type: 'full'));
+        $this->assertSame(0, $payment->refunds()->count(), 'nothing is recorded before Paddle approves it');
+
+        $this->postAdjustment('adjustment.updated', $this->adjustment('approved', type: 'full'));
+
+        $this->assertSame(10000, $payment->refundedAmount());
+        $this->assertSame('adj_1', $payment->refunds()->first()->external_id);
+        Event::assertDispatchedTimes(PaymentRefunded::class, 1);
+    }
+
+    public function test_a_partial_dashboard_refund_is_scaled_back_to_this_payments_terms(): void
+    {
+        $payment = $this->paidPayment();
+
+        // 3000 of a 12000 grand total (exclusive tax on a 10000 payment) is a quarter: 2500.
+        Http::fake(['https://sandbox-api.paddle.com/transactions/txn_1' => Http::response(['data' => ['id' => 'txn_1', 'details' => ['totals' => ['grand_total' => '12000']]]])]);
+
+        $this->postAdjustment('adjustment.created', [...$this->adjustment('approved'), 'totals' => ['subtotal' => '2500', 'tax' => '500', 'total' => '3000']]);
+
+        $this->assertSame(2500, $payment->refundedAmount());
+    }
+
+    public function test_an_adjustment_for_a_transaction_we_do_not_know_is_ignored(): void
+    {
+        $payment = $this->paidPayment();
+
+        $this->postAdjustment('adjustment.created', [...$this->adjustment('approved', type: 'full'), 'transaction_id' => 'txn_foreign']);
+
+        $this->assertSame(0, $payment->refunds()->count());
+    }
+
+    public function test_reconciliation_settles_a_pending_refund_whose_approval_webhook_was_lost(): void
+    {
+        Event::fake([PaymentRefunded::class]);
+        $payment = $this->paidPayment();
+        $refund = Payment::recordRefundOf($payment, new Money(10000, 'UAH'), 'adj_1', [], PaymentStatus::Pending);
+        $refund->forceFill(['created_at' => now()->subHours(2)])->save();
+
+        Http::fake(['https://sandbox-api.paddle.com/adjustments*' => Http::response(['data' => [$this->adjustment('approved', type: 'full')]])]);
+
+        $this->artisan('billing:reconcile-pending-payments')->assertSuccessful();
+
+        Http::assertSent(fn ($request) => str_contains($request->url(), '/adjustments?id=adj_1'));
+        $this->assertSame(PaymentStatus::Paid, $refund->fresh()->status);
+        Event::assertDispatchedTimes(PaymentRefunded::class, 1);
+    }
+
+    private function postAdjustment(string $type, array $adjustment): void
+    {
+        $body = json_encode(['event_id' => 'evt_' . $type, 'event_type' => $type, 'occurred_at' => now()->toIso8601String(), 'data' => $adjustment]);
+        $timestamp = time();
+
+        $this->postSigned($body, "ts={$timestamp};h1=" . hash_hmac('sha256', "{$timestamp}:{$body}", 'pdl_ntfset_test'))->assertOk();
+    }
+
+    private function adjustment(string $status, string $type = 'partial'): array
+    {
+        return [
+            'id' => 'adj_1',
+            'action' => 'refund',
+            'type' => $type,
+            'transaction_id' => 'txn_1',
+            'status' => $status,
+            'currency_code' => 'UAH',
+            'totals' => ['subtotal' => '10000', 'tax' => '0', 'total' => '10000'],
+        ];
+    }
+
+    private function paidPayment(): Payment
+    {
+        $payment = $this->pendingPayment(['external_id' => 'txn_1']);
+        $payment->transitionTo(PaymentStatus::Paid);
+
+        return $payment;
     }
 
     private function postSigned(string $body, string $signature): \Illuminate\Testing\TestResponse

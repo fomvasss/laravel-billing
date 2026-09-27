@@ -24,6 +24,9 @@ class PaddleRegisterWebhookCommand extends Command
     protected const EVENTS = [
         'transaction.completed',
         'transaction.canceled',
+        // Refunds — ours awaiting approval, and ones issued from the Paddle dashboard.
+        'adjustment.created',
+        'adjustment.updated',
     ];
 
     protected $signature = 'billing:paddle-register-webhook

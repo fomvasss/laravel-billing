@@ -355,7 +355,9 @@ A refund row is only ever written for money that is actually on its way back: a 
 
 Concurrent calls are serialized with a cache lock (`billing:refund:{id}`): the remainder is read, checked and written by three separate statements, so two calls racing on the same payment would otherwise both pass the check against the same stale total. The second caller gets a `BillingException` rather than sending money. **The lock is only as wide as your cache store**: `redis`/`memcached`/`database` cover every process on every server; `file` locks properly across processes on *one* machine (it uses `flock()`) but not across app servers, each of which has its own cache directory; `array` is per-process and protects nothing (it's the testing store).
 
-Supported where the gateway has a refund API: Monobank, LiqPay, Stripe, Hutko (`RefundsPayments` — check `Billing::gateways()[$name]['capabilities']['refunds']`). WayForPay is the exception — no reachable refund endpoint is documented for it, so its refunds happen in the bank's own dashboard (and come back as the reversal webhook below).
+**Paddle refunds wait for approval.** Paddle reviews most refunds before returning any money (the sandbox approves every ten minutes; live approves small ones on the spot). `Billing::refund()` then returns a row with status `pending`: `refundedAmount()` doesn't count it yet, but `refundableRemainder()` reserves it, so a second refund can't claim the same money. Paddle's approval turns the row `paid` and fires `PaymentRefunded`; a rejection turns it `failed` with a warning in the log and no event (a `PaymentFailed` there would start dunning on a renewal's subscription). `billing:reconcile-pending-payments` polls a pending refund too, in case the approval webhook got lost. If you list `$payment->refunds`, filter by status — a pending row is a request, not money returned.
+
+Supported where the gateway has a refund API: Monobank, LiqPay, Stripe, Hutko, Paddle (`RefundsPayments` — check `Billing::gateways()[$name]['capabilities']['refunds']`). WayForPay is the exception — no reachable refund endpoint is documented for it, so its refunds happen in the bank's own dashboard (and come back as the reversal webhook below).
 
 #### Refunds issued outside the package
 
@@ -368,6 +370,7 @@ Money also goes back without `Billing::refund()` — someone refunds from the ga
 | Hutko | the purchase callback again, with `reversal_amount` set | yes, from `reversal_amount` (the order's running total) |
 | LiqPay | `reversed` | yes, from `refund_amount` |
 | WayForPay | `Refunded` / `Voided` | yes, from `amount` (per reversal, not a total) |
+| Paddle | `adjustment.created` / `adjustment.updated` (`action: refund`) | yes, once approved — scaled from the tax-inclusive sum Paddle reports back to the payment's own terms. Chargebacks are logged, not recorded |
 
 WayForPay is the odd one out: its callback reports each reversal's own amount rather than a running total (verified against a live test merchant — a 2 UAH order refunded 1 UAH twice produced two callbacks reading `amount: 1`, while the purchase itself read `amount: 2`; the wiki only ever describes the field as "Amount of order"). With no total to settle against, a re-delivery is caught by the reversal's identity instead — and the only field distinguishing those two callbacks was `processingDate`, so that's what identifies one. Known edge: two reversals of the same amount inside one second are indistinguishable and collapse into a single recorded row.
 

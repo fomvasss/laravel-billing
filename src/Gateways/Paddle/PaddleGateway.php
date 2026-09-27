@@ -6,19 +6,23 @@ namespace Fomvasss\Billing\Gateways\Paddle;
 
 use Fomvasss\Billing\Contracts\ChecksGatewayHealth;
 use Fomvasss\Billing\Contracts\ChecksPaymentStatus;
+use Fomvasss\Billing\Contracts\RefundsPayments;
 use Fomvasss\Billing\DTO\ChargeOptions;
 use Fomvasss\Billing\DTO\GatewayHealth;
 use Fomvasss\Billing\DTO\PaymentResult;
 use Fomvasss\Billing\DTO\WebhookResult;
 use Fomvasss\Billing\Enums\PaymentStatus;
+use Fomvasss\Billing\Enums\PaymentType;
 use Fomvasss\Billing\Enums\WebhookEventType;
 use Fomvasss\Billing\Exceptions\BillingException;
 use Fomvasss\Billing\Gateways\AbstractGateway;
 use Fomvasss\Billing\Models\Payment;
+use Fomvasss\Billing\Support\Money;
 use Fomvasss\Billing\Webhooks\BillingWebhookCall;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 /**
@@ -39,7 +43,7 @@ use Illuminate\Support\Str;
  * Amounts are strings in minor units on both sides — no conversion (unlike LiqPay/WayForPay).
  * custom_data.payment_id is our link back to the row; Paddle echoes it in every transaction event.
  */
-class PaddleGateway extends AbstractGateway implements ChecksPaymentStatus, ChecksGatewayHealth
+class PaddleGateway extends AbstractGateway implements RefundsPayments, ChecksPaymentStatus, ChecksGatewayHealth
 {
     protected const LIVE_URL = 'https://api.paddle.com';
 
@@ -88,6 +92,10 @@ class PaddleGateway extends AbstractGateway implements ChecksPaymentStatus, Chec
         $event = $webhookCall->payload;
         $transaction = $event['data'] ?? [];
 
+        if (in_array($event['event_type'] ?? null, ['adjustment.created', 'adjustment.updated'], true)) {
+            return $this->applyAdjustment($transaction, $event);
+        }
+
         $status = match ($event['event_type'] ?? null) {
             // completed, not paid: `paid` arrives before Paddle has finished processing — no fee,
             // no payout totals yet. completed carries everything in one event.
@@ -119,6 +127,16 @@ class PaddleGateway extends AbstractGateway implements ChecksPaymentStatus, Chec
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored');
         }
 
+        // A refund still awaiting Paddle's approval — the same outcome its adjustment.updated would
+        // have delivered, for when that webhook got lost.
+        if ($payment->isRefund()) {
+            $adjustment = $this->http()->get('/adjustments', ['id' => $payment->external_id])->throw()->json('data.0');
+
+            return is_array($adjustment)
+                ? $this->applyAdjustment($adjustment, $adjustment)
+                : new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored');
+        }
+
         $transaction = $this->http()->get("/transactions/{$payment->external_id}")->throw()->json('data');
 
         $status = match ($transaction['status'] ?? null) {
@@ -136,6 +154,41 @@ class PaddleGateway extends AbstractGateway implements ChecksPaymentStatus, Chec
         }
 
         return $this->applyTransaction($payment, $status, $transaction, $transaction);
+    }
+
+    /**
+     * A refund in Paddle is an adjustment, and most of them wait for Paddle's approval — the result
+     * says pending then, and the approval arrives as adjustment.updated (see applyAdjustment()).
+     * Paddle refunds per transaction line in its own, tax-inclusive terms: our amount is scaled by
+     * what the customer actually paid, then spread over the lines still holding refundable money.
+     */
+    public function refund(Payment $payment, ?Money $amount = null): PaymentResult
+    {
+        $amount ??= new Money($payment->refundableRemainder(), $payment->currency);
+
+        // Everything, with nothing refunded before: Paddle's own "full" type returns the grand total
+        // exactly, with no rounding to go wrong.
+        $body = $amount->amount === $payment->amount
+            ? ['type' => 'full']
+            : ['type' => 'partial', 'items' => $this->refundItems($payment, $amount)];
+
+        // Sent once: no idempotency key, and a timeout says nothing about whether Paddle created it.
+        $adjustment = $this->http()->retry(1)->post('/adjustments', [
+            ...$body,
+            'action' => 'refund',
+            'transaction_id' => $payment->external_id,
+            'reason' => "Refund of payment {$payment->id}",
+        ])->throw()->json('data');
+
+        if (($adjustment['status'] ?? null) === 'rejected') {
+            throw new BillingException('Paddle: refund was rejected: ' . json_encode($adjustment));
+        }
+
+        return new PaymentResult(
+            externalId: $adjustment['id'],
+            raw: $adjustment,
+            pending: ($adjustment['status'] ?? null) === 'pending_approval',
+        );
     }
 
     /** GET /event-types — needs no permissions and no entities, so it only proves the key works. */
@@ -222,6 +275,139 @@ class PaddleGateway extends AbstractGateway implements ChecksPaymentStatus, Chec
             externalId: $transaction['id'] ?? (string) $payment->id,
             raw: $raw,
         );
+    }
+
+    /**
+     * adjustment.created/updated — a refund's lifecycle. Ours (Billing::refund()) already has a row,
+     * found by the adj_ id: approval completes it, rejection fails it. One issued from the Paddle
+     * dashboard is recorded once approved. Only the approval dispatches — a rejected refund returns
+     * nothing, and PaymentFailed would be wrong for it: on a subscription renewal's refund the
+     * payable is the subscription, and that listener would start dunning.
+     */
+    protected function applyAdjustment(array $adjustment, array $raw): WebhookResult
+    {
+        $ignored = new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $raw);
+
+        $charge = isset($adjustment['transaction_id'])
+            ? Payment::query()
+                ->where('gateway', $this->gatewayName)
+                ->where('type', PaymentType::Charge)
+                ->where('external_id', $adjustment['transaction_id'])
+                ->first()
+            : null;
+
+        if ($charge === null) {
+            return $ignored;
+        }
+
+        if (in_array($adjustment['action'] ?? null, ['chargeback', 'chargeback_reverse'], true)) {
+            $this->reportUnrecordedReversal($charge, $adjustment);
+
+            return $ignored;
+        }
+
+        if (($adjustment['action'] ?? null) !== 'refund' || ! isset($adjustment['id'])) {
+            return $ignored;
+        }
+
+        $refund = $charge->refunds()->withTrashed()->where('external_id', $adjustment['id'])->first();
+
+        if (($adjustment['status'] ?? null) === 'rejected') {
+            if ($refund?->status === PaymentStatus::Pending) {
+                $refund->transitionTo(PaymentStatus::Failed);
+
+                Log::warning("Billing [{$this->gatewayName}]: Paddle rejected a refund", [
+                    'payment_id' => $charge->id,
+                    'refund_id' => $refund->id,
+                    'adjustment_id' => $adjustment['id'],
+                ]);
+            }
+
+            return $ignored;
+        }
+
+        if (($adjustment['status'] ?? null) !== 'approved') {
+            return $ignored;
+        }
+
+        if ($refund?->status === PaymentStatus::Pending) {
+            $refund->transitionTo(PaymentStatus::Paid);
+        }
+
+        $refund ??= $this->recordExternalReversal($charge, $this->adjustedAmount($charge, $adjustment), $adjustment['id'], $raw);
+
+        if ($refund === null || $refund->status !== PaymentStatus::Paid) {
+            return $ignored;
+        }
+
+        return new WebhookResult(
+            type: WebhookEventType::Payment,
+            status: 'refunded',
+            payment: $refund,
+            // The row, not the adj_ id — Billing::refund() claims the same key for refunds Paddle
+            // approved on the spot, so this webhook's echo of one is dropped.
+            externalId: (string) $refund->id,
+            raw: $raw,
+        );
+    }
+
+    /** A dashboard refund's size in this payment's terms — Paddle reports it tax-inclusive, as paid. */
+    protected function adjustedAmount(Payment $charge, array $adjustment): int
+    {
+        if (($adjustment['type'] ?? null) === 'full') {
+            return $charge->refundableRemainder();
+        }
+
+        $transaction = $this->http()->get("/transactions/{$charge->external_id}")->throw()->json('data');
+        $paid = (int) ($transaction['details']['totals']['grand_total'] ?? 0);
+
+        return $paid > 0
+            ? (int) round((int) ($adjustment['totals']['total'] ?? 0) * $charge->amount / $paid)
+            : 0;
+    }
+
+    /**
+     * $amount in Paddle's terms, spread over the transaction's lines. Paddle refunds tax-inclusive
+     * amounts per line, so ours is first scaled by what was actually paid (equal under inclusive
+     * tax, larger under exclusive), then each line takes what it still holds — its total minus what
+     * earlier refunds, approved or still pending, already claimed from it.
+     */
+    protected function refundItems(Payment $payment, Money $amount): array
+    {
+        $transaction = $this->http()->get("/transactions/{$payment->external_id}", ['include' => 'adjustments'])->throw()->json('data');
+
+        $paid = (int) ($transaction['details']['totals']['grand_total'] ?? 0);
+        $remaining = $paid > 0 ? (int) round($amount->amount * $paid / $payment->amount) : 0;
+
+        $claimed = [];
+
+        foreach ($transaction['adjustments'] ?? [] as $adjustment) {
+            if (($adjustment['action'] ?? null) !== 'refund' || ! in_array($adjustment['status'] ?? null, ['approved', 'pending_approval'], true)) {
+                continue;
+            }
+
+            foreach ($adjustment['items'] ?? [] as $item) {
+                $claimed[$item['item_id']] = ($claimed[$item['item_id']] ?? 0) + (int) ($item['totals']['total'] ?? 0);
+            }
+        }
+
+        $items = [];
+
+        foreach ($transaction['details']['line_items'] ?? [] as $line) {
+            $available = (int) ($line['totals']['total'] ?? 0) - ($claimed[$line['id']] ?? 0);
+            $take = min($available, $remaining);
+
+            if ($take > 0) {
+                $items[] = ['item_id' => $line['id'], 'type' => 'partial', 'amount' => (string) $take];
+                $remaining -= $take;
+            }
+        }
+
+        if ($items === [] || $remaining > 0) {
+            throw new BillingException("Paddle: payment {$payment->id} has no line left to hold a refund of {$amount->amount}.");
+        }
+
+        return $items;
     }
 
     /**

@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [Unreleased]
+## [0.9.0] - 2026-09-28
 
 ### Added
 - **Paddle (Paddle Billing) as a built-in gateway — one-off payments.** Paddle is a Merchant of Record, and that shapes the driver: there is no Paddle-hosted checkout page for the web, so a transaction's payment link opens a page on your own domain that loads Paddle.js. The package ships that page as `billing.paddle.checkout` — set it as the account's default payment link — and `payment_url` stays a plain link like every other gateway's. The checkout's quantity is pinned, so a customer can't pay for a different amount than the payment is for. Prices and products travel inline in each transaction, so nothing has to be mirrored into Paddle's catalog. A payment counts as paid on `transaction.completed` — the event that already carries Paddle's fee, which lands in `payments.fee`. The paid-amount check compares against the unit prices the transaction was issued at, not a totals field, since Paddle's tax can sit either inside or on top of the price.

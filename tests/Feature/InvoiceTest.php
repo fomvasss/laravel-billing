@@ -219,6 +219,24 @@ class InvoiceTest extends TestCase
         }
     }
 
+    public function test_one_seller_selling_to_tenants_numbers_them_all_in_one_sequence(): void
+    {
+        $a = $this->payment();
+        $b = $this->payment();
+        $a->forceFill(['tenant_id' => 'org-a'])->save();
+        $b->forceFill(['tenant_id' => 'org-b'])->save();
+
+        $this->assertSame(Billing::issueInvoice($a)->number, Billing::issueInvoice($b)->number, 'a sequence per tenant by default');
+
+        config(['billing.invoices.number_per_tenant' => false]);
+        $c = $this->payment();
+        $c->forceFill(['tenant_id' => 'org-c'])->save();
+        $this->assertSame('INV-' . now()->year . '-000001', Billing::issueInvoice($c)->number, 'the global sequence is its own');
+        $d = $this->payment();
+        $d->forceFill(['tenant_id' => 'org-a'])->save();
+        $this->assertSame('INV-' . now()->year . '-000002', Billing::issueInvoice($d)->number);
+    }
+
     public function test_numbers_run_per_series_tenant_and_year(): void
     {
         $this->assertSame('INV-2026-000001', DocumentNumber::next('INV', null, 'INV-{Y}-{000000}', 2026));

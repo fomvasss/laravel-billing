@@ -276,6 +276,9 @@ return [
             'invoice' => 'INV-{Y}-{000000}',
             'receipt' => 'RCP-{Y}-{000000}',
         ],
+        // A sequence of its own per tenant — right when each tenant is a seller. When the tenants are
+        // your customers and you are the one seller, false: one sequence for everybody.
+        'number_per_tenant' => env('BILLING_INVOICES_NUMBER_PER_TENANT', true),
         // null — each language's own (billing::invoice.date_format: uk d.m.Y, en M j, Y); a format here overrides all of them
         'date_format' => null,
         'due_days' => env('BILLING_INVOICES_DUE_DAYS', 5),

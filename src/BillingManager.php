@@ -693,7 +693,7 @@ class BillingManager
                 'status' => $type === InvoiceType::Receipt || $payment->isPaid() ? InvoiceStatus::Paid : InvoiceStatus::Issued,
                 'number' => DocumentNumber::next(
                     $type->series(),
-                    $payment->tenant_id,
+                    config('billing.invoices.number_per_tenant', true) ? $payment->tenant_id : null,
                     (string) config("billing.invoices.number_format.{$type->value}", $type->series().'-{Y}-{000000}'),
                 ),
                 'series' => $type->series(),

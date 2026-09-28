@@ -358,7 +358,11 @@ class PaddleGatewayTest extends TestCase
         Http::assertSent(fn ($request) => $request->method() === 'POST'
             && $request['destination'] === route('billing.webhook', ['gateway' => 'paddle'])
             && $request['type'] === 'url'
-            && $request['subscribed_events'] === ['transaction.completed', 'transaction.canceled', 'adjustment.created', 'adjustment.updated']);
+            && $request['subscribed_events'] === [
+                'transaction.completed', 'transaction.canceled', 'adjustment.created', 'adjustment.updated',
+                'subscription.created', 'subscription.updated', 'subscription.activated', 'subscription.trialing',
+                'subscription.past_due', 'subscription.paused', 'subscription.resumed', 'subscription.canceled',
+            ]);
     }
 
     public function test_register_webhook_updates_an_existing_destination_instead_of_duplicating_it(): void

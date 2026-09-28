@@ -28,6 +28,15 @@ class PaddleRegisterWebhookCommand extends Command
         // Refunds — ours awaiting approval, and ones issued from the Paddle dashboard.
         'adjustment.created',
         'adjustment.updated',
+        // Provider-managed subscriptions — each carries the whole entity.
+        'subscription.created',
+        'subscription.updated',
+        'subscription.activated',
+        'subscription.trialing',
+        'subscription.past_due',
+        'subscription.paused',
+        'subscription.resumed',
+        'subscription.canceled',
     ];
 
     protected $signature = 'billing:paddle-register-webhook

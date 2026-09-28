@@ -6,20 +6,32 @@ namespace Fomvasss\Billing\Gateways\Paddle;
 
 use Fomvasss\Billing\Contracts\ChecksGatewayHealth;
 use Fomvasss\Billing\Contracts\ChecksPaymentStatus;
+use Fomvasss\Billing\Contracts\ManagesProviderSubscriptions;
 use Fomvasss\Billing\Contracts\RefundsPayments;
+use Fomvasss\Billing\Contracts\StartsProviderSubscriptions;
 use Fomvasss\Billing\DTO\ChargeOptions;
 use Fomvasss\Billing\DTO\GatewayHealth;
 use Fomvasss\Billing\DTO\PaymentResult;
+use Fomvasss\Billing\DTO\SubscriptionSnapshot;
 use Fomvasss\Billing\DTO\WebhookResult;
+use Fomvasss\Billing\Enums\Interval;
+use Fomvasss\Billing\Enums\PaymentInitiation;
 use Fomvasss\Billing\Enums\PaymentStatus;
 use Fomvasss\Billing\Enums\PaymentType;
+use Fomvasss\Billing\Enums\PricingType;
+use Fomvasss\Billing\Enums\SubscriptionStatus;
 use Fomvasss\Billing\Enums\WebhookEventType;
 use Fomvasss\Billing\Exceptions\BillingException;
+use Fomvasss\Billing\Exceptions\NotSupportedException;
+use Fomvasss\Billing\Facades\Billing;
 use Fomvasss\Billing\Gateways\AbstractGateway;
 use Fomvasss\Billing\Models\Payment;
+use Fomvasss\Billing\Models\Price;
+use Fomvasss\Billing\Models\Subscription;
 use Fomvasss\Billing\Support\Money;
 use Fomvasss\Billing\Webhooks\BillingWebhookCall;
 use Illuminate\Http\Client\PendingRequest;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -43,13 +55,107 @@ use Illuminate\Support\Str;
  * Amounts are strings in minor units on both sides — no conversion (unlike LiqPay/WayForPay).
  * custom_data.payment_id is our link back to the row; Paddle echoes it in every transaction event.
  */
-class PaddleGateway extends AbstractGateway implements RefundsPayments, ChecksPaymentStatus, ChecksGatewayHealth
+class PaddleGateway extends AbstractGateway implements RefundsPayments, ChecksPaymentStatus, ChecksGatewayHealth, StartsProviderSubscriptions, ManagesProviderSubscriptions
 {
     protected const LIVE_URL = 'https://api.paddle.com';
 
     protected const SANDBOX_URL = 'https://sandbox-api.paddle.com';
 
     public function charge(Payment $payment, ChargeOptions $options = new ChargeOptions()): PaymentResult
+    {
+        return $this->openTransaction($payment, $options, $this->items($payment, $options), ['payment_id' => (string) $payment->id]);
+    }
+
+    /**
+     * A checkout whose item recurs: Paddle creates its own subscription once the transaction
+     * completes, copies the transaction's custom_data onto it and onto every renewal transaction —
+     * which is how the row is found again before Paddle's subscription id is known.
+     */
+    public function startSubscription(Payment $payment, ChargeOptions $options = new ChargeOptions()): PaymentResult
+    {
+        /** @var Subscription $subscription */
+        $subscription = $payment->payable;
+        $price = $subscription->price;
+        $qty = max(1, (int) $subscription->qty);
+
+        // A card-required trial completes its checkout transaction at zero; the first payment would
+        // then be marked paid for a sum nobody paid. Until that's modelled, no trials.
+        if (($price->trial_days ?? 0) > 0) {
+            throw new NotSupportedException("Paddle: subscriptions with a trial are not supported yet (price {$price->id}).");
+        }
+
+        if ($payment->amount % $qty !== 0) {
+            throw new BillingException("Paddle: payment {$payment->id} amount {$payment->amount} doesn't split evenly over quantity {$qty}.");
+        }
+
+        return $this->openTransaction($payment, $options, [
+            $this->recurringItem($price, $qty, intdiv($payment->amount, $qty), $payment->currency, product: [
+                'name' => Str::limit($options->description ?? $price->plan?->name ?? "Subscription {$subscription->id}", 197),
+                'tax_category' => $this->credentials['tax_category'] ?? 'standard',
+            ]),
+        ], ['payment_id' => (string) $payment->id, 'subscription_id' => (string) $subscription->id]);
+    }
+
+    public function cancel(Subscription $subscription, bool $atPeriodEnd): SubscriptionSnapshot
+    {
+        return $this->snapshotOrFail($this->manage()->post("/subscriptions/{$subscription->external_id}/cancel", [
+            'effective_from' => $atPeriodEnd ? 'next_billing_period' : 'immediately',
+        ]));
+    }
+
+    /**
+     * From the end of the paid period (Paddle's default) — the customer keeps what they paid for,
+     * and the subscription reads `paused` only once Paddle actually pauses it.
+     */
+    public function pause(Subscription $subscription, ?\DateTimeInterface $until): SubscriptionSnapshot
+    {
+        return $this->snapshotOrFail($this->manage()->post("/subscriptions/{$subscription->external_id}/pause", array_filter([
+            'effective_from' => 'next_billing_period',
+            'resume_at' => $until !== null ? Carbon::instance($until)->toIso8601ZuluString() : null,
+        ])));
+    }
+
+    /**
+     * A paused subscription resumes now, starting (and billing) a new period; one merely scheduled
+     * to pause just loses the scheduled pause.
+     */
+    public function resume(Subscription $subscription): SubscriptionSnapshot
+    {
+        $current = $this->manage()->get("/subscriptions/{$subscription->external_id}")->throw()->json('data');
+
+        return $this->snapshotOrFail(match (true) {
+            ($current['status'] ?? null) === 'paused' => $this->manage()->post("/subscriptions/{$subscription->external_id}/resume", ['effective_from' => 'immediately']),
+            ($current['scheduled_change']['action'] ?? null) === 'pause' => $this->manage()->patch("/subscriptions/{$subscription->external_id}", ['scheduled_change' => null]),
+            default => $current,
+        });
+    }
+
+    /**
+     * The price goes to Paddle inline, on the product the subscription already bills — no new
+     * product per swap. proration_billing_mode (credential, default prorated_immediately) decides
+     * what the customer pays for the change; Paddle refuses a change on a past_due subscription,
+     * and allows only do_not_bill on a trialing one.
+     */
+    public function swapPrice(Subscription $subscription, Price $price): SubscriptionSnapshot
+    {
+        $current = $this->manage()->get("/subscriptions/{$subscription->external_id}")->throw()->json('data');
+        $qty = max(1, (int) $subscription->qty);
+        $amount = Billing::resolveChargeAmount($price, $this->gatewayName)->money;
+
+        if (strcasecmp($amount->currency, (string) ($current['currency_code'] ?? '')) !== 0) {
+            throw new BillingException("Paddle: subscription {$subscription->id} bills in {$current['currency_code']}, the new price resolves to {$amount->currency}.");
+        }
+
+        $productId = $current['items'][0]['price']['product_id'] ?? throw new BillingException("Paddle: subscription {$subscription->external_id} has no item to swap.");
+
+        return $this->snapshotOrFail($this->manage()->patch("/subscriptions/{$subscription->external_id}", [
+            'items' => [$this->recurringItem($price, $qty, $amount->amount, $amount->currency, productId: $productId)],
+            'proration_billing_mode' => $this->credentials['proration_billing_mode'] ?? 'prorated_immediately',
+        ]), $price->id);
+    }
+
+    /** @param  array<string, string>  $customData */
+    protected function openTransaction(Payment $payment, ChargeOptions $options, array $items, array $customData): PaymentResult
     {
         // A Paddle transaction never expires on its own — a re-issue (billing.pay) would otherwise
         // leave the previous checkout payable next to the new one, and a customer holding both
@@ -60,9 +166,9 @@ class PaddleGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             // Gateway-specific extras (discount_id, customer_id, ...). Merged first so the driver's
             // own fields below always win.
             ...$options->raw,
-            'items' => $this->items($payment, $options),
+            'items' => $items,
             'currency_code' => $payment->currency,
-            'custom_data' => ['payment_id' => (string) $payment->id],
+            'custom_data' => $customData,
             // Opt-in only. Without it Paddle uses the account's default payment link — the
             // billing.paddle.checkout page. An explicit URL (one site of several, staging next to
             // production on one account) is refused unless its domain went through Website approval,
@@ -98,6 +204,10 @@ class PaddleGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             return $this->applyAdjustment($transaction, $event);
         }
 
+        if (str_starts_with((string) ($event['event_type'] ?? ''), 'subscription.')) {
+            return $this->applySubscriptionEvent($transaction, $event);
+        }
+
         $status = match ($event['event_type'] ?? null) {
             // completed, not paid: `paid` arrives before Paddle has finished processing — no fee,
             // no payout totals yet. completed carries everything in one event.
@@ -116,11 +226,28 @@ class PaddleGateway extends AbstractGateway implements RefundsPayments, ChecksPa
         // Ignored, not a failed job.
         $payment = $this->findPaymentByReference($transaction['custom_data']['payment_id'] ?? null);
 
+        // A transaction Paddle generated for a subscription (renewal, plan change, resume): it
+        // carries the FIRST payment's custom_data, copied on from the subscription, so without this
+        // branch a renewal would land on — and overwrite — the checkout payment.
+        if (! empty($transaction['subscription_id']) && ($transaction['id'] ?? null) !== $payment?->external_id) {
+            return $status === PaymentStatus::Paid
+                ? $this->recordSubscriptionTransaction($transaction, $event)
+                : new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $event);
+        }
+
         if ($payment === null) {
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $event);
         }
 
-        return $this->applyTransaction($payment, $status, $transaction, $event);
+        $result = $this->applyTransaction($payment, $status, $transaction, $event);
+
+        // The subscription checkout itself: the payment is settled above, the subscription it
+        // started gets its first paid period here.
+        if ($result->type === WebhookEventType::Payment && $status === PaymentStatus::Paid && ! empty($transaction['subscription_id'])) {
+            $this->syncFromTransaction($transaction, $event['occurred_at'] ?? null);
+        }
+
+        return $result;
     }
 
     public function checkStatus(Payment $payment): WebhookResult
@@ -155,7 +282,15 @@ class PaddleGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $transaction);
         }
 
-        return $this->applyTransaction($payment, $status, $transaction, $transaction);
+        $result = $this->applyTransaction($payment, $status, $transaction, $transaction);
+
+        // Same as the webhook path: link the subscription before PaymentSucceeded reaches the
+        // listener, which would otherwise renew the still-unlinked row by our own interval.
+        if ($result->type === WebhookEventType::Payment && $status === PaymentStatus::Paid && ! empty($transaction['subscription_id'])) {
+            $this->syncFromTransaction($transaction, null);
+        }
+
+        return $result;
     }
 
     /**
@@ -225,6 +360,7 @@ class PaddleGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             ['name' => 'checkout_url', 'type' => 'text', 'secret' => false, 'help' => 'Необов\'язково: сторінка оплати цього сайту (https://сайт/billing/paddle/checkout, домен має пройти Website approval). Порожньо — default payment link акаунта'],
             ['name' => 'webhook_secret', 'type' => 'text', 'secret' => true, 'help' => 'Secret key notification destination (pdl_ntfset_...)'],
             ['name' => 'tax_category', 'type' => 'text', 'secret' => false, 'help' => 'Податкова категорія inline-продукту: standard, saas, digital-goods, ... (має бути увімкнена в акаунті)'],
+            ['name' => 'proration_billing_mode', 'type' => 'text', 'secret' => false, 'help' => 'Як Paddle рахує зміну тарифу підписки: prorated_immediately (за замовчуванням), prorated_next_billing_period, full_immediately, full_next_billing_period, do_not_bill'],
             ['name' => 'link_ttl_minutes', 'type' => 'number', 'secret' => false, 'help' => 'Скільки хвилин живе посилання на оплату (за замовчуванням 1440)'],
         ];
     }
@@ -278,6 +414,196 @@ class PaddleGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             externalId: $transaction['id'] ?? (string) $payment->id,
             raw: $raw,
         );
+    }
+
+    /**
+     * subscription.* — every one carries the whole entity, so each is simply a snapshot. The row
+     * is found by Paddle's id once linked, before that by our id in custom_data (copied from the
+     * checkout transaction). The paid period is left to the transaction events: Paddle moves
+     * current_billing_period forward BEFORE collecting, so reading it here would renew a
+     * subscription whose charge may still fail.
+     */
+    protected function applySubscriptionEvent(array $entity, array $event): WebhookResult
+    {
+        $subscription = $this->findProviderSubscription($entity['id'] ?? null)
+            ?? $this->findSubscriptionByReference($entity['custom_data']['subscription_id'] ?? null);
+        $snapshot = $subscription === null ? null : $this->snapshotFrom($entity, $event['occurred_at'] ?? null);
+
+        if ($snapshot === null || empty($event['event_id'])) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $event);
+        }
+
+        return new WebhookResult(
+            type: WebhookEventType::Subscription,
+            status: 'synced',
+            subscription: $subscription,
+            externalId: $event['event_id'],
+            raw: $event,
+            snapshot: $snapshot,
+        );
+    }
+
+    /**
+     * A renewal (or plan-change, or resume) charge Paddle collected on its own: a new Payment row
+     * for it, payable = the subscription, then the subscription's new paid period. Its amount is
+     * what the customer paid (grand total) — Paddle computed it, proration included, so there is
+     * no issued amount of ours to check it against.
+     */
+    protected function recordSubscriptionTransaction(array $transaction, array $event): WebhookResult
+    {
+        $subscription = $this->findProviderSubscription($transaction['subscription_id'])
+            ?? $this->findSubscriptionByReference($transaction['custom_data']['subscription_id'] ?? null);
+
+        if ($subscription === null) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $event);
+        }
+
+        $payment = Payment::query()->where('gateway', $this->gatewayName)->where('external_id', $transaction['id'])->first()
+            ?? Payment::create([
+                'status' => PaymentStatus::Pending,
+                'type' => PaymentType::Charge,
+                'initiation' => PaymentInitiation::Automatic,
+                'gateway' => $this->gatewayName,
+                'amount' => (int) ($transaction['details']['totals']['grand_total'] ?? 0),
+                'currency' => $transaction['currency_code'] ?? $subscription->price?->currency,
+                'external_id' => $transaction['id'],
+                'raw_response' => $transaction,
+                'payable_type' => $subscription->getMorphClass(),
+                'payable_id' => $subscription->getKey(),
+                'billable_type' => $subscription->billable_type,
+                'billable_id' => $subscription->billable_id,
+                'tenant_id' => $subscription->tenant_id,
+            ]);
+
+        $payment->transitionTo(PaymentStatus::Paid, $this->feeFrom($transaction['details']['totals']['fee'] ?? null));
+
+        $this->syncFromTransaction($transaction, $event['occurred_at'] ?? null);
+
+        return new WebhookResult(
+            type: WebhookEventType::Payment,
+            status: 'succeeded',
+            payment: $payment,
+            externalId: $transaction['id'],
+            raw: $event,
+        );
+    }
+
+    /**
+     * A completed subscription transaction is the proof a period is paid for: its billing_period
+     * is that period. The rest of the state comes fresh from the API — the transaction doesn't
+     * carry it, and a snapshot is the whole state (a missing scheduled cancel would clear one).
+     * Applied here rather than returned: this delivery's result already reports the payment, and
+     * the snapshot's events are derived from what changed, so a re-delivery fires nothing twice.
+     */
+    protected function syncFromTransaction(array $transaction, ?string $occurredAt): void
+    {
+        $subscription = $this->findProviderSubscription($transaction['subscription_id'])
+            ?? $this->findSubscriptionByReference($transaction['custom_data']['subscription_id'] ?? null);
+
+        if ($subscription === null) {
+            return;
+        }
+
+        $entity = $this->http()->get("/subscriptions/{$transaction['subscription_id']}")->throw()->json('data');
+        $snapshot = $this->snapshotFrom($entity, $occurredAt, $transaction['billing_period']['ends_at'] ?? null);
+
+        if ($snapshot !== null) {
+            $subscription->applyProviderSnapshot($snapshot);
+        }
+    }
+
+    /**
+     * Paddle's subscription entity in the package's terms. $paidPeriodEndsAt only from a completed
+     * transaction — see applySubscriptionEvent() for why the entity's own period isn't used.
+     */
+    protected function snapshotFrom(array $entity, ?string $occurredAt, ?string $paidPeriodEndsAt = null, ?string $priceId = null): ?SubscriptionSnapshot
+    {
+        $status = match ($entity['status'] ?? null) {
+            'active' => SubscriptionStatus::Active,
+            'trialing' => SubscriptionStatus::Trialing,
+            'past_due' => SubscriptionStatus::PastDue,
+            'paused' => SubscriptionStatus::Paused,
+            'canceled' => SubscriptionStatus::Canceled,
+            default => null,
+        };
+
+        if ($status === null || empty($entity['id'])) {
+            return null;
+        }
+
+        $change = $entity['scheduled_change'] ?? null;
+        $date = fn (?string $value) => $value === null ? null : Carbon::parse($value);
+
+        return new SubscriptionSnapshot(
+            externalId: $entity['id'],
+            status: $status,
+            currentPeriodEndsAt: $date($paidPeriodEndsAt),
+            cancelsAt: match (true) {
+                $status === SubscriptionStatus::Canceled => $date($entity['canceled_at'] ?? null) ?? now(),
+                ($change['action'] ?? null) === 'cancel' => $date($change['effective_at'] ?? null),
+                default => null,
+            },
+            trialEndsAt: $status === SubscriptionStatus::Trialing ? $date($entity['current_billing_period']['ends_at'] ?? null) : null,
+            pauseEndsAt: $status === SubscriptionStatus::Paused && ($change['action'] ?? null) === 'resume' ? $date($change['effective_at'] ?? null) : null,
+            priceId: $priceId,
+            occurredAt: $date($occurredAt),
+        );
+    }
+
+    /**
+     * The response to a management call is the subscription entity; its updated_at orders it
+     * against the webhooks. A refusal becomes a BillingException carrying Paddle's own code — they
+     * are business rules the caller has to show someone (a prorated charge under Paddle's minimum,
+     * a change on a past_due subscription, a renewal about to run), not transport failures.
+     */
+    protected function snapshotOrFail(\Illuminate\Http\Client\Response|array $response, ?string $priceId = null): SubscriptionSnapshot
+    {
+        if (! is_array($response) && $response->failed()) {
+            throw new BillingException(sprintf(
+                'Paddle refused the subscription change: %s — %s',
+                $response->json('error.code') ?? $response->status(),
+                $response->json('error.detail') ?? $response->body(),
+            ));
+        }
+
+        $entity = is_array($response) ? $response : $response->json('data');
+
+        return $this->snapshotFrom($entity, $entity['updated_at'] ?? null, priceId: $priceId)
+            ?? throw new BillingException('Paddle: unexpected subscription response: ' . json_encode($entity));
+    }
+
+    /**
+     * A recurring non-catalog price, with the quantity pinned like one-off items. $product for a new
+     * subscription, $productId to stay on the product a subscription already bills.
+     */
+    protected function recurringItem(Price $price, int $qty, int $unitAmount, string $currency, ?array $product = null, ?string $productId = null): array
+    {
+        if ($price->pricing_type === PricingType::Metered) {
+            throw new NotSupportedException('Paddle: metered prices can\'t be billed by a Paddle subscription — it charges a fixed amount per period.');
+        }
+
+        $interval = match ($price->interval) {
+            Interval::Day, Interval::Week, Interval::Month, Interval::Year => $price->interval->value,
+            default => throw new NotSupportedException("Paddle: subscriptions bill by day, week, month or year — price {$price->id} has no such interval."),
+        };
+
+        return [
+            'quantity' => $qty,
+            'price' => array_filter([
+                'description' => "Price {$price->id}",
+                'quantity' => ['minimum' => $qty, 'maximum' => $qty],
+                'billing_cycle' => ['interval' => $interval, 'frequency' => max(1, (int) $price->interval_count)],
+                'unit_price' => ['amount' => (string) $unitAmount, 'currency_code' => $currency],
+                'product' => $product,
+                'product_id' => $productId,
+            ]),
+        ];
+    }
+
+    /** Subscription management calls: sent once — resume and an immediate proration charge move money. */
+    protected function manage(): PendingRequest
+    {
+        return $this->http()->retry(1);
     }
 
     /**

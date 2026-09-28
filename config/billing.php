@@ -297,6 +297,7 @@ return [
             'checkout_url' => env('PADDLE_CHECKOUT_URL'),
             'webhook_secret' => env('PADDLE_WEBHOOK_SECRET'),
             'tax_category' => env('PADDLE_TAX_CATEGORY', 'standard'),
+            'proration_billing_mode' => env('PADDLE_PRORATION_BILLING_MODE', 'prorated_immediately'),
             'link_ttl_minutes' => env('PADDLE_LINK_TTL_MINUTES', 1440),
         ],
 

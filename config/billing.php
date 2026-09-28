@@ -247,7 +247,9 @@ return [
     | `enabled`. `seller` is who issues the documents; a gateway block can carry
     | its own `seller` (a merchant account of another legal entity or brand),
     | which wins for payments through that gateway. `auto_receipt` issues a
-    | receipt on every PaymentSucceeded. PDFs need barryvdh/laravel-dompdf or
+    | receipt on every PaymentSucceeded; `auto_invoice` gives a payment paid
+    | without an invoice one too (issued paid) — the pair a card payment gets
+    | from Stripe. PDFs need barryvdh/laravel-dompdf or
     | your own InvoiceRenderer; `storage.disk` keeps a copy of each one.
     |
     */
@@ -255,6 +257,7 @@ return [
     'invoices' => [
         'enabled' => env('BILLING_INVOICES_ENABLED', false),
         'auto_receipt' => env('BILLING_INVOICES_AUTO_RECEIPT', false),
+        'auto_invoice' => env('BILLING_INVOICES_AUTO_INVOICE', false),
         'seller' => [
             'name' => env('BILLING_SELLER_NAME'),
             'tax_id' => env('BILLING_SELLER_TAX_ID'),

@@ -33,6 +33,7 @@ use Fomvasss\Billing\Support\WebhookResultDispatcher;
 use Fomvasss\Billing\Support\WebhookTenant;
 use Fomvasss\Billing\Contracts\HasBillingDetails;
 use Fomvasss\Billing\Contracts\InvoiceRenderer;
+use Fomvasss\Billing\Contracts\InvoiceItemsContract;
 use Fomvasss\Billing\Contracts\InvoiceSellerContract;
 use Fomvasss\Billing\Contracts\InvoiceTemplateResolver;
 use Fomvasss\Billing\Contracts\InvoiceViewDataContract;
@@ -509,7 +510,8 @@ class BillingManager
     /**
      * An invoice — a bill to pay — for a payment that is still to be paid: the customer pays it
      * through the permanent pay link printed on it (billing.pay), or by bank transfer to the
-     * seller's details. Everything it shows is a snapshot taken now: items (the payable's
+     * seller's details. For a payment already paid it comes out paid, without a due date or a pay
+     * link — the invoice accounting asks for after the fact, or the pair `auto_invoice` issues. Everything it shows is a snapshot taken now: items (the payable's
      * receiptItems(), or one line for the whole amount), seller ($seller, else InvoiceSellerContract
      * — the gateway's own `seller`, else the general one), buyer ($buyer, else the billable's
      * billingDetails()). Idempotent: a payment has one invoice, and asking again returns it.
@@ -518,11 +520,11 @@ class BillingManager
      */
     public function issueInvoice(Payment $payment, ?BillingDetails $buyer = null, array $extra = [], ?\DateTimeInterface $dueAt = null, ?string $locale = null, ?BillingDetails $seller = null): Invoice
     {
-        if ($payment->isRefund() || $payment->isPaid()) {
-            throw new BillingException("Payment {$payment->id} is {$payment->type->value}/{$payment->status->value} — an invoice is for a charge still to be paid; issue a receipt for a paid one.");
+        if ($payment->isRefund()) {
+            throw new BillingException("Payment {$payment->id} is a refund — invoices are for charges.");
         }
 
-        $dueDays = config('billing.invoices.due_days');
+        $dueDays = $payment->isPaid() ? null : config('billing.invoices.due_days');
 
         return $this->issueDocument(
             InvoiceType::Invoice,
@@ -688,7 +690,7 @@ class BillingManager
         try {
             $document = DB::transaction(fn () => Invoice::create([
                 'type' => $type,
-                'status' => $type === InvoiceType::Receipt ? InvoiceStatus::Paid : InvoiceStatus::Issued,
+                'status' => $type === InvoiceType::Receipt || $payment->isPaid() ? InvoiceStatus::Paid : InvoiceStatus::Issued,
                 'number' => DocumentNumber::next(
                     $type->series(),
                     $payment->tenant_id,
@@ -704,7 +706,7 @@ class BillingManager
                 'locale' => $locale,
                 'issued_at' => now(),
                 'due_at' => $dueAt,
-                'paid_at' => $type === InvoiceType::Receipt ? ($payment->paid_at ?? now()) : null,
+                'paid_at' => $type === InvoiceType::Receipt || $payment->isPaid() ? ($payment->paid_at ?? now()) : null,
                 'payment_id' => $payment->id,
                 'invoice_id' => $invoice?->id,
                 'tenant_id' => $payment->tenant_id,
@@ -747,10 +749,17 @@ class BillingManager
         ])];
     }
 
-    /** The payable's receipt items when it has them (checked against the amount), else one line for the whole payment. */
+    /**
+     * The lines from InvoiceItemsContract (the payable's receipt items by default, checked against
+     * the amount), else one line for the whole payment. A subscription document's paid period goes
+     * on every line that doesn't carry its own.
+     */
     protected function documentItems(Payment $payment, string $locale, ?array $subscription = null): array
     {
-        $items = $payment->payable instanceof HasReceiptItems ? $payment->payable->receiptItems() : [];
+        $items = app(InvoiceItemsContract::class)->items($payment);
+        $period = isset($subscription['period_starts_at'], $subscription['period_ends_at'])
+            ? ['period' => ['starts_at' => $subscription['period_starts_at'], 'ends_at' => $subscription['period_ends_at']]]
+            : [];
 
         if ($items === []) {
             $plan = $payment->payable instanceof Subscription ? $payment->payable->price?->plan?->name : null;
@@ -767,15 +776,14 @@ class BillingManager
                 'unitAmount' => $payment->amount,
                 'total' => $payment->amount,
                 // The period the line pays for, printed under it — only where it's known for sure.
-                ...(isset($subscription['period_starts_at'], $subscription['period_ends_at'])
-                    ? ['period' => ['starts_at' => $subscription['period_starts_at'], 'ends_at' => $subscription['period_ends_at']]]
-                    : []),
+                ...$period,
             ]];
         }
 
         $this->assertReceiptItemsMatchAmount($payment, new ChargeOptions(receiptItems: $items));
 
         return array_map(fn (array $item) => [
+            ...$period,
             ...$item,
             'total' => (int) round($item['unitAmount'] * $item['qty']),
         ], $items);

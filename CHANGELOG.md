@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Added
+- **`billing.invoices.auto_invoice`** — a payment paid without an invoice (a checkout, an automatic renewal) gets one on `PaymentSucceeded`, issued already paid, before the receipt: every payment ends with an invoice and its receipt, the pair a card payment gets from Stripe. The invoice names the period just paid for — it's issued before the renewal moves the subscription on.
+- **`InvoiceItemsContract`** — where a document's lines come from. Default: the payable's `receiptItems()`, as before; bind your own to use the same source as your fiscal basket. A subscription document's paid period now goes under every line, not only the one the package writes itself.
+
+### Changed
+- `issueInvoice()` accepts a paid payment: the invoice comes out paid, without a due date or a pay link, instead of throwing. Refunds still throw.
+
 ## [0.10.0] - 2026-09-28
 
 ### Added

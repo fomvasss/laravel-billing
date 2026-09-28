@@ -55,6 +55,7 @@ class BillingServiceProvider extends ServiceProvider
         $this->app->bind(\Fomvasss\Billing\Contracts\InvoiceSellerContract::class, \Fomvasss\Billing\Support\DefaultInvoiceSeller::class);
         $this->app->bind(\Fomvasss\Billing\Contracts\InvoiceTemplateResolver::class, \Fomvasss\Billing\Support\DefaultInvoiceTemplateResolver::class);
         $this->app->bind(\Fomvasss\Billing\Contracts\InvoiceViewDataContract::class, \Fomvasss\Billing\Support\DefaultInvoiceViewData::class);
+        $this->app->bind(\Fomvasss\Billing\Contracts\InvoiceItemsContract::class, \Fomvasss\Billing\Support\DefaultInvoiceItems::class);
         $this->app->bind(\Fomvasss\Billing\Contracts\InvoiceRenderer::class, \Fomvasss\Billing\Support\DompdfInvoiceRenderer::class);
     }
 

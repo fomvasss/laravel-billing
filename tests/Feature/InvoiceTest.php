@@ -229,16 +229,88 @@ class InvoiceTest extends TestCase
         $this->assertSame('2026/3', DocumentNumber::next('INV', null, '{Y}/{N}', 2026));
     }
 
-    public function test_one_invoice_per_payment_and_only_for_an_unpaid_charge(): void
+    public function test_one_invoice_per_payment_and_a_paid_charge_gets_it_already_paid(): void
     {
         $payment = $this->payment();
 
         $this->assertTrue(Billing::issueInvoice($payment)->is(Billing::issueInvoice($payment)));
         $this->assertSame(1, Invoice::query()->count());
 
-        $payment->transitionTo(PaymentStatus::Paid);
+        $paid = $this->payment(status: 'paid');
+        $invoice = Billing::issueInvoice($paid);
+
+        $this->assertSame(InvoiceStatus::Paid, $invoice->status);
+        $this->assertNull($invoice->due_at);
+        $this->assertNotNull($invoice->paid_at);
+        $this->assertNull(Billing::invoiceDocument($invoice)->payUrl, 'nothing left to pay');
+
         $this->expectException(BillingException::class);
-        Billing::issueInvoice($this->payment(status: 'paid'));
+        Billing::issueInvoice(Payment::create(['status' => 'paid', 'type' => 'refund', 'gateway' => 'monobank', 'amount' => 100, 'currency' => 'UAH',
+            'parent_id' => $paid->id, 'payable_type' => $paid->payable_type, 'payable_id' => $paid->payable_id,
+            'billable_type' => $paid->billable_type, 'billable_id' => $paid->billable_id]));
+    }
+
+    public function test_auto_invoice_pairs_a_payment_paid_without_an_invoice_with_one(): void
+    {
+        config(['billing.invoices.auto_receipt' => true, 'billing.invoices.auto_invoice' => true]);
+        $payment = $this->payment(order: true);
+
+        $payment->transitionTo(PaymentStatus::Paid);
+        PaymentSucceeded::dispatch($payment);
+        PaymentSucceeded::dispatch($payment);
+
+        $invoice = Invoice::query()->where('type', InvoiceType::Invoice)->sole();
+        $receipt = Invoice::query()->where('type', InvoiceType::Receipt)->sole();
+        $this->assertSame(InvoiceStatus::Paid, $invoice->status);
+        $this->assertSame($invoice->id, $receipt->invoice_id);
+        $this->assertSame($invoice->items, $receipt->items);
+        $this->assertSame($invoice->number, Billing::invoiceDocument($receipt)->invoiceNumber);
+    }
+
+    public function test_an_auto_invoice_names_the_period_just_paid_for_not_the_next_one(): void
+    {
+        config(['billing.invoices.auto_receipt' => true, 'billing.invoices.auto_invoice' => true]);
+        $user = TestBillingUser::create(['name' => 'Buyer']);
+        $plan = \Fomvasss\Billing\Models\Plan::create(['code' => 'pro', 'name' => 'Pro']);
+        $price = \Fomvasss\Billing\Models\Price::create(['plan_id' => $plan->id, 'currency' => 'UAH', 'amount' => 3500, 'pricing_type' => 'flat', 'interval' => 'month', 'interval_count' => 1]);
+        $periodEnd = now()->addHour()->startOfSecond();
+        $subscription = \Fomvasss\Billing\Models\Subscription::create(['status' => 'active', 'price_id' => $price->id, 'current_period_ends_at' => $periodEnd,
+            'billable_type' => TestBillingUser::class, 'billable_id' => $user->id]);
+        $payment = Payment::create(['status' => 'pending', 'type' => 'charge', 'gateway' => 'monobank', 'amount' => 3500, 'currency' => 'UAH',
+            'payable_type' => $subscription->getMorphClass(), 'payable_id' => $subscription->id, 'billable_type' => TestBillingUser::class, 'billable_id' => $user->id]);
+
+        $payment->transitionTo(PaymentStatus::Paid);
+        PaymentSucceeded::dispatch($payment);
+
+        $this->assertTrue($subscription->fresh()->current_period_ends_at->gt($periodEnd), 'the renewal ran');
+        $invoice = Invoice::query()->where('type', InvoiceType::Invoice)->sole();
+        $this->assertSame($periodEnd->toDateString(), $invoice->extra['subscription']['period_starts_at']);
+        $this->assertSame($periodEnd->copy()->addMonthNoOverflow()->toDateString(), $invoice->extra['subscription']['period_ends_at']);
+    }
+
+    public function test_the_app_can_supply_the_lines_and_a_subscription_period_lands_on_them(): void
+    {
+        $this->app->bind(\Fomvasss\Billing\Contracts\InvoiceItemsContract::class, fn () => new class implements \Fomvasss\Billing\Contracts\InvoiceItemsContract {
+            public function items(Payment $payment): array
+            {
+                return [['name' => 'Безлім · місяць', 'qty' => 1, 'unitAmount' => $payment->amount, 'sku' => 'base-month']];
+            }
+        });
+
+        $invoice = Billing::issueInvoice($this->payment(), extra: ['subscription' => ['plan' => 'Безлім', 'period_starts_at' => '2026-10-01', 'period_ends_at' => '2026-11-01']]);
+
+        $this->assertSame('Безлім · місяць', $invoice->items[0]['name']);
+        $this->assertSame('base-month', $invoice->items[0]['sku']);
+        $this->assertSame(['starts_at' => '2026-10-01', 'ends_at' => '2026-11-01'], $invoice->items[0]['period']);
+
+        $this->app->bind(\Fomvasss\Billing\Contracts\InvoiceItemsContract::class, fn () => new class implements \Fomvasss\Billing\Contracts\InvoiceItemsContract {
+            public function items(Payment $payment): array
+            {
+                return [['name' => 'Wrong', 'qty' => 1, 'unitAmount' => 1]];
+            }
+        });
+        $this->expectException(BillingException::class);
+        Billing::issueInvoice($this->payment());
     }
 
     public function test_payment_settles_the_invoice_and_issues_the_receipt_once(): void

@@ -13,8 +13,12 @@ use Fomvasss\Billing\Models\Invoice;
 
 /**
  * Registered only with `billing.invoices.enabled` (the invoice tables are an optional migration
- * group). A paid charge settles its invoice, if it has one, and — with `auto_receipt` — gets its
- * receipt. Both steps are idempotent: a re-delivered PaymentSucceeded changes nothing.
+ * group). A paid charge settles its invoice, if it has one — or, with `auto_invoice`, gets one
+ * issued already paid — and with `auto_receipt` gets its receipt. Every step is idempotent: a
+ * re-delivered PaymentSucceeded changes nothing.
+ *
+ * Registered before HandleSubscriptionPaymentOutcome on purpose: an invoice issued here reads the
+ * subscription before the renewal moves its period on, so it names the period just paid for.
  */
 class SettleInvoiceOnPayment
 {
@@ -36,6 +40,8 @@ class SettleInvoiceOnPayment
             $invoice->update(['status' => InvoiceStatus::Paid, 'paid_at' => $payment->paid_at ?? now()]);
 
             InvoicePaid::dispatch($invoice);
+        } elseif (config('billing.invoices.auto_invoice', false)) {
+            app(BillingManager::class)->issueInvoice($payment);
         }
 
         if (config('billing.invoices.auto_receipt', false)) {

@@ -434,7 +434,7 @@ Optional documents: an **invoice** (a bill to pay, issued before the money arriv
 Setup: publish and run the `billing-migrations-invoices` group, set `BILLING_INVOICES_ENABLED=true`, fill the seller (`BILLING_SELLER_*`, or `billing.invoices.seller`), and `composer require barryvdh/laravel-dompdf` for PDFs (or bind your own `InvoiceRenderer`).
 
 ```php
-$invoice = Billing::issueInvoice($payment);                 // a pending charge → INV-2026-000001
+$invoice = Billing::issueInvoice($payment);                 // a pending charge → INV-2026-000001 (a paid one gets it already paid)
 $invoice = Billing::issueInvoice($payment, new BillingDetails(name: 'ТОВ «Ромашка»', taxId: '41234567'), [
     'note' => 'Згідно договору № 17 від 01.09.2026',       // printed under the totals
 ]);
@@ -450,9 +450,9 @@ Billing::voidInvoice($invoice);     // keeps its number — numbers are never re
 - **Seller**: the one you pass (`issueInvoice($payment, seller: new BillingDetails(...))` — for one document), otherwise the gateway's own `seller` block when it has one (`billing.gateways.paddle.seller` — a merchant account of another legal entity or brand), otherwise the general `billing.invoices.seller`. Several sellers from a database — bind `InvoiceSellerContract`.
 - **Buyer**: the one you pass, otherwise the billable's `billingDetails()` (implement `HasBillingDetails` on your model).
 - **Subscription payments** record what was bought: the plan's name (the line reads "Subscription: Pro") and, on an invoice, the paid period, printed under that line (`extra['subscription']`), so a later plan swap or renewal doesn't change a document already sent. A receipt settling an invoice keeps the invoice's; the period is left out where it can't be known for sure at issue time (a receipt without an invoice, a provider-managed subscription).
-- **Items**: the payable's `receiptItems()` (`HasReceiptItems`, checked against the amount), otherwise one line for the whole payment.
+- **Items**: from `InvoiceItemsContract` — by default the payable's `receiptItems()` (`HasReceiptItems`); bind your own to take them from where your fiscal basket comes from, so the checkout, the fiscal receipt and the PDF name a purchase alike. Checked against the amount; none — one line for the whole payment. A subscription document's paid period goes under every line.
 - **Numbers** are the document's own, not `payments.number`: an unbroken sequence per series (`INV`, `RCP`), seller (tenant) and year, format from `billing.invoices.number_format` (`{Y}`, `{000000}` — the counter padded to that width, `{N}` — unpadded).
-- **Payment settles the invoice**: on `PaymentSucceeded` it turns `paid` (`InvoicePaid`) and, with `auto_receipt`, the receipt is issued (`InvoiceIssued`), pointing back at the invoice. A payment recorded as paid by hand fires no event — call `issueReceipt()` yourself.
+- **Payment settles the invoice**: on `PaymentSucceeded` it turns `paid` (`InvoicePaid`) and, with `auto_receipt`, the receipt is issued (`InvoiceIssued`), pointing back at the invoice. With `auto_invoice` (`BILLING_INVOICES_AUTO_INVOICE`) a payment paid without an invoice — a checkout, an automatic renewal — gets one too, issued already paid, so every payment ends with the pair a card payment gets from Stripe: an invoice and the receipt for it. A payment recorded as paid by hand fires no event — call `issueReceipt()` yourself.
 - **PDF** is generated on the fly; `BILLING_INVOICES_DISK` keeps a copy per status (a paid invoice doesn't serve its unpaid copy).
 
 **Customizing the template**, from the simplest:

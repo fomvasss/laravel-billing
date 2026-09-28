@@ -511,7 +511,8 @@ class BillingManager
      * An invoice — a bill to pay — for a payment that is still to be paid: the customer pays it
      * through the permanent pay link printed on it (billing.pay), or by bank transfer to the
      * seller's details. For a payment already paid it comes out paid, without a due date or a pay
-     * link — the invoice accounting asks for after the fact, or the pair `auto_invoice` issues. Everything it shows is a snapshot taken now: items (the payable's
+     * link — the invoice accounting asks for after the fact — and without a subscription's period,
+     * which by then the renewal has moved on (see invoiceAtPayment()). Everything it shows is a snapshot taken now: items (the payable's
      * receiptItems(), or one line for the whole amount), seller ($seller, else InvoiceSellerContract
      * — the gateway's own `seller`, else the general one), buyer ($buyer, else the billable's
      * billingDetails()). Idempotent: a payment has one invoice, and asking again returns it.
@@ -535,6 +536,18 @@ class BillingManager
             $locale,
             seller: $seller,
         );
+    }
+
+    /**
+     * The invoice `auto_invoice` issues on PaymentSucceeded, for a charge paid without one. Unlike
+     * issueInvoice() on a paid payment it names a subscription's period: it runs before the renewal
+     * moves the subscription on, so the current period's end is where the paid one starts.
+     *
+     * @internal called by SettleInvoiceOnPayment
+     */
+    public function invoiceAtPayment(Payment $payment): Invoice
+    {
+        return $this->issueDocument(InvoiceType::Invoice, $payment, null, [], null, null, atPayment: true);
     }
 
     /**
@@ -665,6 +678,7 @@ class BillingManager
         ?array $items = null,
         ?Invoice $invoice = null,
         ?BillingDetails $seller = null,
+        bool $atPayment = false,
     ): Invoice {
         $existing = fn () => Invoice::query()->where('type', $type)->where('payment_id', $payment->id)->first();
 
@@ -675,7 +689,7 @@ class BillingManager
         $billable = $payment->billable;
         $buyer ??= $billable instanceof HasBillingDetails ? $billable->billingDetails() : new BillingDetails(name: '');
         $locale ??= (string) config('billing.invoices.locale', app()->getLocale());
-        $extra = $this->withSubscriptionSnapshot($payment, $type, $extra);
+        $extra = $this->withSubscriptionSnapshot($payment, $type, $extra, $atPayment);
 
         // How it was paid — named at issue time, so a receipt keeps saying "Monobank" even if the
         // gateway is later renamed or removed.
@@ -727,11 +741,12 @@ class BillingManager
      * invoice the date the paid period will run to — under `extra['subscription']`, so a later plan
      * swap or renewal doesn't change a document already sent. A receipt settling an invoice already
      * carries the invoice's (its extra is copied). The period is left out where the package can't
-     * be sure of it at issue time: a receipt without an invoice (the subscription may already have
-     * moved on), and a provider-managed subscription (the provider sets its periods). A
+     * be sure of it at issue time: a receipt without an invoice and an invoice issued after the
+     * payment (the subscription may already have moved on), and a provider-managed subscription
+     * (the provider sets its periods). A
      * `subscription` key you passed yourself wins.
      */
-    protected function withSubscriptionSnapshot(Payment $payment, InvoiceType $type, array $extra): array
+    protected function withSubscriptionSnapshot(Payment $payment, InvoiceType $type, array $extra, bool $atPayment = false): array
     {
         $subscription = $payment->payable;
 
@@ -739,7 +754,10 @@ class BillingManager
             return $extra;
         }
 
-        $periodEnd = $type === InvoiceType::Invoice && ! $subscription->isProviderManaged() ? $subscription->nextPeriodEnd() : null;
+        $knowsPeriod = $type === InvoiceType::Invoice
+            && ! $subscription->isProviderManaged()
+            && ($atPayment || ! $payment->isPaid());
+        $periodEnd = $knowsPeriod ? $subscription->nextPeriodEnd() : null;
 
         return [...$extra, 'subscription' => array_filter([
             'plan' => $subscription->price?->plan?->name,

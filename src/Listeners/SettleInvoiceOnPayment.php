@@ -41,7 +41,7 @@ class SettleInvoiceOnPayment
 
             InvoicePaid::dispatch($invoice);
         } elseif (config('billing.invoices.auto_invoice', false)) {
-            app(BillingManager::class)->issueInvoice($payment);
+            app(BillingManager::class)->invoiceAtPayment($payment);
         }
 
         if (config('billing.invoices.auto_receipt', false)) {

@@ -306,6 +306,24 @@ class InvoiceTest extends TestCase
         $this->assertSame($periodEnd->copy()->addMonthNoOverflow()->toDateString(), $invoice->extra['subscription']['period_ends_at']);
     }
 
+    public function test_an_invoice_asked_for_after_the_payment_leaves_the_period_out(): void
+    {
+        $user = TestBillingUser::create(['name' => 'Buyer']);
+        $plan = \Fomvasss\Billing\Models\Plan::create(['code' => 'pro', 'name' => 'Pro']);
+        $price = \Fomvasss\Billing\Models\Price::create(['plan_id' => $plan->id, 'currency' => 'UAH', 'amount' => 3500, 'pricing_type' => 'flat', 'interval' => 'month', 'interval_count' => 1]);
+        $subscription = \Fomvasss\Billing\Models\Subscription::create(['status' => 'active', 'price_id' => $price->id, 'current_period_ends_at' => now()->addHour(),
+            'billable_type' => TestBillingUser::class, 'billable_id' => $user->id]);
+        $payment = Payment::create(['status' => 'pending', 'type' => 'charge', 'gateway' => 'monobank', 'amount' => 3500, 'currency' => 'UAH',
+            'payable_type' => $subscription->getMorphClass(), 'payable_id' => $subscription->id, 'billable_type' => TestBillingUser::class, 'billable_id' => $user->id]);
+        $payment->transitionTo(PaymentStatus::Paid);
+        PaymentSucceeded::dispatch($payment);
+
+        $invoice = Billing::issueInvoice($payment);
+
+        $this->assertSame(['plan' => 'Pro'], $invoice->extra['subscription'], 'by now the renewal has moved the period on');
+        $this->assertArrayNotHasKey('period', $invoice->items[0]);
+    }
+
     public function test_the_app_can_supply_the_lines_and_a_subscription_period_lands_on_them(): void
     {
         $this->app->bind(\Fomvasss\Billing\Contracts\InvoiceItemsContract::class, fn () => new class implements \Fomvasss\Billing\Contracts\InvoiceItemsContract {

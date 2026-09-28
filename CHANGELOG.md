@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [Unreleased]
+## [0.12.2] - 2026-09-28
 
 ### Fixed
 - `auto_invoice`/`auto_receipt` issued documents even while the seller had no name — and a document is a snapshot, so the empty seller stayed on it for good. Nothing is issued automatically until the seller has a name; an invoice already out is still marked paid.

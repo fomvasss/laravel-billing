@@ -45,6 +45,15 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
 {
     protected const BASE_URL = 'https://api.stripe.com/v1';
 
+    /**
+     * Pinned, not left to the account default: without it both the API responses and the webhook
+     * payloads take whatever version each merchant's dashboard is set to, and Stripe's versions
+     * move fields around (2025-03-31.basil took current_period_* off the subscription and the
+     * PaymentIntent off the invoice). Sent on every request, and set on the webhook endpoint by
+     * billing:stripe-register-webhook — events are rendered in the endpoint's version.
+     */
+    public const API_VERSION = '2026-08-26.dahlia';
+
     public function charge(Payment $payment, ChargeOptions $options = new ChargeOptions()): PaymentResult
     {
         // saveCard without any frontend JS: the hosted Checkout saves the card to our per-billable
@@ -498,6 +507,7 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
     {
         return Http::baseUrl(self::BASE_URL)
             ->withToken($this->secretKey())
+            ->withHeaders(['Stripe-Version' => self::API_VERSION])
             ->timeout(15)
             ->retry(2, 200);
     }

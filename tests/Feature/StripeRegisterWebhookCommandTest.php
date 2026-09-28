@@ -33,6 +33,9 @@ class StripeRegisterWebhookCommandTest extends TestCase
             }
 
             $this->assertSame(route('billing.webhook', ['gateway' => 'stripe']), $request['url']);
+            // Events render in the endpoint's version — pinned to the driver's, not the account default.
+            $this->assertSame(\Fomvasss\Billing\Gateways\Stripe\StripeGateway::API_VERSION, $request['api_version']);
+            $this->assertSame(\Fomvasss\Billing\Gateways\Stripe\StripeGateway::API_VERSION, $request->header('Stripe-Version')[0]);
 
             $events = [];
 
@@ -65,6 +68,7 @@ class StripeRegisterWebhookCommandTest extends TestCase
 
         $this->artisan('billing:stripe-register-webhook')
             ->expectsOutputToContain('Already registered: we_old')
+            ->expectsOutputToContain('re-create it with --fresh')
             ->assertFailed();
     }
 

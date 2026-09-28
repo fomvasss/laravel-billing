@@ -108,7 +108,9 @@ class StripeTokenizationTest extends TestCase
             // string 'true', not PHP true — asForm() would send true as "1", which Stripe's
             // form encoding rejects with "Invalid boolean: 1" (live-found on a real token charge)
             && $request['off_session'] === 'true'
-            && $request['confirm'] === 'true');
+            && $request['confirm'] === 'true'
+            // pinned — otherwise responses follow each merchant's account default
+            && $request->header('Stripe-Version') === [\Fomvasss\Billing\Gateways\Stripe\StripeGateway::API_VERSION]);
     }
 
     public function test_a_declined_card_does_not_throw_and_still_returns_the_payment_intent_id(): void

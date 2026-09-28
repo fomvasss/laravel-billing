@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Fomvasss\Billing\Console;
 
 use Fomvasss\Billing\Contracts\CredentialResolverContract;
+use Fomvasss\Billing\Gateways\Stripe\StripeGateway;
 use Fomvasss\Billing\Support\WebhookTenant;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Http;
@@ -60,13 +61,22 @@ class StripeRegisterWebhookCommand extends Command
         // has to be part of the registered URL itself — one endpoint per tenant's account.
         $url = $this->option('url') ?: route('billing.webhook', array_filter(['gateway' => $gateway, WebhookTenant::QUERY_KEY => $tenant]));
 
-        $http = Http::baseUrl('https://api.stripe.com/v1')->withToken($secretKey)->timeout(15);
+        $http = Http::baseUrl('https://api.stripe.com/v1')
+            ->withToken($secretKey)
+            ->withHeaders(['Stripe-Version' => StripeGateway::API_VERSION])
+            ->timeout(15);
 
         $existing = $this->allEndpoints($http)->where('url', $url);
 
         if ($existing->isNotEmpty() && ! $this->option('fresh')) {
             foreach ($existing as $endpoint) {
                 $this->warn("Already registered: {$endpoint['id']} → {$url}");
+
+                // An endpoint made before the driver pinned its version renders events in the
+                // account default — only re-creating it changes that.
+                if (($endpoint['api_version'] ?? null) !== StripeGateway::API_VERSION) {
+                    $this->warn('It renders events in API version ' . ($endpoint['api_version'] ?? 'account default') . ', the driver expects ' . StripeGateway::API_VERSION . ' — re-create it with --fresh.');
+                }
             }
             $this->line('Stripe never re-shows a signing secret. Keep using the webhook_secret you saved at creation, or re-create with --fresh to get a new one.');
 
@@ -78,7 +88,9 @@ class StripeRegisterWebhookCommand extends Command
             $this->line("Deleted old endpoint {$endpoint['id']}.");
         }
 
-        $params = ['url' => $url];
+        // Events are rendered in the endpoint's version, not the request's — without this the
+        // payloads would follow the account default, whatever the driver itself is pinned to.
+        $params = ['url' => $url, 'api_version' => StripeGateway::API_VERSION];
         foreach (self::EVENTS as $i => $event) {
             $params["enabled_events[{$i}]"] = $event;
         }

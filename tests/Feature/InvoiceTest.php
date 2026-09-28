@@ -285,6 +285,24 @@ class InvoiceTest extends TestCase
         $this->assertSame($invoice->number, Billing::invoiceDocument($receipt)->invoiceNumber);
     }
 
+    public function test_nothing_is_issued_automatically_while_the_seller_has_no_name(): void
+    {
+        config(['billing.invoices.auto_receipt' => true, 'billing.invoices.auto_invoice' => true, 'billing.invoices.seller.name' => '']);
+        $payment = $this->payment();
+        $invoice = Billing::issueInvoice($payment);
+
+        $payment->transitionTo(PaymentStatus::Paid);
+        PaymentSucceeded::dispatch($payment);
+
+        $this->assertSame(InvoiceStatus::Paid, $invoice->fresh()->status, 'an invoice already out is still settled');
+        $this->assertSame(0, Invoice::query()->where('type', InvoiceType::Receipt)->count());
+
+        $unbilled = $this->payment();
+        $unbilled->transitionTo(PaymentStatus::Paid);
+        PaymentSucceeded::dispatch($unbilled);
+        $this->assertSame(0, Invoice::query()->where('payment_id', $unbilled->id)->count());
+    }
+
     public function test_an_auto_invoice_names_the_period_just_paid_for_not_the_next_one(): void
     {
         config(['billing.invoices.auto_receipt' => true, 'billing.invoices.auto_invoice' => true]);

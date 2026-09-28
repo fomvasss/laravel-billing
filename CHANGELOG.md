@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Added
+- **Invoices and receipts, optional.** `Billing::issueInvoice()` issues an invoice for a charge still to be paid, `issueReceipt()` a receipt for a paid one — or automatically on `PaymentSucceeded` with `billing.invoices.auto_receipt`, which also marks the payment's invoice paid (`InvoicePaid`). A document is a snapshot of seller, buyer, items and total at issue time. The seller is the one passed for the document, else the gateway's own `seller` block when it has one, else `billing.invoices.seller` (`InvoiceSellerContract` for anything else), and a receipt keeps its invoice's (`brand` prints a name next to a logo that has none); the buyer from the argument or the billable's `HasBillingDetails`; items from `HasReceiptItems` or one line for the amount; a subscription payment also records the plan's name and, on an invoice, the date the paid period runs to. Numbers are the documents' own, an unbroken sequence per series, tenant and year (`INV-2026-000001`). HTML via `renderInvoice()`, PDF via `invoicePdf()` through `InvoiceRenderer` — dompdf by default, a composer suggestion rather than a requirement — with a temporary signed link (`invoicePdfUrl()`; guard it with your own `billing.invoices.pdf_middleware`, or turn it off with `pdf_route` and serve the PDF from your own route) and an HTML preview route in local/testing; `invoiceDocument()` hands out the same formatted snapshot for an email body (README recipe: an email with both PDFs attached). The template is split into parts you can override one by one, picked per document by `InvoiceTemplateResolver`, fed extra data by `InvoiceViewDataContract`, translated (uk, en, pl, de; the date format is part of each language, `billing.invoices.date_format` pins one for all). Opt-in: the `billing-migrations-invoices` group and `billing.invoices.enabled`.
+
 ## [0.9.0] - 2026-09-28
 
 ### Added

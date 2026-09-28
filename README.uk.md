@@ -411,6 +411,87 @@ WayForPay стоїть окремо: його колбек повідомляє 
 
 Одне застереження щодо LiqPay: його докa описує `refund_amount` лише як «Сума повернення». Поле поруч — `refund_date_last`, тобто явно дата *останнього* повернення, а це такого уточнення не має, тож воно читається як накопичувальний підсумок по замовленню. Для одного повернення (звичний випадок із кабінету) обидва прочитання дають те саме число; якщо ж воно виявиться посумковим на кожен реверс, друге часткове повернення буде недорахованим, а не порахованим двічі.
 
+## Рахунки й квитанції
+
+Опційні документи: **рахунок** (на оплату — виставляється до надходження грошей: B2B, оплата на реквізити, лінк у листі) і **квитанція** (підтвердження оплати). Це не фіскальні чеки — ті формує гейтвей із фіскального кошика (див. рецепт 1 і «Фіскалізація продовження»); це документи, які ти надсилаєш клієнту.
+
+Налаштування: опублікувати й прогнати групу `billing-migrations-invoices`, `BILLING_INVOICES_ENABLED=true`, реквізити продавця (`BILLING_SELLER_*` або `billing.invoices.seller`), і `composer require barryvdh/laravel-dompdf` для PDF (або прив'язати свій `InvoiceRenderer`).
+
+```php
+$invoice = Billing::issueInvoice($payment);                 // неоплачений платіж → INV-2026-000001
+$invoice = Billing::issueInvoice($payment, new BillingDetails(name: 'ТОВ «Ромашка»', taxId: '41234567'), [
+    'note' => 'Згідно договору № 17 від 01.09.2026',       // друкується під підсумком
+]);
+
+Billing::renderInvoice($invoice);   // HTML мовою документа
+Billing::invoicePdf($invoice);      // байти PDF
+Billing::invoicePdfUrl($invoice);   // тимчасовий підписаний лінк на PDF — для листа
+Billing::issueReceipt($payment);    // оплачений платіж → RCP-2026-000001 (автоматично з BILLING_INVOICES_AUTO_RECEIPT)
+Billing::voidInvoice($invoice);     // номер лишається — номери не перевикористовуються
+```
+
+- **Документ — це знімок.** Продавець, покупець, позиції й сума копіюються при виставленні; пізніша зміна даних клієнта чи конфігу вже виставлений документ не переписує.
+- **Продавець**: переданий аргументом (`issueInvoice($payment, seller: new BillingDetails(...))` — для одного документа), інакше власний блок `seller` гейтвея, якщо є (`billing.gateways.paddle.seller` — мерчант-акаунт іншої юрособи чи бренду), інакше загальний `billing.invoices.seller`. Кілька продавців із БД — прив'язати `InvoiceSellerContract`.
+- **Покупець**: переданий аргументом, інакше `billingDetails()` білабла (реалізуй `HasBillingDetails` на своїй моделі).
+- **Платежі за підписку** фіксують, що купили: назву тарифу (рядок читається «Підписка «Pro»») і, в рахунку, оплачений період, надрукований під цим рядком (`extra['subscription']`), тож пізніша зміна тарифу чи продовження не міняє вже надісланий документ. Квитанція, що закриває рахунок, бере це з рахунку; період не пишеться там, де його не можна знати напевно в момент виставлення (квитанція без рахунку, підписка під керуванням провайдера).
+- **Позиції**: `receiptItems()` payable (`HasReceiptItems`, звіряється з сумою), інакше один рядок на весь платіж.
+- **Номери** — власні номери документів, не `payments.number`: безперервна послідовність на серію (`INV`, `RCP`), продавця (tenant) і рік, формат — `billing.invoices.number_format` (`{Y}`, `{000000}` — лічильник, доповнений до цієї ширини, `{N}` — без доповнення).
+- **Оплата закриває рахунок**: на `PaymentSucceeded` він стає `paid` (`InvoicePaid`), а з `auto_receipt` виставляється квитанція (`InvoiceIssued`) з посиланням на рахунок. Платіж, записаний оплаченим вручну, події не шле — виклич `issueReceipt()` сам.
+- **PDF** генерується на льоту; `BILLING_INVOICES_DISK` зберігає копію на кожен статус (оплачений рахунок не віддає свою «неоплачену» копію).
+
+**Кастомізація шаблону**, від найпростішого:
+
+1. **Конфіг**: реквізити продавця, логотип, підвал, формат номера, мова — без коду. Логотип задавай локальним файлом (абсолютний шлях або відносно `public/`): він вбудовується в документ, тож його видно і в прев'ю, і в PDF. URL видно в прев'ю й з Chromium-рендерером, але не в dompdf — той навмисно не завантажує картинки з мережі. Лого без назви в ньому — задай `brand` (`BILLING_SELLER_BRAND`), вона стане справа від лого.
+2. **Перевизначити одну частину**: шаблон поділений на `header`, `parties`, `summary` (рядок «125,50 ₴ до сплати до …»), `items`, `totals`, `note`, `pay`, `payment` (спосіб оплати в квитанції), `footer` — скопіюй один файл у `resources/views/vendor/billing/invoices/partials/`, решта береться з пакета (`php artisan vendor:publish --tag=billing-invoice-views` копіює всі).
+3. **Вибір шаблону на документ**: прив'яжи `InvoiceTemplateResolver` (за tenant, брендом, мовою, типом документа) або передай ім'я в'юхи в `template` інвойсу.
+4. **Додаткові дані** без правки шаблону: прив'яжи `InvoiceViewDataContract`.
+5. **Переклади**: `lang/vendor/billing/{uk,en,pl,de}/invoice.php` (`--tag=billing-lang`). Інша мова — поклади `lang/vendor/billing/de/invoice.php` з тими самими ключами й виставляй з `locale: 'de'`; ключ, якого там нема, береться з `fallback_locale` застосунку, тож сирого ключа в документі не буде. Підписи — юридичні формулювання, і частина з них залежить від країни, а не від мови (`tax_id` в `uk` — «ЄДРПОУ / ІПН»; у Німеччині Steuernummer, у Польщі NIP) — тож `pl` сформульовано під Польщу (рахунок — *Faktura pro forma*: VAT-фактура там іде через KSeF, а не PDF-ом), а `de` — під Німеччину (в Австрії й Швейцарії податкові номери підписують інакше). Назви позицій («Підписка «…»») пишуться мовою, якою документ виставлено, і лишаються такими; підвал — ваш власний текст. `date_format` — теж ключ перекладу (`uk` `d.m.Y`, `en` `M j, Y`; назви місяців — мовою документа); `billing.invoices.date_format` фіксує один формат для всіх мов.
+
+Шаблон отримує `$document` — знімок, готовий до друку (суми відформатовані мовою документа), поля якого пакет тримає стабільними, — і `$invoice`, модель зі зв'язками `payment`, `invoice`, `billable`, для контексту поза знімком. Юридичний зміст (сторони, суми, позиції) друкуй із `$document`. Дефолтні шаблони — таблиці й простий CSS, які рендерить dompdf; з Chromium-рендерером у своєму можна будь-що.
+
+У `local`/`testing` є HTML-прев'ю `billing.invoices.preview` — правиш шаблон, оновлюєш сторінку.
+
+**Хто може відкрити документ**
+
+У рахунку — реквізити покупця, тож лінк на документ за замовчуванням приватний, і пакет ніколи не віддає його за адресою, яку можна вгадати:
+
+- `invoicePdfUrl()` — тимчасовий підписаний лінк (`link_ttl_minutes`, дефолт 7 днів). Без логіну — саме для листа: клієнт відкриває з пошти. Зворотний бік: кому лист переслали, той теж відкриє, поки лінк живий, а відкликати надісланий лінк не можна (лише ротація `APP_KEY` гасить усі одразу). Свій захист перед ним — `billing.invoices.pdf_middleware` (напр. `['auth']`): лінк відкриється лише залогіненому, підпис лишається.
+- Кабінет клієнта — віддавай PDF зі свого маршруту зі своїм правилом, а пакетний вимкни (`billing.invoices.pdf_route` = false, тоді `invoicePdfUrl()` кидає виняток):
+
+```php
+Route::get('/cabinet/invoices/{invoice}.pdf', function (Invoice $invoice) {
+    abort_unless($invoice->billable->is(auth()->user()), 403);
+
+    return response(Billing::invoicePdf($invoice), 200, ['Content-Type' => 'application/pdf']);
+})->middleware('auth');
+```
+
+- `billing.invoices.preview` існує лише в `local`/`testing`.
+- Лінк оплати в рахунку (`billing.pay`) публічний навмисно — він відкриває касу, а не документ, і його id — UUID, а не порядковий номер.
+
+Документи листом — рецепт 11.
+
+**Що доступно в шаблоні**
+
+| Змінна | Що це |
+|---|---|
+| `$document->type` | `invoice` / `receipt` |
+| `$document->number`, `->status` | `INV-2026-000001`; `issued` / `paid` / `void` |
+| `$document->seller`, `->buyer` | `BillingDetails`: `name`, `taxId`, `vatId` (ІПН платника ПДВ, лише для платників ПДВ), `address` (може бути в кілька рядків), `email`, `phone`, `iban`, `bank`, `logo` (у продавця; локальний файл уже вбудований як `data:`), `brand` (у продавця; назва біля лого, null якщо не задана) |
+| `$document->items` | список `['name', 'qty', 'unitPrice', 'total', 'sku', 'period']` — ціни відформатовані, `period` — оплачений період рядка підписки (`28.09.2026 – 28.10.2026`) або null |
+| `$document->total`, `->currency` | відформатована сума (`125,50 ₴`); `UAH` |
+| `$document->issuedAt`, `->dueAt`, `->paidAt` | дати рядками у форматі мови документа (`billing::invoice.date_format`, або `billing.invoices.date_format` для всіх), null якщо нема |
+| `$document->payUrl` | постійний лінк оплати (`billing.pay`) — лише в неоплаченого рахунку |
+| `$document->invoiceNumber` | номер рахунку, який закриває квитанція |
+| `$document->footer`, `->locale` | текст підвалу (`extra['footer']` або конфіг); мова документа |
+| `$document->plan`, `->periodStartsAt`, `->periodEndsAt` | для платежу за підписку: назва тарифу і, в рахунку, оплачений період (інакше null) |
+| `$document->paymentMethod` | «спосіб оплати» в квитанції — назва гейтвея на момент виставлення, або «Оплата на рахунок» для ручного платежу |
+| `$document->extra` | усе, що передано в `$extra` при виставленні (`note` друкує частина `note`) |
+| `$invoice` | модель `Invoice` — `->payment`, `->invoice`, `->receipts`, `->billable` (твоя модель), `->money()` |
+| решта | те, що повертає твій `InvoiceViewDataContract` |
+
+Підписи — `__('billing::invoice.*')` мовою документа. Дефолтні частини, щоб скопіювати чи `@include`: `billing::invoices.partials.{header,parties,party,summary,items,totals,note,pay,payment,footer}`, макет — `billing::invoices.layout`.
+
 ## Схеми флоу
 
 Три флоу покривають усе, що пакет робить із грошима. (Механіка під ними — реєстри, точний порядок webhook-пайплайна, dedup, хто пише в які колонки — у **[docs/architecture.md](docs/architecture.md)**, англійською.) Скрізь діє одне правило: **лише вебхук (або його polling-фолбек) змінює `Payment.status`** — усе, що робить браузер, це UX.
@@ -1375,6 +1456,147 @@ return redirect(Billing::startSubscription($payment)->url);
 - Dunning (Smart Retries і що після останньої спроби) налаштовується в кабінеті Stripe; рядок віддзеркалює рішення Stripe. `unpaid` читається як `past_due`.
 - Поки не підтримано: metered-ціни, інтервали minute/hour.
 
+### 11. Рахунок і квитанція листом
+
+Форма листа-квитанції Stripe: коротке зведення в тілі, PDF вкладеннями. Квитанція йде разом із рахунком, який вона закриває, тож один лист після оплати несе обидва документи; рахунок до оплати — з кнопкою «Оплатити» (`$document->payUrl`, постійний лінк оплати — старий лист не протухає).
+
+Вкладати PDF, а не лише давати лінк: лист живе довше за підписаний лінк (`link_ttl_minutes`), а бухгалтерії потрібен файл. Тіло читає `Billing::invoiceDocument($invoice)` — той самий `$document`, що друкує PDF-шаблон, тож лист і вкладення не розійдуться.
+
+```php
+<?php
+
+namespace App\Mail;
+
+use Fomvasss\Billing\Facades\Billing;
+use Fomvasss\Billing\Models\Invoice;
+use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Mail\Attachment;
+use Illuminate\Mail\Mailable;
+use Illuminate\Mail\Mailables\Content;
+use Illuminate\Mail\Mailables\Envelope;
+use Illuminate\Queue\SerializesModels;
+
+class BillingDocumentMail extends Mailable implements ShouldQueue
+{
+    use Queueable, SerializesModels;
+
+    public function __construct(public Invoice $invoice)
+    {
+        $this->afterCommit();
+    }
+
+    public function envelope(): Envelope
+    {
+        $document = Billing::invoiceDocument($this->invoice);
+
+        return new Envelope(subject: __("billing::invoice.{$document->type}")." {$document->number} — {$document->seller->name}");
+    }
+
+    public function content(): Content
+    {
+        return new Content(view: 'emails.billing-document', with: [
+            'document' => Billing::invoiceDocument($this->invoice),
+        ]);
+    }
+
+    public function attachments(): array
+    {
+        return collect([$this->invoice->invoice, $this->invoice])
+            ->filter()
+            ->map(fn (Invoice $doc) => Attachment::fromData(fn () => Billing::invoicePdf($doc), "{$doc->number}.pdf")
+                ->withMime('application/pdf'))
+            ->all();
+    }
+}
+```
+
+`Attachment::fromData()` приймає closure — PDF рендерить воркер черги під час відправки, а не серіалізує в job. `afterCommit()` не дає job стартувати до коміту рядка документа (авто-квитанція виставляється всередині обробки вебхука оплати).
+
+```php
+// AppServiceProvider::boot()
+Event::listen(InvoiceIssued::class, function (InvoiceIssued $event) {
+    $invoice = $event->invoice;
+    $to = $invoice->buyerDetails()->email ?? $invoice->billable?->email;
+
+    if ($to !== null) {
+        Mail::to($to)->locale($invoice->locale)->send(new BillingDocumentMail($invoice));
+    }
+});
+```
+
+`InvoiceIssued` приходить на обидва документи — розводь за `$invoice->isReceipt()`, якщо листи різні. `->locale()` — лист мовою документа; PDF і так рендериться нею.
+
+`resources/views/emails/billing-document.blade.php` — інлайн-стилі й таблиці, саме це рендерять поштові клієнти:
+
+```blade
+<div style="background:#f3f3f0;padding:32px 16px;font-family:Arial,sans-serif;color:#1a1a1a">
+    <div style="max-width:480px;margin:0 auto">
+        <p style="font-size:16px;font-weight:bold">{{ $document->seller->brand ?? $document->seller->name }}</p>
+
+        <div style="background:#fff;border-radius:12px;padding:24px;margin-bottom:16px">
+            <div style="color:#666">{{ __("billing::invoice.{$document->type}") }} · {{ $document->seller->name }}</div>
+            <div style="font-size:32px;font-weight:bold;margin:4px 0">{{ $document->total }}</div>
+            <div style="color:#666">
+                @if ($document->paidAt)
+                    {{ __('billing::invoice.paid_at') }} {{ $document->paidAt }}
+                @elseif ($document->dueAt)
+                    {{ __('billing::invoice.due_at') }} {{ $document->dueAt }}
+                @endif
+            </div>
+
+            @if ($document->payUrl)
+                <p style="margin:20px 0 0">
+                    <a href="{{ $document->payUrl }}" style="display:inline-block;background:#1a1a1a;color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none">{{ __('billing::invoice.pay_online') }}</a>
+                </p>
+            @endif
+
+            <table width="100%" cellspacing="0" cellpadding="0" style="margin-top:20px;font-size:14px">
+                <tr>
+                    <td style="color:#666">{{ __("billing::invoice.{$document->type}") }}</td>
+                    <td align="right">{{ $document->number }}</td>
+                </tr>
+                @if ($document->invoiceNumber)
+                    <tr>
+                        <td style="color:#666">{{ __('billing::invoice.invoice') }}</td>
+                        <td align="right">{{ $document->invoiceNumber }}</td>
+                    </tr>
+                @endif
+                @if ($document->paymentMethod)
+                    <tr>
+                        <td style="color:#666">{{ __('billing::invoice.payment_method') }}</td>
+                        <td align="right">{{ $document->paymentMethod }}</td>
+                    </tr>
+                @endif
+            </table>
+        </div>
+
+        <div style="background:#fff;border-radius:12px;padding:24px">
+            <table width="100%" cellspacing="0" cellpadding="0" style="font-size:14px">
+                @foreach ($document->items as $item)
+                    <tr>
+                        <td style="padding:6px 0">
+                            @if ($item['period'])
+                                <div style="color:#666;font-size:12px">{{ $item['period'] }}</div>
+                            @endif
+                            <strong>{{ $item['name'] }}</strong>
+                            <div style="color:#999;font-size:12px">{{ __('billing::invoice.qty') }} {{ $item['qty'] }}</div>
+                        </td>
+                        <td align="right" valign="top" style="padding:6px 0">{{ $item['total'] }}</td>
+                    </tr>
+                @endforeach
+                <tr>
+                    <td style="border-top:1px solid #eee;padding-top:12px"><strong>{{ __('billing::invoice.total') }}</strong></td>
+                    <td align="right" style="border-top:1px solid #eee;padding-top:12px"><strong>{{ $document->total }}</strong></td>
+                </tr>
+            </table>
+        </div>
+    </div>
+</div>
+```
+
+PDF важить ~30 КБ. Той самий документ шлеш повторно (кнопка «надіслати ще раз», завантаження з кабінету) — увімкни `billing.invoices.storage`, щоб не рендерити щоразу.
+
 ## Гроші
 
 Будь-яка сума в цьому пакеті — `payments.amount`, `prices.amount`, `Money`, позиції чека — це **ціле число в мінорних одиницях** валюти (копійки/центи): `10000` це 100.00. Та сама конвенція, що у Stripe, Monobank і більшості PSP, і вона за побудовою не лишає місця для помилок округлення.
@@ -1618,6 +1840,8 @@ Billing::charge($payment);
 | `billing.checkout-form` | GET | публічний | Рендерить закешовану касу form-only гейтвея як авто-сабміт сторінку, щоб `payment_url` завжди був плоским лінком. Лише LiqPay. |
 | `billing.paddle.checkout` | GET | публічний | Сторінка, яку відкривають лінки на оплату Paddle: вантажить Paddle.js, а той відкриває касу для `?_ptxn=`. Вона ж — default payment link у Paddle (без платежу в шляху). |
 | `billing.fake.show` | GET | лише local/testing | Каса fake-гейтвея з двома кнопками. |
+| `billing.invoices.pdf` | GET | підпис + `pdf_middleware` | PDF рахунку/квитанції за `invoicePdfUrl()`. Лише з `billing.invoices.enabled`; `pdf_route` = false прибирає його. |
+| `billing.invoices.preview` | GET | лише local/testing | Документ як HTML — для правки шаблонів. |
 
 ## Тестування
 

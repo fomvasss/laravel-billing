@@ -33,11 +33,13 @@
     "illuminate/view": "^12.0|^13.0"
   },
   "suggest": {
-    "fomvasss/laravel-currency": "Currency conversion adapter for CurrencyConverterContract when a gateway doesn't support the Price's currency"
+    "fomvasss/laravel-currency": "Currency conversion adapter for CurrencyConverterContract when a gateway doesn't support the Price's currency",
+    "barryvdh/laravel-dompdf": "PDF invoices and receipts with the default InvoiceRenderer (or bind your own)"
   },
   "require-dev": {
     "orchestra/testbench": "^10.0|^11.0",
-    "phpunit/phpunit": "^11.0"
+    "phpunit/phpunit": "^11.0",
+    "barryvdh/laravel-dompdf": "^3.1"
   },
   "autoload": {
     "psr-4": {

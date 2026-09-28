@@ -240,6 +240,58 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Invoices and receipts
+    |--------------------------------------------------------------------------
+    |
+    | Opt-in: publish the billing-migrations-invoices group, migrate, then set
+    | `enabled`. `seller` is who issues the documents; a gateway block can carry
+    | its own `seller` (a merchant account of another legal entity or brand),
+    | which wins for payments through that gateway. `auto_receipt` issues a
+    | receipt on every PaymentSucceeded. PDFs need barryvdh/laravel-dompdf or
+    | your own InvoiceRenderer; `storage.disk` keeps a copy of each one.
+    |
+    */
+
+    'invoices' => [
+        'enabled' => env('BILLING_INVOICES_ENABLED', false),
+        'auto_receipt' => env('BILLING_INVOICES_AUTO_RECEIPT', false),
+        'seller' => [
+            'name' => env('BILLING_SELLER_NAME'),
+            'tax_id' => env('BILLING_SELLER_TAX_ID'),
+            'vat_id' => env('BILLING_SELLER_VAT_ID'),
+            'address' => env('BILLING_SELLER_ADDRESS'),
+            'iban' => env('BILLING_SELLER_IBAN'),
+            'bank' => env('BILLING_SELLER_BANK'),
+            'email' => env('BILLING_SELLER_EMAIL'),
+            'phone' => env('BILLING_SELLER_PHONE'),
+            'logo' => env('BILLING_SELLER_LOGO'),
+            // printed next to the logo, for a logo without the name in it (a trade name, or the legal one)
+            'brand' => env('BILLING_SELLER_BRAND'),
+        ],
+        'locale' => env('BILLING_INVOICES_LOCALE', 'uk'),
+        'number_format' => [
+            'invoice' => 'INV-{Y}-{000000}',
+            'receipt' => 'RCP-{Y}-{000000}',
+        ],
+        // null — each language's own (billing::invoice.date_format: uk d.m.Y, en M j, Y); a format here overrides all of them
+        'date_format' => null,
+        'due_days' => env('BILLING_INVOICES_DUE_DAYS', 5),
+        'footer' => env('BILLING_INVOICES_FOOTER'),
+        'storage' => [
+            'disk' => env('BILLING_INVOICES_DISK'),
+            'path' => 'billing/invoices',
+        ],
+        // The signed PDF link for emails (Billing::invoicePdfUrl()): whoever holds it opens the
+        // document until it expires. `pdf_route` false turns it off — documents only from your own
+        // authenticated routes; `pdf_middleware` adds to it (e.g. ['web', 'auth']).
+        'pdf_route' => env('BILLING_INVOICES_PDF_ROUTE', true),
+        'pdf_middleware' => [],
+        // Lifetime of those links — a week by default.
+        'link_ttl_minutes' => env('BILLING_INVOICES_LINK_TTL_MINUTES', 10080),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Gateway credentials
     |--------------------------------------------------------------------------
     |

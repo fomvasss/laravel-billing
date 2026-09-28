@@ -31,7 +31,24 @@ use Fomvasss\Billing\Support\DefaultWebhookResponder;
 use Fomvasss\Billing\Support\Money;
 use Fomvasss\Billing\Support\WebhookResultDispatcher;
 use Fomvasss\Billing\Support\WebhookTenant;
+use Fomvasss\Billing\Contracts\HasBillingDetails;
+use Fomvasss\Billing\Contracts\InvoiceRenderer;
+use Fomvasss\Billing\Contracts\InvoiceSellerContract;
+use Fomvasss\Billing\Contracts\InvoiceTemplateResolver;
+use Fomvasss\Billing\Contracts\InvoiceViewDataContract;
+use Fomvasss\Billing\DTO\BillingDetails;
+use Fomvasss\Billing\DTO\InvoiceDocument;
+use Fomvasss\Billing\Enums\InvoiceStatus;
+use Fomvasss\Billing\Enums\InvoiceType;
+use Fomvasss\Billing\Events\InvoiceIssued;
+use Fomvasss\Billing\Models\Invoice;
+use Fomvasss\Billing\Support\DocumentNumber;
+use Fomvasss\Billing\Support\InvoiceDocumentFactory;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\URL;
 
 class BillingManager
 {
@@ -487,5 +504,280 @@ class BillingManager
         }
 
         throw BillingException::unsupportedCurrency($price->currency, $gateway);
+    }
+
+    /**
+     * An invoice — a bill to pay — for a payment that is still to be paid: the customer pays it
+     * through the permanent pay link printed on it (billing.pay), or by bank transfer to the
+     * seller's details. Everything it shows is a snapshot taken now: items (the payable's
+     * receiptItems(), or one line for the whole amount), seller ($seller, else InvoiceSellerContract
+     * — the gateway's own `seller`, else the general one), buyer ($buyer, else the billable's
+     * billingDetails()). Idempotent: a payment has one invoice, and asking again returns it.
+     *
+     * @param  array<string, mixed>  $extra  anything your templates print that the snapshot doesn't carry (contract number, notes)
+     */
+    public function issueInvoice(Payment $payment, ?BillingDetails $buyer = null, array $extra = [], ?\DateTimeInterface $dueAt = null, ?string $locale = null, ?BillingDetails $seller = null): Invoice
+    {
+        if ($payment->isRefund() || $payment->isPaid()) {
+            throw new BillingException("Payment {$payment->id} is {$payment->type->value}/{$payment->status->value} — an invoice is for a charge still to be paid; issue a receipt for a paid one.");
+        }
+
+        $dueDays = config('billing.invoices.due_days');
+
+        return $this->issueDocument(
+            InvoiceType::Invoice,
+            $payment,
+            $buyer,
+            $extra,
+            $dueAt ?? ($dueDays !== null ? now()->addDays((int) $dueDays) : null),
+            $locale,
+            seller: $seller,
+        );
+    }
+
+    /**
+     * A receipt — proof of payment — for a paid charge. Issued automatically on PaymentSucceeded
+     * when `billing.invoices.auto_receipt` is on; call it yourself for a payment recorded as paid
+     * by hand (which fires no event). When the payment had an invoice, the receipt settles it:
+     * same seller, items and buyer, and it points back at the invoice. Idempotent — one receipt
+     * per payment.
+     */
+    public function issueReceipt(Payment $payment, ?BillingDetails $buyer = null, array $extra = [], ?string $locale = null, ?BillingDetails $seller = null): Invoice
+    {
+        if ($payment->isRefund() || ! $payment->isPaid()) {
+            throw new BillingException("Payment {$payment->id} is {$payment->type->value}/{$payment->status->value} — a receipt is for a paid charge.");
+        }
+
+        $invoice = Invoice::query()->where('type', InvoiceType::Invoice)->where('payment_id', $payment->id)->first();
+
+        return $this->issueDocument(
+            InvoiceType::Receipt,
+            $payment,
+            $buyer ?? $invoice?->buyerDetails(),
+            [...($invoice?->extra ?? []), ...$extra],
+            null,
+            $locale ?? $invoice?->locale,
+            $invoice?->items,
+            $invoice,
+            // the invoice's seller, not a fresh lookup — the receipt is the same deal, even if the
+            // seller's details changed since the invoice went out
+            $seller ?? $invoice?->sellerDetails(),
+        );
+    }
+
+    /** Withdraws an unpaid invoice. It keeps its number — numbers are never reused. */
+    public function voidInvoice(Invoice $invoice): Invoice
+    {
+        if ($invoice->isPaid()) {
+            throw new BillingException("Invoice {$invoice->number} is paid — refund the payment instead of voiding the document.");
+        }
+
+        $invoice->update(['status' => InvoiceStatus::Void]);
+
+        return $invoice;
+    }
+
+    /**
+     * What a template sees as `$document` — the snapshot, formatted in the document's locale. For
+     * anything printed from the same data outside the PDF: an email summary, a cabinet page.
+     */
+    public function invoiceDocument(Invoice $invoice): InvoiceDocument
+    {
+        return InvoiceDocumentFactory::make($invoice);
+    }
+
+    /** The document as HTML, in its own locale — for a preview, an email body, or a custom PDF pipeline. */
+    public function renderInvoice(Invoice $invoice): string
+    {
+        $document = $this->invoiceDocument($invoice);
+        $previous = app()->getLocale();
+
+        app()->setLocale($document->locale);
+
+        try {
+            return view(app(InvoiceTemplateResolver::class)->view($invoice), [
+                ...app(InvoiceViewDataContract::class)->data($invoice),
+                'document' => $document,
+                'invoice' => $invoice,
+            ])->render();
+        } finally {
+            app()->setLocale($previous);
+        }
+    }
+
+    /**
+     * The document as PDF bytes (InvoiceRenderer — dompdf by default). Generated on the fly from the
+     * snapshot; `billing.invoices.storage` (disk + path) keeps a copy, keyed by status so a paid
+     * invoice doesn't keep serving its "unpaid" copy.
+     */
+    public function invoicePdf(Invoice $invoice): string
+    {
+        $disk = config('billing.invoices.storage.disk');
+        $path = trim((string) config('billing.invoices.storage.path', 'billing/invoices'), '/')
+            ."/{$invoice->id}-{$invoice->status->value}.pdf";
+
+        if ($disk !== null && Storage::disk($disk)->exists($path)) {
+            return Storage::disk($disk)->get($path);
+        }
+
+        $pdf = app(InvoiceRenderer::class)->pdf($this->renderInvoice($invoice));
+
+        if ($disk !== null) {
+            Storage::disk($disk)->put($path, $pdf);
+        }
+
+        return $pdf;
+    }
+
+    /**
+     * A temporary signed link to the PDF — for an email. Whoever holds it opens the document until
+     * it expires (a forwarded email included); add `billing.invoices.pdf_middleware` to require
+     * more, or turn the route off (`pdf_route`) and serve documents from your own authenticated
+     * route with invoicePdf().
+     */
+    public function invoicePdfUrl(Invoice $invoice, ?int $ttlMinutes = null): string
+    {
+        if (! config('billing.invoices.pdf_route', true)) {
+            throw new BillingException('The signed PDF route is off (billing.invoices.pdf_route) — serve the document from your own route with Billing::invoicePdf().');
+        }
+
+        return URL::temporarySignedRoute(
+            'billing.invoices.pdf',
+            now()->addMinutes($ttlMinutes ?? (int) config('billing.invoices.link_ttl_minutes', 10080)),
+            ['invoice' => $invoice],
+        );
+    }
+
+    /**
+     * Number and row in one transaction: a receipt racing its twin (the listener and a manual call)
+     * loses on the unique (type, payment_id) index and rolls its number back with it — no gap in
+     * the series — then returns the document that won.
+     */
+    protected function issueDocument(
+        InvoiceType $type,
+        Payment $payment,
+        ?BillingDetails $buyer,
+        array $extra,
+        ?\DateTimeInterface $dueAt,
+        ?string $locale,
+        ?array $items = null,
+        ?Invoice $invoice = null,
+        ?BillingDetails $seller = null,
+    ): Invoice {
+        $existing = fn () => Invoice::query()->where('type', $type)->where('payment_id', $payment->id)->first();
+
+        if ($found = $existing()) {
+            return $found;
+        }
+
+        $billable = $payment->billable;
+        $buyer ??= $billable instanceof HasBillingDetails ? $billable->billingDetails() : new BillingDetails(name: '');
+        $locale ??= (string) config('billing.invoices.locale', app()->getLocale());
+        $extra = $this->withSubscriptionSnapshot($payment, $type, $extra);
+
+        // How it was paid — named at issue time, so a receipt keeps saying "Monobank" even if the
+        // gateway is later renamed or removed.
+        if ($type === InvoiceType::Receipt && ! isset($extra['payment_method'])) {
+            $extra['payment_method'] = $payment->gateway !== null
+                ? ($this->gateway($payment->gateway)['label'] ?? $payment->gateway)
+                : trans('billing::invoice.method_manual', [], $locale);
+        }
+
+        $items ??= $this->documentItems($payment, $locale, $extra['subscription'] ?? null);
+
+        try {
+            $document = DB::transaction(fn () => Invoice::create([
+                'type' => $type,
+                'status' => $type === InvoiceType::Receipt ? InvoiceStatus::Paid : InvoiceStatus::Issued,
+                'number' => DocumentNumber::next(
+                    $type->series(),
+                    $payment->tenant_id,
+                    (string) config("billing.invoices.number_format.{$type->value}", $type->series().'-{Y}-{000000}'),
+                ),
+                'series' => $type->series(),
+                'currency' => $payment->currency,
+                'total' => $payment->amount,
+                'seller' => ($seller ?? app(InvoiceSellerContract::class)->seller($payment->gateway, $payment->tenant_id))->toArray(),
+                'buyer' => $buyer->toArray(),
+                'items' => $items,
+                'extra' => $extra ?: null,
+                'locale' => $locale,
+                'issued_at' => now(),
+                'due_at' => $dueAt,
+                'paid_at' => $type === InvoiceType::Receipt ? ($payment->paid_at ?? now()) : null,
+                'payment_id' => $payment->id,
+                'invoice_id' => $invoice?->id,
+                'tenant_id' => $payment->tenant_id,
+                'billable_type' => $payment->billable_type,
+                'billable_id' => $payment->billable_id,
+            ]));
+        } catch (UniqueConstraintViolationException $exception) {
+            return $existing() ?? throw $exception;
+        }
+
+        InvoiceIssued::dispatch($document);
+
+        return $document;
+    }
+
+    /**
+     * A document for a subscription payment records what was bought — the plan's name, and on an
+     * invoice the date the paid period will run to — under `extra['subscription']`, so a later plan
+     * swap or renewal doesn't change a document already sent. A receipt settling an invoice already
+     * carries the invoice's (its extra is copied). The period is left out where the package can't
+     * be sure of it at issue time: a receipt without an invoice (the subscription may already have
+     * moved on), and a provider-managed subscription (the provider sets its periods). A
+     * `subscription` key you passed yourself wins.
+     */
+    protected function withSubscriptionSnapshot(Payment $payment, InvoiceType $type, array $extra): array
+    {
+        $subscription = $payment->payable;
+
+        if (! $subscription instanceof Subscription || isset($extra['subscription'])) {
+            return $extra;
+        }
+
+        $periodEnd = $type === InvoiceType::Invoice && ! $subscription->isProviderManaged() ? $subscription->nextPeriodEnd() : null;
+
+        return [...$extra, 'subscription' => array_filter([
+            'plan' => $subscription->price?->plan?->name,
+            // The paid period starts where the current one ends — or now, for a first payment.
+            'period_starts_at' => $periodEnd !== null ? ($subscription->current_period_ends_at ?? now())->toDateString() : null,
+            'period_ends_at' => $periodEnd?->toDateString(),
+        ])];
+    }
+
+    /** The payable's receipt items when it has them (checked against the amount), else one line for the whole payment. */
+    protected function documentItems(Payment $payment, string $locale, ?array $subscription = null): array
+    {
+        $items = $payment->payable instanceof HasReceiptItems ? $payment->payable->receiptItems() : [];
+
+        if ($items === []) {
+            $plan = $payment->payable instanceof Subscription ? $payment->payable->price?->plan?->name : null;
+
+            return [[
+                // What was bought when the package knows it (a subscription's plan), else the
+                // payment's number — never its uuid, which means nothing on paper.
+                'name' => match (true) {
+                    $plan !== null => trans('billing::invoice.subscription_line', ['plan' => $plan], $locale),
+                    $payment->number !== null => trans('billing::invoice.payment', ['number' => $payment->number], $locale),
+                    default => trans('billing::invoice.payment_default', [], $locale),
+                },
+                'qty' => 1,
+                'unitAmount' => $payment->amount,
+                'total' => $payment->amount,
+                // The period the line pays for, printed under it — only where it's known for sure.
+                ...(isset($subscription['period_starts_at'], $subscription['period_ends_at'])
+                    ? ['period' => ['starts_at' => $subscription['period_starts_at'], 'ends_at' => $subscription['period_ends_at']]]
+                    : []),
+            ]];
+        }
+
+        $this->assertReceiptItemsMatchAmount($payment, new ChargeOptions(receiptItems: $items));
+
+        return array_map(fn (array $item) => [
+            ...$item,
+            'total' => (int) round($item['unitAmount'] * $item['qty']),
+        ], $items);
     }
 }

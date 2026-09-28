@@ -52,6 +52,10 @@ class BillingServiceProvider extends ServiceProvider
         $this->app->bind(CredentialResolverContract::class, DefaultCredentialResolver::class);
         $this->app->bind(RenewalChargeOptionsContract::class, DefaultRenewalChargeOptions::class);
         $this->app->bind(ReissueChargeOptionsContract::class, DefaultReissueChargeOptions::class);
+        $this->app->bind(\Fomvasss\Billing\Contracts\InvoiceSellerContract::class, \Fomvasss\Billing\Support\DefaultInvoiceSeller::class);
+        $this->app->bind(\Fomvasss\Billing\Contracts\InvoiceTemplateResolver::class, \Fomvasss\Billing\Support\DefaultInvoiceTemplateResolver::class);
+        $this->app->bind(\Fomvasss\Billing\Contracts\InvoiceViewDataContract::class, \Fomvasss\Billing\Support\DefaultInvoiceViewData::class);
+        $this->app->bind(\Fomvasss\Billing\Contracts\InvoiceRenderer::class, \Fomvasss\Billing\Support\DompdfInvoiceRenderer::class);
     }
 
     public function boot(): void
@@ -62,15 +66,25 @@ class BillingServiceProvider extends ServiceProvider
             ], 'billing-config');
 
             $this->publishMigrations();
+
+            $this->publishes([
+                __DIR__ . '/../resources/views/invoices' => resource_path('views/vendor/billing/invoices'),
+            ], 'billing-invoice-views');
+
+            $this->publishes([
+                __DIR__ . '/../lang' => $this->app->langPath('vendor/billing'),
+            ], 'billing-lang');
         }
 
         $this->loadViewsFrom(__DIR__ . '/../resources/views', 'billing');
+        $this->loadTranslationsFrom(__DIR__ . '/../lang', 'billing');
 
         $this->registerWebhookRoute();
         $this->registerCheckoutFormRoute();
         $this->registerPaddleCheckoutRoute();
         $this->registerReturnRoute();
         $this->registerPayLinkRoute();
+        $this->registerInvoices();
         $this->registerFakeGateway();
         $this->registerBuiltInGateways();
         $this->registerListeners();
@@ -120,6 +134,11 @@ class BillingServiceProvider extends ServiceProvider
         $this->publishes([
             $path . '2026_08_15_000005_create_billing_payment_methods_table.php' => database_path('migrations/2026_08_15_000005_create_billing_payment_methods_table.php'),
         ], 'billing-migrations-payment-methods');
+
+        $this->publishes([
+            $path . '2026_08_15_000006_create_billing_invoices_table.php' => database_path('migrations/2026_08_15_000006_create_billing_invoices_table.php'),
+            $path . '2026_08_15_000007_create_billing_document_sequences_table.php' => database_path('migrations/2026_08_15_000007_create_billing_document_sequences_table.php'),
+        ], 'billing-migrations-invoices');
     }
 
     /**
@@ -192,6 +211,39 @@ class BillingServiceProvider extends ServiceProvider
         Route::get('billing/pay/{payment}', \Fomvasss\Billing\Http\Controllers\PaymentLinkController::class)
             ->middleware(\Illuminate\Routing\Middleware\SubstituteBindings::class)
             ->name('billing.pay');
+    }
+
+    /**
+     * Invoices and receipts are opt-in (`billing.invoices.enabled`): their tables are an optional
+     * migration group, and a listener querying a table that was never migrated would break every
+     * PaymentSucceeded. The preview route is local/testing only, like the fake gateway.
+     */
+    protected function registerInvoices(): void
+    {
+        if (! config('billing.invoices.enabled', false)) {
+            return;
+        }
+
+        Event::listen(PaymentSucceeded::class, \Fomvasss\Billing\Listeners\SettleInvoiceOnPayment::class);
+
+        // The signed link for emails — off with pdf_route = false (documents served only from the
+        // app's own authenticated routes), and pdf_middleware adds to it (e.g. 'auth', so a
+        // forwarded link opens only for a signed-in user).
+        if (config('billing.invoices.pdf_route', true)) {
+            Route::get('billing/invoices/{invoice}/pdf', [\Fomvasss\Billing\Http\Controllers\InvoiceController::class, 'pdf'])
+                ->middleware([
+                    ...(array) config('billing.invoices.pdf_middleware', []),
+                    \Illuminate\Routing\Middleware\ValidateSignature::class,
+                    \Illuminate\Routing\Middleware\SubstituteBindings::class,
+                ])
+                ->name('billing.invoices.pdf');
+        }
+
+        if ($this->app->environment(['local', 'testing'])) {
+            Route::get('billing/invoices/{invoice}/preview', [\Fomvasss\Billing\Http\Controllers\InvoiceController::class, 'preview'])
+                ->middleware(\Illuminate\Routing\Middleware\SubstituteBindings::class)
+                ->name('billing.invoices.preview');
+        }
     }
 
     protected function registerListeners(): void

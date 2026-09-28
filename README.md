@@ -427,6 +427,87 @@ Anything a driver recognizes as a reversal but can't put an amount on is logged 
 
 One caveat on LiqPay: its docs describe `refund_amount` only as "Сума повернення". The field beside it is `refund_date_last` — explicitly the *last* refund's date — and this one carries no such qualifier, so it's read as the order's running total. For a single refund (the usual dashboard case) both readings give the same number; if it turns out to be per-reversal after all, a second partial refund would be under-recorded rather than double-counted.
 
+## Invoices and receipts
+
+Optional documents: an **invoice** (a bill to pay, issued before the money arrives — B2B, bank transfer, an emailed pay link) and a **receipt** (proof of payment). They are not fiscal receipts — those come from the gateway's fiscal basket (see recipe 1 and "Fiscalizing a renewal"); these are the documents you send a customer.
+
+Setup: publish and run the `billing-migrations-invoices` group, set `BILLING_INVOICES_ENABLED=true`, fill the seller (`BILLING_SELLER_*`, or `billing.invoices.seller`), and `composer require barryvdh/laravel-dompdf` for PDFs (or bind your own `InvoiceRenderer`).
+
+```php
+$invoice = Billing::issueInvoice($payment);                 // a pending charge → INV-2026-000001
+$invoice = Billing::issueInvoice($payment, new BillingDetails(name: 'ТОВ «Ромашка»', taxId: '41234567'), [
+    'note' => 'Згідно договору № 17 від 01.09.2026',       // printed under the totals
+]);
+
+Billing::renderInvoice($invoice);   // HTML, in the document's own locale
+Billing::invoicePdf($invoice);      // PDF bytes
+Billing::invoicePdfUrl($invoice);   // a temporary signed link to the PDF — for an email
+Billing::issueReceipt($payment);    // a paid charge → RCP-2026-000001 (automatic with BILLING_INVOICES_AUTO_RECEIPT)
+Billing::voidInvoice($invoice);     // keeps its number — numbers are never reused
+```
+
+- **A document is a snapshot.** Seller, buyer, items and total are copied at issue time; a later change to the customer or the config never rewrites a document already issued.
+- **Seller**: the one you pass (`issueInvoice($payment, seller: new BillingDetails(...))` — for one document), otherwise the gateway's own `seller` block when it has one (`billing.gateways.paddle.seller` — a merchant account of another legal entity or brand), otherwise the general `billing.invoices.seller`. Several sellers from a database — bind `InvoiceSellerContract`.
+- **Buyer**: the one you pass, otherwise the billable's `billingDetails()` (implement `HasBillingDetails` on your model).
+- **Subscription payments** record what was bought: the plan's name (the line reads "Subscription: Pro") and, on an invoice, the paid period, printed under that line (`extra['subscription']`), so a later plan swap or renewal doesn't change a document already sent. A receipt settling an invoice keeps the invoice's; the period is left out where it can't be known for sure at issue time (a receipt without an invoice, a provider-managed subscription).
+- **Items**: the payable's `receiptItems()` (`HasReceiptItems`, checked against the amount), otherwise one line for the whole payment.
+- **Numbers** are the document's own, not `payments.number`: an unbroken sequence per series (`INV`, `RCP`), seller (tenant) and year, format from `billing.invoices.number_format` (`{Y}`, `{000000}` — the counter padded to that width, `{N}` — unpadded).
+- **Payment settles the invoice**: on `PaymentSucceeded` it turns `paid` (`InvoicePaid`) and, with `auto_receipt`, the receipt is issued (`InvoiceIssued`), pointing back at the invoice. A payment recorded as paid by hand fires no event — call `issueReceipt()` yourself.
+- **PDF** is generated on the fly; `BILLING_INVOICES_DISK` keeps a copy per status (a paid invoice doesn't serve its unpaid copy).
+
+**Customizing the template**, from the simplest:
+
+1. **Config**: seller details, logo, footer, number format, locale — no code. Give the logo as a local file (absolute, or relative to `public/`): it's embedded into the document, so both the preview and the PDF show it. A URL shows in the preview and with a Chromium renderer, not in dompdf, which doesn't fetch remote images on purpose. A logo without the name in it — set `brand` (`BILLING_SELLER_BRAND`), printed to the right of the logo.
+2. **Override one part**: the view is split into `header`, `parties`, `summary` (the "125,50 ₴ due …" line), `items`, `totals`, `note`, `pay`, `payment` (a receipt's payment method), `footer` — copy one file to `resources/views/vendor/billing/invoices/partials/` and the rest keeps coming from the package (`php artisan vendor:publish --tag=billing-invoice-views` copies them all).
+3. **Pick the template per document**: bind `InvoiceTemplateResolver` (by tenant, brand, language, document type), or pass a view name in the invoice's `template`.
+4. **Extra data** without editing a view: bind `InvoiceViewDataContract`.
+5. **Translations**: `lang/vendor/billing/{uk,en,pl,de}/invoice.php` (`--tag=billing-lang`). Another language — add `lang/vendor/billing/de/invoice.php` with the same keys and issue with `locale: 'de'`; a key it lacks comes from the app's `fallback_locale`, so a document never shows a raw key. The labels are legal wording, and some are a country's rather than a language's (`tax_id` reads "ЄДРПОУ / ІПН" in `uk`; Germany has Steuernummer, Poland NIP) — so `pl` is worded for Poland (the invoice is a *Faktura pro forma*: a VAT invoice there goes through KSeF, not a PDF) and `de` for Germany (Austria and Switzerland label the tax ids differently). Item names ("Subscription: …") are written in the language the document is issued in and stay as issued; the footer is your own text. `date_format` is one of the keys (`uk` `d.m.Y`, `en` `M j, Y`; month names follow the document's language); `billing.invoices.date_format` pins one format for every language.
+
+A template gets `$document` — the snapshot, ready to print (amounts formatted for the document's locale), and the fields the package keeps stable — and `$invoice`, the model with its `payment`, `invoice` and `billable`, for context the snapshot doesn't carry. Print the legal content (parties, amounts, items) from `$document`. The default templates stick to tables and plain CSS, which dompdf renders; a Chromium renderer lets yours use anything.
+
+In `local`/`testing` there is an HTML preview at `billing.invoices.preview` — edit the template, reload the page.
+
+**Who can open a document**
+
+An invoice carries the buyer's details, so a document link is private by default and the package never serves one by a guessable URL:
+
+- `invoicePdfUrl()` — a temporary signed link (`link_ttl_minutes`, 7 days by default). No login needed, which is the point for an email: the customer opens it from the mailbox. The flip side: whoever the email is forwarded to opens it too until it expires, and a sent link can't be revoked (only `APP_KEY` rotation kills every link at once). Put your own guard in front with `billing.invoices.pdf_middleware` (e.g. `['auth']`) — the link then works only for a logged-in user, still signed.
+- A customer cabinet — serve the PDF from your own route with your own rule, and turn the package route off (`billing.invoices.pdf_route` = false, then `invoicePdfUrl()` throws):
+
+```php
+Route::get('/cabinet/invoices/{invoice}.pdf', function (Invoice $invoice) {
+    abort_unless($invoice->billable->is(auth()->user()), 403);
+
+    return response(Billing::invoicePdf($invoice), 200, ['Content-Type' => 'application/pdf']);
+})->middleware('auth');
+```
+
+- `billing.invoices.preview` exists only in `local`/`testing`.
+- The pay link printed on an invoice (`billing.pay`) is public by design — it opens a checkout, not the document, and its id is a UUID, not a sequence.
+
+Emailing the documents — recipe 11.
+
+**What a template can use**
+
+| Variable | What it is |
+|---|---|
+| `$document->type` | `invoice` / `receipt` |
+| `$document->number`, `->status` | `INV-2026-000001`; `issued` / `paid` / `void` |
+| `$document->seller`, `->buyer` | `BillingDetails`: `name`, `taxId`, `vatId` (VAT registration, VAT payers only), `address` (may span lines), `email`, `phone`, `iban`, `bank`, `logo` (seller; a local file already embedded as `data:`), `brand` (seller; the name next to the logo, null when not set) |
+| `$document->items` | list of `['name', 'qty', 'unitPrice', 'total', 'sku', 'period']` — prices formatted, `period` the paid period of a subscription line (`28.09.2026 – 28.10.2026`) or null |
+| `$document->total`, `->currency` | formatted total (`125,50 ₴`); `UAH` |
+| `$document->issuedAt`, `->dueAt`, `->paidAt` | dates as strings in the document's language format (`billing::invoice.date_format`, or `billing.invoices.date_format` for all), null when not set |
+| `$document->payUrl` | the permanent pay link (`billing.pay`) — only on an unpaid invoice |
+| `$document->invoiceNumber` | a receipt's invoice number, when it settles one |
+| `$document->footer`, `->locale` | footer text (`extra['footer']` or config); the document's language |
+| `$document->plan`, `->periodStartsAt`, `->periodEndsAt` | for a subscription payment: the plan's name, and on an invoice the paid period (null otherwise) |
+| `$document->paymentMethod` | a receipt's "how it was paid" — the gateway's name at issue time, or "Bank transfer" for a manual payment |
+| `$document->extra` | everything passed in `$extra` at issue time (`note` is printed by the `note` part) |
+| `$invoice` | the `Invoice` model — `->payment`, `->invoice`, `->receipts`, `->billable` (your model), `->money()` |
+| anything else | whatever your `InvoiceViewDataContract` returns |
+
+Labels: `__('billing::invoice.*')` in the document's locale. The default parts, to copy or `@include`: `billing::invoices.partials.{header,parties,party,summary,items,totals,note,pay,payment,footer}`, layout `billing::invoices.layout`.
+
 ## Flow
 
 Three flows cover everything the package does with money. (The machinery behind them — registries, the exact webhook pipeline order, dedup mechanics, who writes which columns — is in **[docs/architecture.md](docs/architecture.md)**.) In all of them the same rule holds: **the webhook (or its polling fallback) is the only thing that ever changes `Payment.status`** — anything the browser does is UX.
@@ -1392,6 +1473,147 @@ Run `billing:stripe-register-webhook` once more after upgrading — it adds the 
 - Dunning (Smart Retries, and what happens after the last one) is configured in the Stripe dashboard; the row mirrors whatever Stripe decides. `unpaid` reads as `past_due`.
 - Not supported yet: metered prices, minute/hour intervals.
 
+### 11. Email the invoice and the receipt
+
+The shape of a Stripe receipt email: a short summary in the body, the PDFs attached. A receipt comes with the invoice it settles, so one email after payment carries both documents; an invoice before payment gets a "Pay online" button (`$document->payUrl`, the permanent pay link — an old email never goes stale).
+
+Attach the PDFs rather than only linking them: the email outlives a signed link (`link_ttl_minutes`), and accounting keeps the file. The body reads `Billing::invoiceDocument($invoice)` — the same `$document` the PDF template prints, so the email and the attachment can't disagree.
+
+```php
+<?php
+
+namespace App\Mail;
+
+use Fomvasss\Billing\Facades\Billing;
+use Fomvasss\Billing\Models\Invoice;
+use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Mail\Attachment;
+use Illuminate\Mail\Mailable;
+use Illuminate\Mail\Mailables\Content;
+use Illuminate\Mail\Mailables\Envelope;
+use Illuminate\Queue\SerializesModels;
+
+class BillingDocumentMail extends Mailable implements ShouldQueue
+{
+    use Queueable, SerializesModels;
+
+    public function __construct(public Invoice $invoice)
+    {
+        $this->afterCommit();
+    }
+
+    public function envelope(): Envelope
+    {
+        $document = Billing::invoiceDocument($this->invoice);
+
+        return new Envelope(subject: __("billing::invoice.{$document->type}")." {$document->number} — {$document->seller->name}");
+    }
+
+    public function content(): Content
+    {
+        return new Content(view: 'emails.billing-document', with: [
+            'document' => Billing::invoiceDocument($this->invoice),
+        ]);
+    }
+
+    public function attachments(): array
+    {
+        return collect([$this->invoice->invoice, $this->invoice])
+            ->filter()
+            ->map(fn (Invoice $doc) => Attachment::fromData(fn () => Billing::invoicePdf($doc), "{$doc->number}.pdf")
+                ->withMime('application/pdf'))
+            ->all();
+    }
+}
+```
+
+`Attachment::fromData()` takes a closure, so the PDF is rendered by the queue worker when the mail is sent, not serialized into the job. `afterCommit()` keeps the job from running before the invoice row is committed (an auto receipt is issued inside the payment's webhook processing).
+
+```php
+// AppServiceProvider::boot()
+Event::listen(InvoiceIssued::class, function (InvoiceIssued $event) {
+    $invoice = $event->invoice;
+    $to = $invoice->buyerDetails()->email ?? $invoice->billable?->email;
+
+    if ($to !== null) {
+        Mail::to($to)->locale($invoice->locale)->send(new BillingDocumentMail($invoice));
+    }
+});
+```
+
+`InvoiceIssued` fires for both documents — split on `$invoice->isReceipt()` if they need different emails. `->locale()` makes the email speak the document's language; the PDF uses it anyway.
+
+`resources/views/emails/billing-document.blade.php` — inline styles and tables, which is what mail clients render:
+
+```blade
+<div style="background:#f3f3f0;padding:32px 16px;font-family:Arial,sans-serif;color:#1a1a1a">
+    <div style="max-width:480px;margin:0 auto">
+        <p style="font-size:16px;font-weight:bold">{{ $document->seller->brand ?? $document->seller->name }}</p>
+
+        <div style="background:#fff;border-radius:12px;padding:24px;margin-bottom:16px">
+            <div style="color:#666">{{ __("billing::invoice.{$document->type}") }} · {{ $document->seller->name }}</div>
+            <div style="font-size:32px;font-weight:bold;margin:4px 0">{{ $document->total }}</div>
+            <div style="color:#666">
+                @if ($document->paidAt)
+                    {{ __('billing::invoice.paid_at') }} {{ $document->paidAt }}
+                @elseif ($document->dueAt)
+                    {{ __('billing::invoice.due_at') }} {{ $document->dueAt }}
+                @endif
+            </div>
+
+            @if ($document->payUrl)
+                <p style="margin:20px 0 0">
+                    <a href="{{ $document->payUrl }}" style="display:inline-block;background:#1a1a1a;color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none">{{ __('billing::invoice.pay_online') }}</a>
+                </p>
+            @endif
+
+            <table width="100%" cellspacing="0" cellpadding="0" style="margin-top:20px;font-size:14px">
+                <tr>
+                    <td style="color:#666">{{ __("billing::invoice.{$document->type}") }}</td>
+                    <td align="right">{{ $document->number }}</td>
+                </tr>
+                @if ($document->invoiceNumber)
+                    <tr>
+                        <td style="color:#666">{{ __('billing::invoice.invoice') }}</td>
+                        <td align="right">{{ $document->invoiceNumber }}</td>
+                    </tr>
+                @endif
+                @if ($document->paymentMethod)
+                    <tr>
+                        <td style="color:#666">{{ __('billing::invoice.payment_method') }}</td>
+                        <td align="right">{{ $document->paymentMethod }}</td>
+                    </tr>
+                @endif
+            </table>
+        </div>
+
+        <div style="background:#fff;border-radius:12px;padding:24px">
+            <table width="100%" cellspacing="0" cellpadding="0" style="font-size:14px">
+                @foreach ($document->items as $item)
+                    <tr>
+                        <td style="padding:6px 0">
+                            @if ($item['period'])
+                                <div style="color:#666;font-size:12px">{{ $item['period'] }}</div>
+                            @endif
+                            <strong>{{ $item['name'] }}</strong>
+                            <div style="color:#999;font-size:12px">{{ __('billing::invoice.qty') }} {{ $item['qty'] }}</div>
+                        </td>
+                        <td align="right" valign="top" style="padding:6px 0">{{ $item['total'] }}</td>
+                    </tr>
+                @endforeach
+                <tr>
+                    <td style="border-top:1px solid #eee;padding-top:12px"><strong>{{ __('billing::invoice.total') }}</strong></td>
+                    <td align="right" style="border-top:1px solid #eee;padding-top:12px"><strong>{{ $document->total }}</strong></td>
+                </tr>
+            </table>
+        </div>
+    </div>
+</div>
+```
+
+A PDF is ~30 KB. Sending the same document again (a resend button, a cabinet download) — turn on `billing.invoices.storage` so it isn't rendered each time.
+
 ## Money
 
 Every amount in this package — `payments.amount`, `prices.amount`, `Money`, receipt items — is an **integer in the currency's minor units** (kopiykas/cents): `10000` is 100.00. Same convention Stripe, Monobank and most PSPs use, and it keeps rounding errors out of money by construction.
@@ -1636,6 +1858,8 @@ Per gateway, all optional until you use that gateway:
 | `billing.checkout-form` | GET | public | Renders a form-only gateway's cached checkout as an auto-submit page, so `payment_url` is always a plain link. LiqPay only. |
 | `billing.paddle.checkout` | GET | public | The page Paddle's payment links open: loads Paddle.js, which opens the checkout for `?_ptxn=`. Also your Paddle default payment link (without a payment in the path). |
 | `billing.fake.show` | GET | local/testing only | The fake gateway's two-button checkout. |
+| `billing.invoices.pdf` | GET | signed + `pdf_middleware` | An invoice/receipt PDF behind `invoicePdfUrl()`. Only with `billing.invoices.enabled`; `pdf_route` = false removes it. |
+| `billing.invoices.preview` | GET | local/testing only | A document as HTML, for editing templates. |
 
 ## Testing
 

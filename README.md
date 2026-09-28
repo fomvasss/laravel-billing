@@ -843,7 +843,7 @@ Some gateways *can* own the whole lifecycle themselves (Paddle, Stripe Billing):
 - the row's state is written in one place, `applyProviderSnapshot()`, from the driver's webhooks, and the usual events fire from what changed: `SubscriptionCreated` on the first link, `SubscriptionRenewed` when the paid period moves forward, `SubscriptionPaymentFailed` (and `SubscriptionAccessSuspended` without grace access) on entering `past_due`, `SubscriptionPaused`/`SubscriptionResumed`, `SubscriptionCancelled`. Deliveries arrive out of order; an older state never overwrites a newer one;
 - two access boundaries are soft, because the provider decides and tells us by webhook: the end of a trial (the provider converts it), and `past_due` — there is no grace window of ours, access follows `grace_access` for as long as the provider keeps retrying, and ends when it reports the cancellation.
 
-Starting one goes through `Billing::startSubscription($payment)` instead of `charge()`: create the Subscription as `incomplete` with the provider's gateway, and its first Payment with the Subscription as payable; the row becomes provider-managed when the provider's webhook links it. The `billing_subscriptions` table carries `provider_synced_at` for it (and an index on `gateway, external_id`); package-managed rows never touch either. Paddle is the built-in driver that does (`capabilities.subscriptions` in `Billing::gateways()`).
+Starting one goes through `Billing::startSubscription($payment)` instead of `charge()`: create the Subscription as `incomplete` with the provider's gateway, and its first Payment with the Subscription as payable; the row becomes provider-managed when the provider's webhook links it. The `billing_subscriptions` table carries `provider_synced_at` for it (and an index on `gateway, external_id`); package-managed rows never touch either. Paddle and Stripe are the built-in drivers that do (`capabilities.subscriptions` in `Billing::gateways()`); see recipes 9 and 10.
 
 The split is **per subscription, not per gateway** — deliberately, since a gateway like Stripe supports both models at once: the same merchant can run B2C plans through Stripe Billing (proration and invoices for free) and custom B2B deals package-managed on the very same driver. Rule of thumb: `external_id` on a subscription must only ever be written by the driver — set it by hand and you're telling the package "hands off, the provider drives this one".
 
@@ -1356,6 +1356,41 @@ $subscription->swapPlan($otherPrice);      // PADDLE_PRORATION_BILLING_MODE deci
 - **Grandfathering (recipe 8) works differently here**: `swapPlan()` goes to Paddle and bills per the proration mode instead of silently applying from the next renewal — pass `do_not_bill` in `PADDLE_PRORATION_BILLING_MODE` if that's the behaviour you want.
 - **Trials**: give the price `trial_days` and create the first payment with `amount` 0 — Paddle's checkout stores the card and charges nothing today. The row is `trialing` with Paddle's `trial_ends_at` (no paid period yet); when the trial ends Paddle charges the full price, which arrives as a new `Payment` and `SubscriptionRenewed` with `previousStatus` `Trialing`. Paddle sends no "trial ends soon" webhook, so `billing:expire-trials` fires `TrialWillEnd` from the mirrored date (reminder only — the status stays Paddle's). A plan swap during the trial bills nothing (`do_not_bill` — the only mode Paddle allows then). Unlike a package-managed trial, there is no card-free way in: Paddle's cardless trials are still early access.
 - **Not supported yet**: metered prices, minute/hour intervals.
+
+### 10. Subscribe with Stripe Billing
+
+The same provider-managed flow as recipe 9, through Stripe's hosted Checkout in subscription mode — the price and product go inline, nothing in Stripe's catalog. Stripe also supports the package-managed model (recipe 2); what decides is the call you make: `Billing::startSubscription()` hands the subscription to Stripe, `charge()` with `saveCard` keeps it in the package.
+
+```php
+$price = $plan->prices()->create([
+    'gateway' => 'stripe', 'currency' => 'USD', 'amount' => 2900,
+    'pricing_type' => PricingType::Flat, 'interval' => Interval::Month, 'interval_count' => 1,
+]);
+
+$subscription = Subscription::create([
+    'status' => SubscriptionStatus::Incomplete,
+    'gateway' => 'stripe',
+    'price_id' => $price->id,
+    'billable_type' => $organization::class,
+    'billable_id' => $organization->id,
+]);
+
+$payment = Payment::create([
+    'gateway' => 'stripe', 'amount' => $price->amount, 'currency' => $price->currency,
+    'payable_type' => $subscription->getMorphClass(), 'payable_id' => $subscription->id,
+    'billable_type' => $organization::class, 'billable_id' => $organization->id,
+]);
+
+return redirect(Billing::startSubscription($payment)->url);
+```
+
+Run `billing:stripe-register-webhook` once more after upgrading — it adds the `invoice.paid` and `customer.subscription.*` events to the existing endpoint and keeps its signing secret. From there: the checkout links the row, the paid invoice gives the paid period, every later invoice (renewal, plan change) is a new `Payment` row, and `customer.subscription.*` keep the status, the scheduled cancellation and the trial end in sync (each event re-fetches the subscription — Stripe doesn't deliver in order). Refunds work on any of these payments, from `Billing::refund()` or from the Stripe dashboard.
+
+- `cancel()` sets `cancel_at_period_end` (or deletes right away); `swapPlan()` replaces the subscription's item, proration per `STRIPE_PRORATION_BEHAVIOR` (default `create_prorations` — the difference lands on the next invoice).
+- `pause()`/`resume()` throw `NotSupportedException`: Stripe's real pause needs a preview API version, and `pause_collection` would leave the subscription reading `active`.
+- Trials: `trial_days` on the price and a first payment of `amount` 0, as with Paddle. Stripe sends its own `trial_will_end`, which arrives as `TrialWillEnd` — the package doesn't add reminders of its own for Stripe.
+- Dunning (Smart Retries, and what happens after the last one) is configured in the Stripe dashboard; the row mirrors whatever Stripe decides. `unpaid` reads as `past_due`.
+- Not supported yet: metered prices, minute/hour intervals.
 
 ## Money
 

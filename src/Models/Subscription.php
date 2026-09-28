@@ -263,10 +263,13 @@ class Subscription extends Model
 
         $previousStatus = $this->status;
         $wasLinked = $this->isProviderManaged();
+        // The paid period only ever moves forward: an older invoice processed late (deliveries
+        // aren't ordered, and a driver that re-fetches state can't tell) must not pull it back.
         $periodEnd = $snapshot->currentPeriodEndsAt !== null ? Carbon::instance($snapshot->currentPeriodEndsAt) : null;
-        $renewed = $snapshot->status === SubscriptionStatus::Active
-            && $periodEnd !== null
-            && ($this->current_period_ends_at === null || $periodEnd->gt($this->current_period_ends_at));
+        $periodEnd = $periodEnd !== null && ($this->current_period_ends_at === null || $periodEnd->gt($this->current_period_ends_at))
+            ? $periodEnd
+            : null;
+        $renewed = $snapshot->status === SubscriptionStatus::Active && $periodEnd !== null;
 
         $this->fill([
             'external_id' => $snapshot->externalId,

@@ -83,11 +83,11 @@ class ProviderSubscriptionSyncTest extends TestCase
         } catch (BillingException) {
         }
 
-        $stripePayment = $this->firstPayment($this->subscription(['gateway' => 'stripe']));
-        $stripePayment->update(['gateway' => 'stripe']);
+        $monobankPayment = $this->firstPayment($this->subscription(['gateway' => 'monobank']));
+        $monobankPayment->update(['gateway' => 'monobank']);
 
         $this->expectException(NotSupportedException::class);
-        Billing::startSubscription($stripePayment);
+        Billing::startSubscription($monobankPayment);
     }
 
     public function test_the_first_snapshot_links_the_row_and_announces_the_start_once(): void
@@ -122,6 +122,18 @@ class ProviderSubscriptionSyncTest extends TestCase
         $this->assertSame(0.0, $fresh->current_usage);
         $this->assertNull($fresh->period_notices_sent);
         Event::assertDispatched(SubscriptionRenewed::class, fn (SubscriptionRenewed $e) => $e->previousStatus === SubscriptionStatus::Active);
+    }
+
+    public function test_a_late_older_period_never_pulls_the_paid_period_back(): void
+    {
+        Event::fake([SubscriptionRenewed::class]);
+        $subscription = $this->linked();
+        $current = $subscription->current_period_ends_at;
+
+        $this->webhook(['event_id' => 'evt_old', 'provider_id' => 'sub_1', 'status' => 'active', 'period_ends_at' => $current->copy()->subMonth()->toIso8601String()]);
+
+        $this->assertTrue($subscription->fresh()->current_period_ends_at->equalTo($current));
+        Event::assertNotDispatched(SubscriptionRenewed::class);
     }
 
     public function test_every_event_for_one_subscription_is_applied_not_just_the_first(): void

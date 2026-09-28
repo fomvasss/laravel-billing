@@ -6,19 +6,32 @@ namespace Fomvasss\Billing\Gateways\Stripe;
 
 use Fomvasss\Billing\Contracts\Billable;
 use Fomvasss\Billing\Contracts\ChecksPaymentStatus;
+use Fomvasss\Billing\Contracts\ManagesProviderSubscriptions;
 use Fomvasss\Billing\Contracts\RefundsPayments;
+use Fomvasss\Billing\Contracts\ReportsTrialEnding;
+use Fomvasss\Billing\Contracts\StartsProviderSubscriptions;
 use Fomvasss\Billing\Contracts\TokenizesPaymentMethod;
 use Fomvasss\Billing\DTO\ChargeOptions;
 use Fomvasss\Billing\DTO\PaymentResult;
+use Fomvasss\Billing\DTO\SubscriptionSnapshot;
 use Fomvasss\Billing\DTO\WebhookResult;
+use Fomvasss\Billing\Enums\Interval;
+use Fomvasss\Billing\Enums\PaymentInitiation;
 use Fomvasss\Billing\Enums\PaymentStatus;
+use Fomvasss\Billing\Enums\PaymentType;
+use Fomvasss\Billing\Enums\PricingType;
+use Fomvasss\Billing\Enums\SubscriptionStatus;
 use Fomvasss\Billing\Enums\WebhookEventType;
 use Fomvasss\Billing\Events\PaymentMethodAttached;
 use Fomvasss\Billing\Events\PaymentMethodDetached;
 use Fomvasss\Billing\Exceptions\BillingException;
+use Fomvasss\Billing\Exceptions\NotSupportedException;
+use Fomvasss\Billing\Facades\Billing;
 use Fomvasss\Billing\Gateways\AbstractGateway;
 use Fomvasss\Billing\Models\Payment;
 use Fomvasss\Billing\Models\PaymentMethod;
+use Fomvasss\Billing\Models\Price;
+use Fomvasss\Billing\Models\Subscription;
 use Fomvasss\Billing\Support\Money;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\Client\PendingRequest;
@@ -41,7 +54,7 @@ use Fomvasss\Billing\Webhooks\BillingWebhookCall;
  * chargePaymentMethod()'s own PaymentIntent — checkout.session.*, payment_intent.succeeded and
  * payment_intent.payment_failed all need it to look our Payment row back up.
  */
-class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPaymentStatus, TokenizesPaymentMethod, \Fomvasss\Billing\Contracts\ChecksGatewayHealth
+class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPaymentStatus, TokenizesPaymentMethod, \Fomvasss\Billing\Contracts\ChecksGatewayHealth, StartsProviderSubscriptions, ManagesProviderSubscriptions, ReportsTrialEnding
 {
     protected const BASE_URL = 'https://api.stripe.com/v1';
 
@@ -94,10 +107,151 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
         );
     }
 
+    /**
+     * Stripe Billing, driven through hosted Checkout (mode=subscription) — no frontend, and no
+     * catalog: the price and product go inline. The payment's and the subscription's ids travel in
+     * subscription_data.metadata, which Stripe copies onto the subscription and snapshots onto
+     * every invoice (parent.subscription_details.metadata). A price with trial_days starts a
+     * card-required free trial, recorded at 0 like Paddle's.
+     */
+    public function startSubscription(Payment $payment, ChargeOptions $options = new ChargeOptions()): PaymentResult
+    {
+        /** @var Subscription $subscription */
+        $subscription = $payment->payable;
+        $price = $subscription->price;
+        $qty = max(1, (int) $subscription->qty);
+        $trialDays = (int) ($price->trial_days ?? 0);
+
+        if ($trialDays > 0) {
+            if ($payment->amount !== 0) {
+                throw new BillingException("Stripe: price {$price->id} starts with a {$trialDays}-day trial, which charges nothing at checkout — create payment {$payment->id} with amount 0.");
+            }
+
+            $unit = Billing::resolveChargeAmount($price, $this->gatewayName)->money;
+        } else {
+            if ($payment->amount % $qty !== 0) {
+                throw new BillingException("Stripe: payment {$payment->id} amount {$payment->amount} doesn't split evenly over quantity {$qty}.");
+            }
+
+            $unit = new Money(intdiv($payment->amount, $qty), $payment->currency);
+        }
+
+        if (strcasecmp($unit->currency, $payment->currency) !== 0) {
+            throw new BillingException("Stripe: payment {$payment->id} is in {$payment->currency}, the subscription price resolves to {$unit->currency}.");
+        }
+
+        $customerId = $payment->billable instanceof Model && $payment->billable instanceof Billable
+            ? $this->resolveCustomerId($payment->billable)
+            : null;
+
+        $data = $this->http()->asForm()->post('/checkout/sessions', array_filter([
+            ...$options->raw,
+            'mode' => 'subscription',
+            'line_items' => [[
+                'quantity' => $qty,
+                'price_data' => $this->recurringPriceData($price, $unit, product: ['name' => $options->description ?? $price->plan?->name ?? "Subscription {$subscription->id}"]),
+            ]],
+            'success_url' => $this->successUrl($payment, $options),
+            'cancel_url' => $this->failUrl($payment, $options),
+            'customer' => $customerId,
+            'customer_email' => $customerId === null ? $options->customerEmail : null,
+            'client_reference_id' => (string) $payment->id,
+            'metadata' => ['payment_id' => (string) $payment->id],
+            'subscription_data' => array_filter([
+                'metadata' => ['payment_id' => (string) $payment->id, 'subscription_id' => (string) $subscription->id],
+                'trial_period_days' => $trialDays > 0 ? $trialDays : null,
+            ]),
+            'locale' => $options->locale,
+        ]))->throw()->json();
+
+        return new PaymentResult(
+            url: $data['url'],
+            expiresAt: isset($data['expires_at']) ? Carbon::createFromTimestamp($data['expires_at']) : null,
+            externalId: $data['id'],
+            raw: $data,
+        );
+    }
+
+    public function cancel(Subscription $subscription, bool $atPeriodEnd): SubscriptionSnapshot
+    {
+        $response = $atPeriodEnd
+            ? $this->manage()->asForm()->post("/subscriptions/{$subscription->external_id}", ['cancel_at_period_end' => 'true'])
+            : $this->manage()->delete("/subscriptions/{$subscription->external_id}");
+
+        return $this->subscriptionSnapshotOrFail($response);
+    }
+
+    /**
+     * Stripe's real pause (status `paused`, /pause and /resume) exists only on preview API
+     * versions; pause_collection only stops invoices from being collected while the subscription
+     * reads `active` — not what pause() promises. Until the pause endpoints are generally
+     * available, neither is offered.
+     */
+    public function pause(Subscription $subscription, ?\DateTimeInterface $until): SubscriptionSnapshot
+    {
+        throw new NotSupportedException('Stripe: pausing a subscription needs a preview API version — not supported yet.');
+    }
+
+    public function resume(Subscription $subscription): SubscriptionSnapshot
+    {
+        throw new NotSupportedException('Stripe: resuming a subscription needs a preview API version — not supported yet.');
+    }
+
+    /**
+     * The new price goes inline on the subscription's existing item and product — replacing the
+     * item, not adding a second one (an update without the item id adds). proration_behavior
+     * (credential, default create_prorations) decides what the change costs.
+     */
+    public function swapPrice(Subscription $subscription, Price $price): SubscriptionSnapshot
+    {
+        $current = $this->http()->get("/subscriptions/{$subscription->external_id}")->throw()->json();
+        $item = $current['items']['data'][0] ?? throw new BillingException("Stripe: subscription {$subscription->external_id} has no item to swap.");
+        $unit = Billing::resolveChargeAmount($price, $this->gatewayName)->money;
+
+        if (strcasecmp($unit->currency, (string) ($current['currency'] ?? '')) !== 0) {
+            throw new BillingException("Stripe: subscription {$subscription->id} bills in {$current['currency']}, the new price resolves to {$unit->currency}.");
+        }
+
+        $productId = $this->activeProductFor(is_array($item['price']['product'] ?? null) ? $item['price']['product']['id'] : $item['price']['product']);
+
+        // A fresh key per call: an immediate proration invoice moves money, and a retried request
+        // must not bill the change twice.
+        $response = $this->manage()
+            ->withHeaders(['Idempotency-Key' => 'swap-' . Str::uuid()->toString()])
+            ->asForm()
+            ->post("/subscriptions/{$subscription->external_id}", [
+                'items' => [[
+                    'id' => $item['id'],
+                    'quantity' => max(1, (int) $subscription->qty),
+                    'price_data' => $this->recurringPriceData($price, $unit, productId: $productId),
+                ]],
+                'proration_behavior' => $this->credentials['proration_behavior'] ?? 'create_prorations',
+            ]);
+
+        return $this->subscriptionSnapshotOrFail($response, $price->id);
+    }
+
     public function handleWebhook(BillingWebhookCall $webhookCall): WebhookResult
     {
         $event = $webhookCall->payload;
         $object = $event['data']['object'] ?? [];
+
+        if (str_starts_with((string) ($event['type'] ?? ''), 'customer.subscription.')) {
+            return $this->applySubscriptionEvent($object, $event);
+        }
+
+        if (($event['type'] ?? null) === 'invoice.paid') {
+            return $this->recordInvoice($object, $event);
+        }
+
+        // A refund issued from the Stripe dashboard, or forced by a dispute — money that left the
+        // account without going through Billing::refund(). `amount_refunded` on the Charge is
+        // Stripe's own running total, which is what makes a re-delivery settle instead of stack.
+        // Before the payment_id lookup below: a subscription invoice's charge has none of our
+        // metadata and is found by its PaymentIntent instead.
+        if (($event['type'] ?? null) === 'charge.refunded') {
+            return $this->recordRefundFromWebhook($object, $event);
+        }
 
         $paymentId = $object['metadata']['payment_id'] ?? $object['client_reference_id'] ?? null;
 
@@ -106,7 +260,8 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
         }
 
         $status = match ($event['type'] ?? null) {
-            'checkout.session.completed' => ($object['payment_status'] ?? null) === 'paid' ? PaymentStatus::Paid : null,
+            // A subscription checkout whose trial charges nothing completes without a payment.
+            'checkout.session.completed' => in_array($object['payment_status'] ?? null, ['paid', 'no_payment_required'], true) ? PaymentStatus::Paid : null,
             'checkout.session.expired' => PaymentStatus::Canceled,
             // A raw off-session PaymentIntent (chargePaymentMethod()) never goes through Checkout,
             // so it has no checkout.session.* counterpart — payment_intent.succeeded is the only
@@ -122,13 +277,6 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             'payment_intent.payment_failed' => $this->paymentIntentIsCheckoutBound($object) ? null : PaymentStatus::Failed,
             default => null,
         };
-
-        // A refund issued from the Stripe dashboard, or forced by a dispute — money that left the
-        // account without going through Billing::refund(). `amount_refunded` on the Charge is
-        // Stripe's own running total, which is what makes a re-delivery settle instead of stack.
-        if (($event['type'] ?? null) === 'charge.refunded') {
-            return $this->recordRefundFromWebhook($object, $event);
-        }
 
         if ($status === null) {
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $event);
@@ -162,8 +310,21 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
 
         $externalId = $object['payment_intent'] ?? $object['id'] ?? null;
 
+        // A subscription session carries no PaymentIntent; the first invoice's (recordInvoice())
+        // may already sit on the row — keep it, refunds go through it.
+        if (str_starts_with((string) $payment->external_id, 'pi_') && ! str_starts_with((string) $externalId, 'pi_')) {
+            $externalId = $payment->external_id;
+        }
+
         if (! $payment->transitionTo($status, array_filter(['external_id' => $externalId]))) {
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $event);
+        }
+
+        // A subscription checkout: link the row now, before PaymentSucceeded reaches the listener,
+        // which would otherwise renew the still-unlinked row by our own interval. The paid period
+        // follows from the invoice (recordInvoice()).
+        if ($status === PaymentStatus::Paid && ! empty($object['subscription'])) {
+            $this->syncSubscription((string) $object['subscription']);
         }
 
         return new WebhookResult(
@@ -179,10 +340,267 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
         );
     }
 
+    /**
+     * customer.subscription.* — the event's object is re-fetched rather than trusted: Stripe
+     * delivers out of order and never expanded, so the current state is the only safe snapshot.
+     * trial_will_end is Stripe's own reminder (hence ReportsTrialEnding) and maps to TrialWillEnd.
+     */
+    protected function applySubscriptionEvent(array $object, array $event): WebhookResult
+    {
+        $subscription = $this->findProviderSubscription($object['id'] ?? null)
+            ?? $this->findSubscriptionByReference($object['metadata']['subscription_id'] ?? null);
+
+        if ($subscription === null || empty($event['id'])) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $event);
+        }
+
+        if (($event['type'] ?? null) === 'customer.subscription.trial_will_end') {
+            return new WebhookResult(type: WebhookEventType::Subscription, status: 'trial_will_end', subscription: $subscription, externalId: $event['id'], raw: $event);
+        }
+
+        $snapshot = $this->subscriptionSnapshot($this->http()->get("/subscriptions/{$object['id']}")->throw()->json());
+
+        if ($snapshot === null) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $event);
+        }
+
+        return new WebhookResult(
+            type: WebhookEventType::Subscription,
+            status: 'synced',
+            subscription: $subscription,
+            externalId: $event['id'],
+            raw: $event,
+            snapshot: $snapshot,
+        );
+    }
+
+    /**
+     * invoice.paid for a subscription — the proof a period is paid for (the subscription's own
+     * period moves when the invoice is created, before any money). The first invoice belongs to the
+     * checkout payment: it only lends that row its PaymentIntent (refunds go through it). Every
+     * later one (renewal, plan change) is a new Payment row with the subscription as payable.
+     */
+    protected function recordInvoice(array $invoice, array $event): WebhookResult
+    {
+        $ignored = new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $event);
+        $details = $invoice['parent']['subscription_details'] ?? null;
+        $subscriptionId = is_string($details['subscription'] ?? null) ? $details['subscription'] : null;
+
+        if ($subscriptionId === null || empty($invoice['id'])) {
+            return $ignored;
+        }
+
+        $subscription = $this->findProviderSubscription($subscriptionId)
+            ?? $this->findSubscriptionByReference($details['metadata']['subscription_id'] ?? null);
+
+        if ($subscription === null) {
+            return $ignored;
+        }
+
+        $amount = (int) ($invoice['amount_paid'] ?? 0);
+        // A zero invoice (a trial's start) pays for nothing — its period is the trial.
+        $periodEnd = $amount > 0 ? collect($invoice['lines']['data'] ?? [])->max(fn (array $line) => $line['period']['end'] ?? 0) : null;
+        $paymentIntent = $amount > 0 ? $this->invoicePaymentIntent($invoice['id']) : null;
+
+        if (($invoice['billing_reason'] ?? null) === 'subscription_create') {
+            $first = $this->findPaymentByReference($details['metadata']['payment_id'] ?? null);
+
+            if ($first !== null && $paymentIntent !== null && $first->external_id !== $paymentIntent) {
+                $first->update(['external_id' => $paymentIntent]);
+            }
+
+            $this->syncSubscription($subscriptionId, $periodEnd ?: null);
+
+            return $ignored; // the checkout session reports the first payment itself
+        }
+
+        if ($amount <= 0) {
+            $this->syncSubscription($subscriptionId, null);
+
+            return $ignored;
+        }
+
+        $externalId = $paymentIntent ?? $invoice['id'];
+        $payment = Payment::query()->where('gateway', $this->gatewayName)->where('external_id', $externalId)->first()
+            ?? Payment::create([
+                'status' => PaymentStatus::Pending,
+                'type' => PaymentType::Charge,
+                'initiation' => PaymentInitiation::Automatic,
+                'gateway' => $this->gatewayName,
+                'amount' => $amount,
+                'currency' => strtoupper((string) ($invoice['currency'] ?? $subscription->price?->currency)),
+                'external_id' => $externalId,
+                'raw_response' => $invoice,
+                'payable_type' => $subscription->getMorphClass(),
+                'payable_id' => $subscription->getKey(),
+                'billable_type' => $subscription->billable_type,
+                'billable_id' => $subscription->billable_id,
+                'tenant_id' => $subscription->tenant_id,
+            ]);
+
+        $payment->transitionTo(PaymentStatus::Paid);
+
+        $this->syncSubscription($subscriptionId, $periodEnd ?: null);
+
+        return new WebhookResult(
+            type: WebhookEventType::Payment,
+            status: 'succeeded',
+            payment: $payment,
+            externalId: $invoice['id'],
+            raw: $event,
+        );
+    }
+
+    /** Since 2025-03-31.basil an invoice names its PaymentIntent only inside its payments list. */
+    protected function invoicePaymentIntent(string $invoiceId): ?string
+    {
+        $payments = $this->http()->get("/invoices/{$invoiceId}", ['expand' => ['payments']])->throw()->json('payments.data') ?? [];
+
+        foreach ($payments as $payment) {
+            $intent = $payment['payment']['payment_intent'] ?? null;
+
+            if (($payment['status'] ?? null) === 'paid' && is_string($intent)) {
+                return $intent;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Re-fetches the subscription and applies it. Called from a delivery that already reports a
+     * payment, so the snapshot is applied here rather than returned — its events come from what
+     * changed, so a re-delivery fires nothing twice.
+     */
+    protected function syncSubscription(string $subscriptionId, ?int $paidPeriodEnd = null): void
+    {
+        $entity = $this->http()->get("/subscriptions/{$subscriptionId}")->throw()->json();
+        $subscription = $this->findProviderSubscription($subscriptionId)
+            ?? $this->findSubscriptionByReference($entity['metadata']['subscription_id'] ?? null);
+        $snapshot = $this->subscriptionSnapshot($entity, $paidPeriodEnd);
+
+        if ($subscription !== null && $snapshot !== null) {
+            $subscription->applyProviderSnapshot($snapshot);
+        }
+    }
+
+    /**
+     * Stripe's subscription in the package's terms. No occurredAt: every snapshot is re-fetched,
+     * i.e. the current state, and Stripe advises against ordering by event time. The paid period
+     * only from a paid invoice (see recordInvoice()).
+     */
+    protected function subscriptionSnapshot(array $entity, ?int $paidPeriodEnd = null, ?string $priceId = null): ?SubscriptionSnapshot
+    {
+        $status = match ($entity['status'] ?? null) {
+            'trialing' => SubscriptionStatus::Trialing,
+            'active' => SubscriptionStatus::Active,
+            // unpaid: dunning is over but the subscription is kept — no payment is coming.
+            'past_due', 'unpaid' => SubscriptionStatus::PastDue,
+            'paused' => SubscriptionStatus::Paused,
+            'canceled', 'incomplete_expired' => SubscriptionStatus::Canceled,
+            'incomplete' => SubscriptionStatus::Incomplete,
+            default => null,
+        };
+
+        if ($status === null || empty($entity['id'])) {
+            return null;
+        }
+
+        $date = fn (mixed $timestamp) => is_numeric($timestamp) ? Carbon::createFromTimestamp((int) $timestamp) : null;
+        $periodEnd = collect($entity['items']['data'] ?? [])->max(fn (array $item) => $item['current_period_end'] ?? 0);
+
+        return new SubscriptionSnapshot(
+            externalId: $entity['id'],
+            status: $status,
+            currentPeriodEndsAt: $date($paidPeriodEnd),
+            // cancel_at, not cancel_at_period_end: in flexible billing mode (the default since
+            // 2025-09-30.clover) a cancellation sets only cancel_at.
+            cancelsAt: $status === SubscriptionStatus::Canceled
+                ? ($date($entity['ended_at'] ?? null) ?? $date($entity['canceled_at'] ?? null) ?? now())
+                : ($date($entity['cancel_at'] ?? null) ?? (($entity['cancel_at_period_end'] ?? false) ? $date($periodEnd) : null)),
+            trialEndsAt: $status === SubscriptionStatus::Trialing ? $date($entity['trial_end'] ?? null) : null,
+            priceId: $priceId,
+        );
+    }
+
+    /**
+     * Checkout turns product_data into a product of its own that is INACTIVE and can't be edited
+     * beyond its metadata — and Stripe refuses a new price on an inactive product (both
+     * live-found). Such a product is replaced once by an active one of the same name, which every
+     * later swap of this subscription then keeps using.
+     */
+    protected function activeProductFor(string $productId): string
+    {
+        $product = $this->http()->get("/products/{$productId}")->throw()->json();
+
+        if ($product['active'] ?? false) {
+            return $productId;
+        }
+
+        return $this->http()->asForm()->post('/products', [
+            'name' => $product['name'] ?? 'Subscription',
+            'metadata' => ['replaces' => $productId],
+        ])->throw()->json('id');
+    }
+
+    /**
+     * Subscription management calls: a refusal has to reach subscriptionSnapshotOrFail() as a
+     * response — http()'s retry would throw it as a bare RequestException first (Laravel throws
+     * once retries run out). Sent once: an immediate proration or a cancellation's final invoice
+     * moves money, and only the swap carries an idempotency key.
+     */
+    protected function manage(): PendingRequest
+    {
+        return $this->http()->retry(1, 0, throw: false);
+    }
+
+    protected function subscriptionSnapshotOrFail(\Illuminate\Http\Client\Response $response, ?string $priceId = null): SubscriptionSnapshot
+    {
+        if ($response->failed()) {
+            throw new BillingException(sprintf(
+                'Stripe refused the subscription change: %s — %s',
+                $response->json('error.code') ?? $response->status(),
+                $response->json('error.message') ?? $response->body(),
+            ));
+        }
+
+        return $this->subscriptionSnapshot($response->json(), priceId: $priceId)
+            ?? throw new BillingException('Stripe: unexpected subscription response: ' . $response->body());
+    }
+
+    /** An inline recurring price — $product for a new subscription, $productId to stay on an existing one's product. */
+    protected function recurringPriceData(Price $price, Money $unit, ?array $product = null, ?string $productId = null): array
+    {
+        if ($price->pricing_type === PricingType::Metered) {
+            throw new NotSupportedException('Stripe: metered prices aren\'t supported on provider-managed subscriptions yet.');
+        }
+
+        $interval = match ($price->interval) {
+            Interval::Day, Interval::Week, Interval::Month, Interval::Year => $price->interval->value,
+            default => throw new NotSupportedException("Stripe: subscriptions bill by day, week, month or year — price {$price->id} has no such interval."),
+        };
+
+        return array_filter([
+            'currency' => strtolower($unit->currency),
+            'unit_amount' => $unit->amount,
+            'recurring' => ['interval' => $interval, 'interval_count' => max(1, (int) $price->interval_count)],
+            'product_data' => $product,
+            'product' => $productId,
+        ]);
+    }
+
     protected function recordRefundFromWebhook(array $object, array $event): WebhookResult
     {
         $paymentId = $object['metadata']['payment_id'] ?? null;
-        $charge = $paymentId === null ? null : $this->findPaymentByReference($paymentId);
+        // A subscription invoice's charge carries no metadata of ours — its payment row is keyed
+        // by the invoice's PaymentIntent instead.
+        $charge = $paymentId !== null
+            ? $this->findPaymentByReference($paymentId)
+            : (empty($object['payment_intent']) ? null : Payment::query()
+                ->where('gateway', $this->gatewayName)
+                ->where('type', PaymentType::Charge)
+                ->where('external_id', $object['payment_intent'])
+                ->first());
 
         if ($charge === null) {
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $event);
@@ -476,6 +894,7 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
         return [
             ['name' => 'secret_key', 'type' => 'text', 'secret' => true, 'help' => 'Secret key (sk_...) з дашборду Stripe'],
             ['name' => 'webhook_secret', 'type' => 'text', 'secret' => true, 'help' => 'Signing secret (whsec_...) вебхук-ендпоінта'],
+            ['name' => 'proration_behavior', 'type' => 'text', 'secret' => false, 'help' => 'Як Stripe рахує зміну тарифу підписки: create_prorations (за замовчуванням), always_invoice, none'],
         ];
     }
 

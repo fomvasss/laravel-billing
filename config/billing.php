@@ -283,6 +283,7 @@ return [
         'stripe' => [
             'secret_key' => env('STRIPE_SECRET_KEY'),
             'webhook_secret' => env('STRIPE_WEBHOOK_SECRET'),
+            'proration_behavior' => env('STRIPE_PRORATION_BEHAVIOR', 'create_prorations'),
         ],
 
         'hutko' => [

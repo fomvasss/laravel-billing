@@ -827,7 +827,7 @@ $this->app->bind(RenewalChargeOptionsContract::class, fn () => new class impleme
 - стан рядка пишеться в одному місці, `applyProviderSnapshot()`, з вебхуків драйвера, і звичні події фаєряться з того, що змінилось: `SubscriptionCreated` на першому зв'язку, `SubscriptionRenewed` коли оплачений період посувається, `SubscriptionPaymentFailed` (і `SubscriptionAccessSuspended` без grace access) при вході в `past_due`, `SubscriptionPaused`/`SubscriptionResumed`, `SubscriptionCancelled`. Доставки приходять не по порядку; старіший стан ніколи не перетирає новіший;
 - дві межі доступу м'які, бо вирішує провайдер і каже про це вебхуком: кінець тріалу (провайдер його конвертує) і `past_due` — власного grace-вікна нема, доступ іде за `grace_access`, поки провайдер ретраїть, і закінчується, коли він повідомить скасування.
 
-Старт — через `Billing::startSubscription($payment)` замість `charge()`: створи Subscription як `incomplete` з гейтвеєм провайдера і перший Payment з цією Subscription як payable; рядок стає провайдер-керованим, коли вебхук провайдера його зв'яже. Для цього в `billing_subscriptions` є `provider_synced_at` (і індекс на `gateway, external_id`); пакето-керовані рядки їх не чіпають. З вбудованих драйверів це вміє Paddle (`capabilities.subscriptions` у `Billing::gateways()`).
+Старт — через `Billing::startSubscription($payment)` замість `charge()`: створи Subscription як `incomplete` з гейтвеєм провайдера і перший Payment з цією Subscription як payable; рядок стає провайдер-керованим, коли вебхук провайдера його зв'яже. Для цього в `billing_subscriptions` є `provider_synced_at` (і індекс на `gateway, external_id`); пакето-керовані рядки їх не чіпають. З вбудованих драйверів це вміють Paddle і Stripe (`capabilities.subscriptions` у `Billing::gateways()`); див. рецепти 9 і 10.
 
 Поділ — **per-підписка, не per-гейтвей**, і це свідомо: гейтвей на кшталт Stripe підтримує обидві моделі одночасно — той самий мерчант може вести B2C-тарифи через Stripe Billing (proration та інвойси безкоштовно), а кастомні B2B-угоди — пакето-керовано на тому ж драйвері. Правило: `external_id` підписки пише тільки драйвер — проставивши його вручну, ти кажеш пакету "руки геть, цю веде провайдер".
 
@@ -1339,6 +1339,41 @@ $subscription->swapPlan($otherPrice);      // доплату визначає PA
 - **Грандфазеринг (рецепт 8) тут інший**: `swapPlan()` іде в Paddle і списує за режимом proration, а не мовчки діє з наступного продовження — постав `do_not_bill` у `PADDLE_PRORATION_BILLING_MODE`, якщо потрібна саме така поведінка.
 - **Тріали**: дай ціні `trial_days` і створи перший платіж з `amount` 0 — каса Paddle зберігає картку і сьогодні нічого не списує. Рядок `trialing` з `trial_ends_at` від Paddle (оплаченого періоду ще нема); коли тріал закінчується, Paddle списує повну суму — вона приходить новим `Payment` і `SubscriptionRenewed` з `previousStatus` `Trialing`. Вебхука «тріал скоро скінчиться» Paddle не шле, тож `billing:expire-trials` фаєрить `TrialWillEnd` з віддзеркаленої дати (лише нагадування — статус лишається за Paddle). Зміна тарифу під час тріалу нічого не списує (`do_not_bill` — єдиний режим, який Paddle тоді дозволяє). На відміну від пакето-керованого тріалу, без картки не почати: безкарткові тріали в Paddle ще в early access.
 - **Поки не підтримано**: metered-ціни, інтервали minute/hour.
+
+### 10. Підписка через Stripe Billing
+
+Той самий провайдер-керований флоу, що в рецепті 9, через hosted Checkout Stripe у режимі підписки — ціна й продукт inline, нічого в каталозі Stripe. Stripe вміє й пакето-керовану модель (рецепт 2); вирішує виклик: `Billing::startSubscription()` віддає підписку Stripe, `charge()` із `saveCard` лишає її пакету.
+
+```php
+$price = $plan->prices()->create([
+    'gateway' => 'stripe', 'currency' => 'USD', 'amount' => 2900,
+    'pricing_type' => PricingType::Flat, 'interval' => Interval::Month, 'interval_count' => 1,
+]);
+
+$subscription = Subscription::create([
+    'status' => SubscriptionStatus::Incomplete,
+    'gateway' => 'stripe',
+    'price_id' => $price->id,
+    'billable_type' => $organization::class,
+    'billable_id' => $organization->id,
+]);
+
+$payment = Payment::create([
+    'gateway' => 'stripe', 'amount' => $price->amount, 'currency' => $price->currency,
+    'payable_type' => $subscription->getMorphClass(), 'payable_id' => $subscription->id,
+    'billable_type' => $organization::class, 'billable_id' => $organization->id,
+]);
+
+return redirect(Billing::startSubscription($payment)->url);
+```
+
+Після оновлення пакета запусти `billing:stripe-register-webhook` ще раз — він додасть події `invoice.paid` і `customer.subscription.*` до наявного ендпоінта й збереже його signing secret. Далі: каса зв'язує рядок, оплачений інвойс дає оплачений період, кожен наступний інвойс (продовження, зміна тарифу) — новий рядок `Payment`, а `customer.subscription.*` тримають синхронними статус, заплановане скасування й кінець тріалу (кожна подія перечитує підписку — Stripe не доставляє по порядку). Рефанди працюють на будь-якому з цих платежів — через `Billing::refund()` або з кабінету Stripe.
+
+- `cancel()` ставить `cancel_at_period_end` (або видаляє одразу); `swapPlan()` замінює позицію підписки, доплата — за `STRIPE_PRORATION_BEHAVIOR` (за замовчуванням `create_prorations` — різниця йде в наступний інвойс).
+- `pause()`/`resume()` кидають `NotSupportedException`: справжня пауза Stripe потребує preview-версії API, а `pause_collection` лишив би підписку `active`.
+- Тріали: `trial_days` на ціні і перший платіж з `amount` 0, як у Paddle. Stripe сам шле `trial_will_end`, який приходить як `TrialWillEnd` — власних нагадувань пакет для Stripe не додає.
+- Dunning (Smart Retries і що після останньої спроби) налаштовується в кабінеті Stripe; рядок віддзеркалює рішення Stripe. `unpaid` читається як `past_due`.
+- Поки не підтримано: metered-ціни, інтервали minute/hour.
 
 ## Гроші
 

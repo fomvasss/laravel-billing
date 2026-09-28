@@ -34,6 +34,14 @@ class StripeRegisterWebhookCommand extends Command
         // Refunds issued from the Stripe dashboard, and chargebacks — without this a refund that
         // didn't go through Billing::refund() never reaches us and refundedAmount() understates it.
         'charge.refunded',
+        // Provider-managed subscriptions: the lifecycle, and the paid invoice as proof of a period.
+        'invoice.paid',
+        'customer.subscription.created',
+        'customer.subscription.updated',
+        'customer.subscription.deleted',
+        'customer.subscription.paused',
+        'customer.subscription.resumed',
+        'customer.subscription.trial_will_end',
     ];
 
     protected $signature = 'billing:stripe-register-webhook
@@ -68,19 +76,28 @@ class StripeRegisterWebhookCommand extends Command
 
         $existing = $this->allEndpoints($http)->where('url', $url);
 
+        // Already there: bring its event list up to date in place — the signing secret survives an
+        // update, and Stripe never shows it again, so re-creating is only for what an update can't
+        // change (the API version).
         if ($existing->isNotEmpty() && ! $this->option('fresh')) {
+            $failed = false;
+
             foreach ($existing as $endpoint) {
-                $this->warn("Already registered: {$endpoint['id']} → {$url}");
+                $http->asForm()->post("/webhook_endpoints/{$endpoint['id']}", $this->eventParams())->throw();
+                $this->info("Updated the events of {$endpoint['id']} → {$url}");
 
                 // An endpoint made before the driver pinned its version renders events in the
                 // account default — only re-creating it changes that.
                 if (($endpoint['api_version'] ?? null) !== StripeGateway::API_VERSION) {
                     $this->warn('It renders events in API version ' . ($endpoint['api_version'] ?? 'account default') . ', the driver expects ' . StripeGateway::API_VERSION . ' — re-create it with --fresh.');
+                    $failed = true;
                 }
             }
-            $this->line('Stripe never re-shows a signing secret. Keep using the webhook_secret you saved at creation, or re-create with --fresh to get a new one.');
 
-            return self::FAILURE;
+            $this->line('Events: ' . implode(', ', self::EVENTS));
+            $this->line('The signing secret is unchanged — keep the webhook_secret you saved at creation.');
+
+            return $failed ? self::FAILURE : self::SUCCESS;
         }
 
         foreach ($existing as $endpoint) {
@@ -90,10 +107,7 @@ class StripeRegisterWebhookCommand extends Command
 
         // Events are rendered in the endpoint's version, not the request's — without this the
         // payloads would follow the account default, whatever the driver itself is pinned to.
-        $params = ['url' => $url, 'api_version' => StripeGateway::API_VERSION];
-        foreach (self::EVENTS as $i => $event) {
-            $params["enabled_events[{$i}]"] = $event;
-        }
+        $params = ['url' => $url, 'api_version' => StripeGateway::API_VERSION, ...$this->eventParams()];
 
         $created = $http->asForm()->post('/webhook_endpoints', $params)->throw()->json();
 
@@ -109,6 +123,18 @@ class StripeRegisterWebhookCommand extends Command
         }
 
         return self::SUCCESS;
+    }
+
+    /** @return array<string, string> */
+    protected function eventParams(): array
+    {
+        $params = [];
+
+        foreach (self::EVENTS as $i => $event) {
+            $params["enabled_events[{$i}]"] = $event;
+        }
+
+        return $params;
     }
 
     /**

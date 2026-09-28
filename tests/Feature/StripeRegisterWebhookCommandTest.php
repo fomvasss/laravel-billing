@@ -52,22 +52,47 @@ class StripeRegisterWebhookCommandTest extends TestCase
                 'payment_intent.succeeded',
                 'payment_intent.payment_failed',
                 'charge.refunded',
+                'invoice.paid',
+                'customer.subscription.created',
+                'customer.subscription.updated',
+                'customer.subscription.deleted',
+                'customer.subscription.paused',
+                'customer.subscription.resumed',
+                'customer.subscription.trial_will_end',
             ], $events);
 
             return true;
         });
     }
 
-    public function test_refuses_to_reregister_without_fresh_because_the_secret_is_unrecoverable(): void
+    public function test_an_existing_endpoint_gets_its_events_updated_in_place_keeping_its_secret(): void
     {
         $url = route('billing.webhook', ['gateway' => 'stripe']);
 
         Http::fake([
-            'https://api.stripe.com/v1/webhook_endpoints?*' => Http::response(['data' => [['id' => 'we_old', 'url' => $url]]]),
+            'https://api.stripe.com/v1/webhook_endpoints?*' => Http::response(['data' => [['id' => 'we_old', 'url' => $url, 'api_version' => \Fomvasss\Billing\Gateways\Stripe\StripeGateway::API_VERSION]]]),
+            'https://api.stripe.com/v1/webhook_endpoints/we_old' => Http::response(['id' => 'we_old']),
         ]);
 
         $this->artisan('billing:stripe-register-webhook')
-            ->expectsOutputToContain('Already registered: we_old')
+            ->expectsOutputToContain('Updated the events of we_old')
+            ->expectsOutputToContain('signing secret is unchanged')
+            ->assertSuccessful();
+
+        Http::assertSent(fn ($request) => $request->method() === 'POST' && str_ends_with($request->url(), '/webhook_endpoints/we_old') && $request['enabled_events[0]'] === 'checkout.session.completed');
+        Http::assertNotSent(fn ($request) => $request->method() === 'DELETE');
+    }
+
+    public function test_an_endpoint_on_another_api_version_is_updated_but_flagged_for_re_creation(): void
+    {
+        $url = route('billing.webhook', ['gateway' => 'stripe']);
+
+        Http::fake([
+            'https://api.stripe.com/v1/webhook_endpoints?*' => Http::response(['data' => [['id' => 'we_old', 'url' => $url, 'api_version' => null]]]),
+            'https://api.stripe.com/v1/webhook_endpoints/we_old' => Http::response(['id' => 'we_old']),
+        ]);
+
+        $this->artisan('billing:stripe-register-webhook')
             ->expectsOutputToContain('re-create it with --fresh')
             ->assertFailed();
     }

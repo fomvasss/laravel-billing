@@ -19,6 +19,10 @@ return new class extends Migration
             // Ownership marker, not just a reference: non-null = provider-managed, the package's
             // schedulers skip the row. See Subscription::isProviderManaged().
             $table->string('external_id')->nullable();
+            // When the provider recorded the state last applied to a provider-managed row — providers
+            // don't deliver in order, and an older snapshot must not overwrite a newer one.
+            // updated_at can't serve: local writes bump it too. Always null for package-managed rows.
+            $table->dateTime('provider_synced_at')->nullable();
             $table->timestamp('trial_ends_at')->nullable();
             // trial_ending_notices entries already fired — each reminder at most once per subscription.
             $table->json('trial_notices_sent')->nullable();
@@ -47,6 +51,8 @@ return new class extends Migration
             $table->index(['status', 'current_period_ends_at']);
             $table->index(['status', 'pause_ends_at']);
             $table->index('quota_period_ends_at');
+            // Every provider webhook finds its row this way.
+            $table->index(['gateway', 'external_id']);
         });
     }
 

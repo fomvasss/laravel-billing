@@ -8,6 +8,10 @@ use Fomvasss\Billing\Models\Price;
 use Fomvasss\Billing\Models\Subscription;
 
 /**
+ * @deprecated Use StartsProviderSubscriptions + ManagesProviderSubscriptions. createSubscription()
+ * has to return a linked Subscription synchronously, which no checkout-based provider can do (the
+ * provider's subscription id arrives by webhook), and nothing in the package ever called it.
+ *
  * Optional — implement only for gateways with native subscriptions on their side (Stripe has this,
  * LiqPay/WayForPay/Monobank don't). The hard rule: createSubscription() MUST store the provider's
  * subscription reference in subscriptions.external_id — that column is the ownership marker

@@ -17,7 +17,9 @@ final readonly class WebhookResult
          * Value within $type — the exact vocabulary ProcessWebhookJob matches on to dispatch a core
          * event:
          *  - Payment: 'succeeded' | 'failed' | 'refunded' | 'canceled'
-         *  - Subscription: 'created' | 'renewed' | 'payment_failed' | 'canceled' | 'trial_will_end'
+         *  - Subscription: 'synced' (writes $snapshot onto $subscription — Subscription::applyProviderSnapshot()
+         *    — and fires whatever events the change calls for); or the older event-only statuses
+         *    'created' | 'renewed' | 'payment_failed' | 'canceled' | 'trial_will_end', which write nothing
          *  - PaymentMethod: 'attached' | 'detached'
          *  - Ignored: unused
          */
@@ -25,9 +27,16 @@ final readonly class WebhookResult
         public ?Payment $payment = null,
         public ?Subscription $subscription = null,
         public ?PaymentMethod $paymentMethod = null,
-        /** The gateway-side reference this event is about — combined into dedupKey(), always set except for Ignored. */
+        /**
+         * The gateway-side reference this event is about — combined into dedupKey(), always set
+         * except for Ignored. For a Subscription result it must identify the EVENT (Paddle's evt_,
+         * Stripe's evt_), not the subscription: one subscription reports 'synced' many times, and a
+         * sub_ id here would let only the first of them through.
+         */
         public ?string $externalId = null,
         public array $raw = [],
+        /** The provider's state to apply, for a 'synced' Subscription result. */
+        public ?SubscriptionSnapshot $snapshot = null,
     ) {}
 
     /**

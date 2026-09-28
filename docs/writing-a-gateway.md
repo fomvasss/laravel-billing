@@ -252,12 +252,22 @@ Implement only what your gateway actually does. `BillingManager` checks with `in
 | `ChecksPaymentStatus` | Polling a payment's current status — used by `billing:reconcile-pending-payments` as the fallback for a lost webhook |
 | `ChecksGatewayHealth` | A live, side-effect-free credentials/reachability probe (`Billing::health()`, `billing:health`). No introspection endpoint? Probe with the status of a nonexistent payment and tell "order not found" (credentials fine) apart from "invalid signature" — verify the discriminating error codes against the live API, the built-in drivers document theirs |
 | `TokenizesPaymentMethod` | Saved cards / off-session recurring charges |
-| `SubscriptionGatewayContract` | Native subscriptions on the gateway's own side (Stripe-style) |
+| `StartsProviderSubscriptions`, `ManagesProviderSubscriptions` | Subscriptions run on the gateway's own side (Paddle, Stripe Billing) |
 | `HasReceiptItems` | (on your `Payable`, not the driver) fiscal basket line items — auto-fills into `charge()` AND `chargePaymentMethod()` alike, so build the basket in `chargePaymentMethod()` too if the gateway has one (`array_filter`s the basket key away when `$options->receiptItems` is empty, same as `charge()`) |
 
-### `SubscriptionGatewayContract`
+### Provider-managed subscriptions
 
-For gateways that host the subscription lifecycle themselves (Stripe Billing). The one hard rule: **your `createSubscription()` must store the provider's subscription reference in `subscriptions.external_id`** — that column is the ownership marker (`Subscription::isProviderManaged()`), and every package scheduler (recurring charges, cancellation finalizing, trial expiry and notices) skips rows where it's set, on the assumption the provider renews/duns/converts and your `handleWebhook()` maps its callbacks (`renewed`, `payment_failed`, `canceled`, `trial_will_end`) to the normal subscription events. Leave `external_id` null and the package will race the provider with its own charges. The split is per subscription, not per driver — the same gateway can serve package-managed subscriptions in parallel.
+For gateways that run the subscription lifecycle themselves (Paddle, Stripe Billing). The row mirrors the provider; the package's schedulers and its payment-outcome listener leave it alone once `subscriptions.external_id` is set (`Subscription::isProviderManaged()`).
+
+- **`StartsProviderSubscriptions::startSubscription($payment, $options)`** — called by `Billing::startSubscription()`, which does the same checkout bookkeeping as `charge()`. `$payment->payable` is the Subscription (`incomplete`); build the provider's recurring checkout from its price and put the subscription's id where the provider will echo it back.
+- **Link and mirror through a snapshot.** From `handleWebhook()`, return `WebhookResult(type: Subscription, status: 'synced', subscription: $row, snapshot: new SubscriptionSnapshot(...), externalId: <the provider's EVENT id>)`. The dispatcher calls `$row->applyProviderSnapshot()` inside the dedup claim, which writes the state and fires the events from what changed — never write the row or fire subscription events yourself. The first snapshot carries the provider's subscription id and is what links the row. Find rows with `findProviderSubscription()` (by the provider's id) or `findSubscriptionByReference()` (by ours, before the link exists).
+- **`externalId` must identify the event, not the subscription** — dedup is per `type:status:externalId`, and one subscription reports `synced` many times.
+- **`currentPeriodEndsAt` is the end of the PAID period.** Moving it forward is what fires `SubscriptionRenewed`; a provider that advances its period before collecting (Paddle does) should report the new end only once the renewal is paid.
+- **`occurredAt`** is the provider's own timestamp for the state — a snapshot older than the last one applied is dropped. For the answers to forwarded calls, use the provider's timestamp too if it has one.
+- **`ManagesProviderSubscriptions`** — `cancel()`, `pause()`, `resume()`, `swapPrice()`: make the provider call, return the state it reports. `Subscription::cancel()` etc. apply it. Throw `NotSupportedException` for what the provider can't do.
+- **Renewal payments are new `Payment` rows** (payable = the Subscription), one per renewal charge. The package won't advance the period from their `PaymentSucceeded` — the snapshot does that.
+
+`SubscriptionGatewayContract` is deprecated: its synchronous `createSubscription()` can't fit a checkout-based provider, and nothing ever called it.
 
 ### `ChecksPaymentStatus`
 

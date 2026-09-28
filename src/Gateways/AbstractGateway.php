@@ -10,6 +10,7 @@ use Fomvasss\Billing\Enums\PaymentStatus;
 use Fomvasss\Billing\Exceptions\BillingException;
 use Fomvasss\Billing\Models\Payment;
 use Fomvasss\Billing\Models\PaymentMethod;
+use Fomvasss\Billing\Models\Subscription;
 use Fomvasss\Billing\Support\Money;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -122,6 +123,28 @@ abstract class AbstractGateway implements PaymentGatewayContract
     {
         return is_scalar($reference) && \Illuminate\Support\Str::isUuid((string) $reference)
             ? Payment::find((string) $reference)
+            : null;
+    }
+
+    /**
+     * A provider-managed subscription by the provider's own id, within this gateway — the lookup
+     * every subscription webhook starts with. Null for one this package doesn't know.
+     */
+    protected function findProviderSubscription(mixed $externalId): ?Subscription
+    {
+        return is_string($externalId) && $externalId !== ''
+            ? Subscription::query()->where('gateway', $this->gatewayName)->where('external_id', $externalId)->first()
+            : null;
+    }
+
+    /**
+     * Our Subscription by its own id echoed back by the gateway (custom data, metadata) — the way
+     * to find a row not yet linked to the provider. Same uuid guard as findPaymentByReference().
+     */
+    protected function findSubscriptionByReference(mixed $reference): ?Subscription
+    {
+        return is_scalar($reference) && Str::isUuid((string) $reference)
+            ? Subscription::find((string) $reference)
             : null;
     }
 

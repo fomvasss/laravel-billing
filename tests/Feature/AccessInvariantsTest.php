@@ -29,6 +29,7 @@ class AccessInvariantsTest extends TestCase
         $subscriptions = $this->matrix();
 
         $before = $subscriptions->mapWithKeys(fn (Subscription $s) => [$s->id => $s->isActive()]);
+        $providerRows = $subscriptions->filter->isProviderManaged()->map->fresh()->map->getAttributes();
 
         $this->artisan('billing:expire-trials')->assertSuccessful();
         $this->artisan('billing:expire-pauses')->assertSuccessful();
@@ -41,6 +42,12 @@ class AccessInvariantsTest extends TestCase
                 $subscription->fresh()->isActive(),
                 "Running the schedulers changed access for the [{$label}] subscription.",
             );
+        }
+
+        // Stronger for a provider-managed row: the schedulers must not write to it at all — its
+        // state belongs to the provider and reaches the row only through applyProviderSnapshot().
+        foreach ($providerRows as $label => $attributes) {
+            $this->assertSame($attributes, $subscriptions[$label]->fresh()->getAttributes(), "A scheduler wrote to the [{$label}] subscription.");
         }
     }
 
@@ -80,6 +87,23 @@ class AccessInvariantsTest extends TestCase
         $this->assertTrue($matrix['active, period ended an hour ago']->isActive());
     }
 
+    public function test_a_provider_managed_subscription_leaves_the_trial_end_and_dunning_to_the_provider(): void
+    {
+        $matrix = $this->matrix();
+
+        // The provider converts the trial and tells us by webhook — a hard cut at trial_ends_at
+        // would blink the customer offline until it lands.
+        $this->assertTrue($matrix['provider-managed, trialing, lapsed an hour ago']->isActive());
+
+        // No grace window of ours: access holds (grace_access default) for as long as the provider
+        // keeps retrying, and ends when it reports the cancellation.
+        $this->assertTrue($matrix['provider-managed, past_due, no grace window']->isActive());
+
+        // The customer's own scheduled cancellation stays a hard boundary.
+        $this->assertFalse($matrix['provider-managed, cancellation due an hour ago']->isActive());
+        $this->assertFalse($matrix['provider-managed, paused indefinitely']->isActive());
+    }
+
     /** @return \Illuminate\Support\Collection<string, Subscription> */
     private function matrix(): \Illuminate\Support\Collection
     {
@@ -110,6 +134,12 @@ class AccessInvariantsTest extends TestCase
             'paused, resume due tomorrow' => ['status' => SubscriptionStatus::Paused, 'pause_ends_at' => now()->addDay()],
             'canceled' => ['status' => SubscriptionStatus::Canceled],
             'ended' => ['status' => SubscriptionStatus::Ended],
+            'provider-managed, trialing, lapsed an hour ago' => ['gateway' => 'stripe', 'external_id' => 'sub_trial', 'status' => SubscriptionStatus::Trialing, 'trial_ends_at' => now()->subHour()],
+            'provider-managed, active, period ended an hour ago' => ['gateway' => 'stripe', 'external_id' => 'sub_active', 'status' => SubscriptionStatus::Active, 'current_period_ends_at' => now()->subHour()],
+            'provider-managed, past_due, no grace window' => ['gateway' => 'stripe', 'external_id' => 'sub_past_due', 'status' => SubscriptionStatus::PastDue],
+            'provider-managed, cancellation due an hour ago' => ['gateway' => 'stripe', 'external_id' => 'sub_cancelled', 'status' => SubscriptionStatus::Active, 'cancels_at' => now()->subHour()],
+            'provider-managed, paused indefinitely' => ['gateway' => 'stripe', 'external_id' => 'sub_paused', 'status' => SubscriptionStatus::Paused],
+            'provider-managed, paused, resume due an hour ago' => ['gateway' => 'stripe', 'external_id' => 'sub_resuming', 'status' => SubscriptionStatus::Paused, 'pause_ends_at' => now()->subHour()],
         ];
 
         return collect($rows)->map(fn (array $attributes) => Subscription::create([

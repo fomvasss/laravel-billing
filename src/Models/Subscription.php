@@ -4,18 +4,24 @@ declare(strict_types=1);
 
 namespace Fomvasss\Billing\Models;
 
+use Fomvasss\Billing\BillingManager;
 use Fomvasss\Billing\Concerns\DerivesTenantId;
+use Fomvasss\Billing\Contracts\ManagesProviderSubscriptions;
+use Fomvasss\Billing\DTO\SubscriptionSnapshot;
 use Fomvasss\Billing\Enums\Interval;
 use Fomvasss\Billing\Enums\PricingType;
 use Fomvasss\Billing\Enums\SubscriptionStatus;
 use Fomvasss\Billing\Events\SubscriptionAccessSuspended;
 use Fomvasss\Billing\Events\SubscriptionCancelled;
+use Fomvasss\Billing\Events\SubscriptionCreated;
 use Fomvasss\Billing\Events\SubscriptionPaused;
 use Fomvasss\Billing\Events\SubscriptionQuotaReset;
 use Fomvasss\Billing\Events\SubscriptionPaymentFailed;
 use Fomvasss\Billing\Events\SubscriptionRenewed;
 use Fomvasss\Billing\Events\SubscriptionResumed;
 use Fomvasss\Billing\Events\UsageLimitReached;
+use Fomvasss\Billing\Exceptions\BillingException;
+use Fomvasss\Billing\Exceptions\NotSupportedException;
 use Fomvasss\Billing\Support\Intervals;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
@@ -51,6 +57,7 @@ class Subscription extends Model
             'grace_ends_at' => 'datetime',
             'next_retry_at' => 'datetime',
             'recurring_attempts' => 'integer',
+            'provider_synced_at' => 'datetime',
         ];
     }
 
@@ -130,13 +137,20 @@ class Subscription extends Model
     }
 
     /**
-     * Local fact only — the gateway is never called (see greespi's paused status in the package
-     * plan). A gateway-side pause (Stripe pause_collection) is a separate, not-yet-needed contract.
-     * $until schedules an automatic resume() via billing:expire-pauses; omit for an indefinite
-     * pause that only an explicit resume() ends.
+     * A package-managed subscription pauses locally — the gateway is never called (see greespi's
+     * paused status in the package plan). $until schedules an automatic resume() via
+     * billing:expire-pauses; omit for an indefinite pause that only an explicit resume() ends.
+     * A provider-managed one asks the provider, which may pause right away or only at the end of
+     * the period — the row takes whatever state the provider reports back.
      */
     public function pause(?\DateTimeInterface $until = null): void
     {
+        if ($this->isProviderManaged()) {
+            $this->applyProviderSnapshot($this->providerDriver()->pause($this, $until));
+
+            return;
+        }
+
         if ($this->status === SubscriptionStatus::Paused) {
             return;
         }
@@ -148,6 +162,12 @@ class Subscription extends Model
 
     public function resume(): void
     {
+        if ($this->isProviderManaged()) {
+            $this->applyProviderSnapshot($this->providerDriver()->resume($this));
+
+            return;
+        }
+
         if ($this->status !== SubscriptionStatus::Paused) {
             return;
         }
@@ -158,12 +178,18 @@ class Subscription extends Model
     }
 
     /**
-     * Local status change only — none of the 5 built-in drivers implement SubscriptionGatewayContract
-     * (see "Кроки реалізації" п.5), so there's no native-subscription gateway to delegate to yet.
-     * When one is added, this is the natural place to check `$this->price->plan` etc. and call it.
+     * A package-managed subscription cancels locally: at period end it only schedules cancels_at,
+     * which billing:process-recurring-charges finalizes. A provider-managed one is cancelled by the
+     * provider — cancelling only our row would leave the provider billing the customer.
      */
     public function cancel(bool $atPeriodEnd = true): void
     {
+        if ($this->isProviderManaged()) {
+            $this->applyProviderSnapshot($this->providerDriver()->cancel($this, $atPeriodEnd));
+
+            return;
+        }
+
         if ($atPeriodEnd && $this->current_period_ends_at !== null) {
             $this->update(['cancels_at' => $this->current_period_ends_at]);
 
@@ -195,10 +221,138 @@ class Subscription extends Model
         SubscriptionCancelled::dispatch($this);
     }
 
-    /** Local price swap — no proration, no gateway delegation (see cancel() docblock). */
+    /**
+     * A package-managed subscription swaps the price locally, with no proration — the next renewal
+     * simply charges the new one. A provider-managed one asks the provider, whose own proration
+     * rules apply.
+     */
     public function swapPlan(Price $newPrice): void
     {
+        if ($this->isProviderManaged()) {
+            $this->applyProviderSnapshot($this->providerDriver()->swapPrice($this, $newPrice));
+
+            return;
+        }
+
         $this->update(['price_id' => $newPrice->id]);
+    }
+
+    /**
+     * The one way a provider-managed subscription's state is written — from a webhook (through
+     * WebhookResultDispatcher, inside the dedup claim) or from the provider's answer to a forwarded
+     * cancel/pause/resume/swap. The events come from comparing the state before and after, so a
+     * driver never picks them, and a snapshot that changes nothing fires nothing:
+     *
+     * - the paid period moved forward on an active row → SubscriptionRenewed (previous status)
+     * - first link to the provider (external_id was null) → SubscriptionCreated
+     * - into canceled → SubscriptionCancelled
+     * - into past_due → SubscriptionPaymentFailed, plus SubscriptionAccessSuspended without grace access
+     * - into paused / out of paused → SubscriptionPaused / SubscriptionResumed
+     *
+     * The package's own dunning fields (recurring_attempts, grace_ends_at, next_retry_at) are never
+     * touched — the provider runs the dunning. Returns false, writing nothing, for a snapshot older
+     * than the last one applied: providers don't deliver in order.
+     */
+    public function applyProviderSnapshot(SubscriptionSnapshot $snapshot): bool
+    {
+        if ($snapshot->occurredAt !== null
+            && $this->provider_synced_at !== null
+            && Carbon::instance($snapshot->occurredAt)->lt($this->provider_synced_at)) {
+            return false;
+        }
+
+        $previousStatus = $this->status;
+        $wasLinked = $this->isProviderManaged();
+        $periodEnd = $snapshot->currentPeriodEndsAt !== null ? Carbon::instance($snapshot->currentPeriodEndsAt) : null;
+        $renewed = $snapshot->status === SubscriptionStatus::Active
+            && $periodEnd !== null
+            && ($this->current_period_ends_at === null || $periodEnd->gt($this->current_period_ends_at));
+
+        $this->fill([
+            'external_id' => $snapshot->externalId,
+            'status' => $snapshot->status,
+            'cancels_at' => $snapshot->cancelsAt,
+            'pause_ends_at' => $snapshot->pauseEndsAt,
+            'provider_synced_at' => $snapshot->occurredAt ?? now(),
+            ...($periodEnd !== null ? ['current_period_ends_at' => $periodEnd] : []),
+            ...($snapshot->trialEndsAt !== null ? ['trial_ends_at' => $snapshot->trialEndsAt] : []),
+            ...($snapshot->priceId !== null ? ['price_id' => $snapshot->priceId] : []),
+        ]);
+
+        if ($snapshot->priceId !== null) {
+            $this->unsetRelation('price');
+        }
+
+        if ($renewed) {
+            $this->fill(['period_notices_sent' => null, ...$this->freshAllowance()]);
+        }
+
+        $this->save();
+
+        if (! $wasLinked) {
+            SubscriptionCreated::dispatch($this);
+        }
+
+        if ($renewed) {
+            SubscriptionRenewed::dispatch($this, $previousStatus);
+        }
+
+        if ($this->status !== $previousStatus) {
+            match ($this->status) {
+                SubscriptionStatus::Canceled => SubscriptionCancelled::dispatch($this),
+                SubscriptionStatus::PastDue => $this->announceProviderPastDue(),
+                SubscriptionStatus::Paused => SubscriptionPaused::dispatch($this),
+                default => $previousStatus === SubscriptionStatus::Paused ? SubscriptionResumed::dispatch($this) : null,
+            };
+        }
+
+        return true;
+    }
+
+    private function announceProviderPastDue(): void
+    {
+        SubscriptionPaymentFailed::dispatch($this);
+
+        if (! $this->hasGraceAccess()) {
+            SubscriptionAccessSuspended::dispatch($this);
+        }
+    }
+
+    /**
+     * Usage and quota for a fresh paid period — shared by a package renewal and a provider one.
+     * Usage resets when it drove the bill (metered) OR when the price carries a period quota
+     * (included_units) — a fresh paid period means a fresh allowance either way. Quota-less
+     * flat/licensed usage is left alone: there it's just a counter the consumer owns. A price with
+     * its own quota cycle restarts it from now rather than continuing the old cadence: the
+     * allowance was just zeroed, so the next reset is a full cycle away.
+     */
+    private function freshAllowance(): array
+    {
+        $price = $this->price;
+
+        return [
+            'current_usage' => $price !== null && ($price->pricing_type === PricingType::Metered || $price->included_units !== null)
+                ? 0
+                : $this->current_usage,
+            'quota_period_ends_at' => $price?->hasOwnQuotaCycle()
+                ? $this->nextQuotaPeriodEnd(now())
+                : $this->quota_period_ends_at,
+        ];
+    }
+
+    private function providerDriver(): ManagesProviderSubscriptions
+    {
+        if ($this->gateway === null) {
+            throw new BillingException("Subscription {$this->id} is provider-managed but has no gateway.");
+        }
+
+        $driver = app(BillingManager::class)->driver($this->gateway, $this->billable?->tenantId());
+
+        if (! $driver instanceof ManagesProviderSubscriptions) {
+            throw NotSupportedException::forCapability($this->gateway, ManagesProviderSubscriptions::class);
+        }
+
+        return $driver;
     }
 
     /**
@@ -224,7 +378,6 @@ class Subscription extends Model
             return false;
         }
 
-        $price = $this->price;
         // Captured before the update — by dispatch time the row is `active` either way, and the
         // transition it came from is what tells a welcome apart from a renewal (same reason
         // recordRenewalFailure() captures $wasPastDue).
@@ -243,19 +396,7 @@ class Subscription extends Model
             'recurring_attempts' => 0,
             'grace_ends_at' => null,
             'next_retry_at' => null,
-            // usage resets on a successful renewal when it drove the bill (metered) OR when the
-            // price carries a period quota (included_units) — a fresh paid period means a fresh
-            // allowance either way. Quota-less flat/licensed usage is left alone: there it's just
-            // a counter the consumer owns.
-            'current_usage' => $price !== null && ($price->pricing_type === PricingType::Metered || $price->included_units !== null)
-                ? 0
-                : $this->current_usage,
-            // A fresh paid period restarts the quota cycle from now, rather than continuing the
-            // old cadence: the allowance was just zeroed above, so the next reset is a full cycle
-            // away no matter where the previous boundary happened to fall.
-            'quota_period_ends_at' => $price?->hasOwnQuotaCycle()
-                ? $this->nextQuotaPeriodEnd(now())
-                : $this->quota_period_ends_at,
+            ...$this->freshAllowance(),
         ]);
 
         SubscriptionRenewed::dispatch($this, $previousStatus);
@@ -426,11 +567,12 @@ class Subscription extends Model
     }
 
     /**
-     * The gateway owns this subscription's lifecycle (it was created through
-     * SubscriptionGatewayContract::createSubscription() and carries the provider's own reference
-     * in external_id) — renewals, dunning and trial conversion happen on the provider's side and
-     * reach this row only through webhooks. The package's own schedulers skip such rows entirely;
-     * external_id null = package-managed, the default and the only mode built-in drivers produce.
+     * The gateway owns this subscription's lifecycle (it was started through
+     * Billing::startSubscription() and carries the provider's own reference in external_id) —
+     * renewals, dunning and trial conversion happen on the provider's side and reach this row only
+     * through applyProviderSnapshot(). The package's schedulers and its payment-outcome listener
+     * skip such rows; cancel()/pause()/resume()/swapPlan() forward to the provider.
+     * external_id null = package-managed, the default.
      * Per-SUBSCRIPTION, not per-gateway, on purpose: Stripe supports both modes at once.
      */
     public function isProviderManaged(): bool
@@ -455,6 +597,12 @@ class Subscription extends Model
      * current_period_ends_at would blink every customer offline on every renewal. That boundary is
      * dunning's job — past_due plus the grace window.
      *
+     * A provider-managed subscription softens two more boundaries, both for the same reason: the
+     * provider decides, and tells us by webhook. The end of a trial is the provider converting it
+     * (a hard cut would blink the customer offline until that webhook lands), and past_due has no
+     * grace window of ours — the provider owns the dunning and cancels when it gives up, so access
+     * follows hasGraceAccess() alone for as long as the provider keeps it past_due.
+     *
      * scopeActive() is the same predicate in SQL and is covered by a parity test — change one,
      * change both.
      */
@@ -465,9 +613,9 @@ class Subscription extends Model
         }
 
         return match ($this->status) {
-            SubscriptionStatus::Trialing => $this->trial_ends_at === null || $this->trial_ends_at->isFuture(),
+            SubscriptionStatus::Trialing => $this->isProviderManaged() || $this->trial_ends_at === null || $this->trial_ends_at->isFuture(),
             SubscriptionStatus::Active => true,
-            SubscriptionStatus::PastDue => $this->hasGraceAccess() && $this->onGracePeriod(),
+            SubscriptionStatus::PastDue => $this->hasGraceAccess() && ($this->isProviderManaged() || $this->onGracePeriod()),
             // A scheduled resume that is already due: expire-pauses will flip the status on its
             // next run, but the customer's own instruction took effect at pause_ends_at.
             SubscriptionStatus::Paused => $this->pause_ends_at !== null && $this->pause_ends_at->isPast(),
@@ -518,7 +666,7 @@ class Subscription extends Model
             ->where(function (Builder $query) use ($graceAccessDefault) {
                 $query->where(fn (Builder $query) => $query
                     ->where('status', SubscriptionStatus::Trialing)
-                    ->where(fn (Builder $query) => $query->whereNull('trial_ends_at')->orWhere('trial_ends_at', '>', now())))
+                    ->where(fn (Builder $query) => $query->whereNull('trial_ends_at')->orWhere('trial_ends_at', '>', now())->orWhereNotNull('external_id')))
                     ->orWhere('status', SubscriptionStatus::Active)
                     ->orWhere(fn (Builder $query) => $query
                         ->where('status', SubscriptionStatus::Paused)
@@ -526,7 +674,7 @@ class Subscription extends Model
                         ->where('pause_ends_at', '<=', now()))
                     ->orWhere(fn (Builder $query) => $query
                         ->where('status', SubscriptionStatus::PastDue)
-                        ->where('grace_ends_at', '>', now())
+                        ->where(fn (Builder $query) => $query->where('grace_ends_at', '>', now())->orWhereNotNull('external_id'))
                         ->whereHas('price', function (Builder $priceQuery) use ($graceAccessDefault) {
                             $priceQuery->where('grace_access', true);
 

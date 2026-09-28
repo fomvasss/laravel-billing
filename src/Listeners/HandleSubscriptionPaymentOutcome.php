@@ -23,7 +23,9 @@ class HandleSubscriptionPaymentOutcome
     {
         $subscription = $event->payment->payable;
 
-        if (! $subscription instanceof Subscription) {
+        // A provider-managed subscription's period comes from the provider (applyProviderSnapshot()),
+        // not from our own interval — advancing it here would put our dates on top of theirs.
+        if (! $subscription instanceof Subscription || $subscription->isProviderManaged()) {
             return;
         }
 
@@ -51,7 +53,9 @@ class HandleSubscriptionPaymentOutcome
 
     protected function recordFailure(mixed $subscription): void
     {
-        if (! $subscription instanceof Subscription) {
+        // The provider runs its own dunning for a subscription it manages; ours on top would cancel
+        // it locally while the provider is still retrying.
+        if (! $subscription instanceof Subscription || $subscription->isProviderManaged()) {
             return;
         }
 

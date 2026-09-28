@@ -37,6 +37,7 @@ final class WebhookResultDispatcher
                 default => null,
             },
             WebhookEventType::Subscription => match ($result->status) {
+                'synced' => $result->subscription->applyProviderSnapshot($result->snapshot),
                 'created' => SubscriptionCreated::dispatch($result->subscription),
                 'renewed' => SubscriptionRenewed::dispatch($result->subscription),
                 'payment_failed' => SubscriptionPaymentFailed::dispatch($result->subscription),

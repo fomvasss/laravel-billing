@@ -7,8 +7,10 @@ namespace Fomvasss\Billing;
 use Fomvasss\Billing\Contracts\CredentialResolverContract;
 use Fomvasss\Billing\Contracts\CurrencyConverterContract;
 use Fomvasss\Billing\Contracts\HasReceiptItems;
+use Fomvasss\Billing\Contracts\ManagesProviderSubscriptions;
 use Fomvasss\Billing\Contracts\PaymentGatewayContract;
 use Fomvasss\Billing\Contracts\RefundsPayments;
+use Fomvasss\Billing\Contracts\StartsProviderSubscriptions;
 use Fomvasss\Billing\Contracts\SubscriptionGatewayContract;
 use Fomvasss\Billing\Contracts\TokenizesPaymentMethod;
 use Fomvasss\Billing\DTO\ChargeOptions;
@@ -24,6 +26,7 @@ use Fomvasss\Billing\Exceptions\NotSupportedException;
 use Fomvasss\Billing\Models\Payment;
 use Fomvasss\Billing\Models\PaymentMethod;
 use Fomvasss\Billing\Models\Price;
+use Fomvasss\Billing\Models\Subscription;
 use Fomvasss\Billing\Support\DefaultWebhookResponder;
 use Fomvasss\Billing\Support\Money;
 use Fomvasss\Billing\Support\WebhookResultDispatcher;
@@ -127,7 +130,9 @@ class BillingManager
             'webhook_requires_dashboard_setup' => $class::requiresDashboardWebhook(),
             'capabilities' => [
                 'refunds' => is_subclass_of($class, RefundsPayments::class),
-                'subscriptions' => is_subclass_of($class, SubscriptionGatewayContract::class),
+                'subscriptions' => is_subclass_of($class, StartsProviderSubscriptions::class)
+                    || is_subclass_of($class, ManagesProviderSubscriptions::class)
+                    || is_subclass_of($class, SubscriptionGatewayContract::class),
                 'tokenization' => is_subclass_of($class, TokenizesPaymentMethod::class),
                 'health' => is_subclass_of($class, \Fomvasss\Billing\Contracts\ChecksGatewayHealth::class),
             ],
@@ -160,6 +165,34 @@ class BillingManager
      */
     public function charge(Payment $payment, ChargeOptions $options = new ChargeOptions()): PaymentResult
     {
+        return $this->openCheckout($payment, $options, fn (PaymentGatewayContract $driver, ChargeOptions $options) => $driver->charge($payment, $options));
+    }
+
+    /**
+     * charge()'s twin for the first payment of a provider-managed subscription: the same checkout
+     * orchestration, but the driver asks the provider to start its own subscription (see
+     * StartsProviderSubscriptions). $payment->payable must be the Subscription row, created
+     * `incomplete` with its gateway set; it becomes provider-managed once the driver's webhook links
+     * it. A package-managed subscription's first payment still goes through charge().
+     */
+    public function startSubscription(Payment $payment, ChargeOptions $options = new ChargeOptions()): PaymentResult
+    {
+        if (! $payment->payable instanceof Subscription) {
+            throw new BillingException("Payment {$payment->id} is not for a subscription — startSubscription() needs the Subscription as its payable.");
+        }
+
+        return $this->openCheckout($payment, $options, function (PaymentGatewayContract $driver, ChargeOptions $options) use ($payment) {
+            if (! $driver instanceof StartsProviderSubscriptions) {
+                throw NotSupportedException::forCapability($payment->gateway, StartsProviderSubscriptions::class);
+            }
+
+            return $driver->startSubscription($payment, $options);
+        });
+    }
+
+    /** @param  \Closure(PaymentGatewayContract, ChargeOptions): PaymentResult  $issue */
+    protected function openCheckout(Payment $payment, ChargeOptions $options, \Closure $issue): PaymentResult
+    {
         $driver = $this->driver($payment->gateway, $payment->billable?->tenantId());
 
         if ($options->receiptItems === [] && $payment->payable instanceof HasReceiptItems) {
@@ -169,7 +202,7 @@ class BillingManager
         $this->assertReceiptItemsMatchAmount($payment, $options);
         $options = $this->withTenantHint($payment, $options);
 
-        $result = $driver->charge($payment, $options);
+        $result = $issue($driver, $options);
 
         $url = $result->url;
         $urlExpiresAt = $result->expiresAt;

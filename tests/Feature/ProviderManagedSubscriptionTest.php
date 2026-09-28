@@ -75,18 +75,29 @@ class ProviderManagedSubscriptionTest extends TestCase
         $this->assertSame(SubscriptionStatus::Ended, $local->fresh()->status);
     }
 
-    public function test_trial_notices_are_not_sent_for_provider_managed_trials(): void
+    public function test_trial_notices_skip_only_providers_that_send_their_own(): void
     {
         Event::fake([TrialWillEnd::class]);
         config(['billing.trial_ending_notices' => ['3 days']]);
+        $this->app->make(\Fomvasss\Billing\BillingManager::class)
+            ->extend('silent_provider', \Fomvasss\Billing\Tests\Fixtures\FakeProviderGateway::class)
+            ->extend('reporting_provider', \Fomvasss\Billing\Tests\Fixtures\ReportingProviderGateway::class);
 
-        $provider = $this->trialSubscription(externalId: 'sub_stripe_1', endsAt: now()->addDay());
+        $silent = $this->trialSubscription(externalId: 'sub_1', endsAt: now()->addDay());
+        $silent->update(['gateway' => 'silent_provider']);
+        $reporting = $this->trialSubscription(externalId: 'sub_2', endsAt: now()->addDay());
+        $reporting->update(['gateway' => 'reporting_provider']);
         $local = $this->trialSubscription(endsAt: now()->addDay());
 
         $this->artisan('billing:expire-trials')->assertSuccessful();
 
-        Event::assertDispatchedTimes(TrialWillEnd::class, 1);
+        // A provider with no trial-ending event of its own (Paddle) gets the package's reminder,
+        // computed from the mirrored trial_ends_at; one that sends its own (Stripe) doesn't — the
+        // driver already maps that event to TrialWillEnd.
+        Event::assertDispatchedTimes(TrialWillEnd::class, 2);
         Event::assertDispatched(TrialWillEnd::class, fn (TrialWillEnd $event) => $event->subscription->is($local));
+        Event::assertDispatched(TrialWillEnd::class, fn (TrialWillEnd $event) => $event->subscription->is($silent));
+        $this->assertSame(SubscriptionStatus::Trialing, $silent->fresh()->status, 'a reminder, never a status change');
     }
 
     public function test_is_provider_managed_reads_external_id(): void

@@ -73,20 +73,83 @@ class PaddleSubscriptionTest extends TestCase
 
     public function test_what_a_paddle_subscription_cannot_bill_is_refused_up_front(): void
     {
-        $this->price->update(['trial_days' => 7]);
-        [, $payment] = $this->checkout();
-
-        try {
-            Billing::startSubscription($payment);
-            $this->fail('A trial checkout completes at zero — the payment would read paid for a sum nobody paid.');
-        } catch (NotSupportedException) {
-        }
-
-        $this->price->update(['trial_days' => 0, 'interval' => 'hour']);
+        $this->price->update(['interval' => 'hour']);
         [, $payment] = $this->checkout();
 
         $this->expectException(NotSupportedException::class);
         Billing::startSubscription($payment);
+    }
+
+    public function test_a_trial_checkout_must_record_the_zero_it_charges(): void
+    {
+        $this->price->update(['trial_days' => 7]);
+        [, $payment] = $this->checkout();
+
+        $this->expectException(\Fomvasss\Billing\Exceptions\BillingException::class);
+        $this->expectExceptionMessage('amount 0');
+        Billing::startSubscription($payment);
+    }
+
+    public function test_a_trial_starts_with_the_card_and_charges_the_full_price_only_at_conversion(): void
+    {
+        Event::fake([SubscriptionCreated::class, SubscriptionRenewed::class, PaymentSucceeded::class]);
+        $this->price->update(['trial_days' => 7]);
+        [$subscription, $payment] = $this->checkout(['amount' => 0]);
+        $trialEnd = now()->addDays(7)->startOfSecond();
+
+        Http::fake([
+            'https://sandbox-api.paddle.com/transactions' => Http::response(['data' => ['id' => 'txn_1', 'checkout' => ['url' => 'https://example.test/pay?_ptxn=txn_1']]]),
+            'https://sandbox-api.paddle.com/subscriptions/sub_1' => Http::sequence()
+                ->push(['data' => [...$this->entity($subscription), 'status' => 'trialing', 'current_billing_period' => ['starts_at' => now()->toIso8601String(), 'ends_at' => $trialEnd->toIso8601String()]]])
+                ->push(['data' => $this->entity($subscription)]),
+        ]);
+
+        Billing::startSubscription($payment);
+
+        // The recurring price is the Price's own, with the trial on it — not the zero payment.
+        Http::assertSent(fn ($request) => $request['items'][0]['price']['trial_period'] === ['interval' => 'day', 'frequency' => 7]
+            && $request['items'][0]['price']['unit_price'] === ['amount' => '2900', 'currency_code' => 'USD']);
+
+        // The checkout completes at zero: the card is on file, the trial runs.
+        $this->post_('transaction.completed', [
+            ...$this->transaction($payment, $subscription, 'txn_1', $trialEnd),
+            'items' => [['quantity' => 1, 'price' => ['unit_price' => ['amount' => '2900', 'currency_code' => 'USD'], 'trial_period' => ['interval' => 'day', 'frequency' => 7]]]],
+            'details' => ['totals' => ['grand_total' => '0', 'fee' => '0']],
+        ]);
+
+        $fresh = $subscription->fresh();
+        $this->assertSame(PaymentStatus::Paid, $payment->fresh()->status);
+        $this->assertSame(SubscriptionStatus::Trialing, $fresh->status);
+        $this->assertTrue($fresh->trial_ends_at->equalTo($trialEnd));
+        $this->assertNull($fresh->current_period_ends_at, 'the trial is not a paid period');
+        $this->assertTrue($fresh->isActive());
+        Event::assertDispatchedTimes(SubscriptionCreated::class, 1);
+        Event::assertNotDispatched(SubscriptionRenewed::class);
+
+        // Trial over: Paddle charges the full price on its own.
+        $periodEnd = $trialEnd->copy()->addMonth();
+        $this->post_('transaction.completed', [...$this->transaction($payment, $subscription, 'txn_2', $periodEnd), 'origin' => 'subscription_recurring'], occurredAt: now()->addSecond());
+
+        $conversion = Payment::query()->where('external_id', 'txn_2')->first();
+        $this->assertSame(2900, $conversion->amount);
+        $this->assertSame(SubscriptionStatus::Active, $subscription->fresh()->status);
+        $this->assertTrue($subscription->fresh()->current_period_ends_at->equalTo($periodEnd));
+        Event::assertDispatched(SubscriptionRenewed::class, fn (SubscriptionRenewed $e) => $e->previousStatus === SubscriptionStatus::Trialing);
+    }
+
+    public function test_a_plan_swap_during_the_trial_bills_nothing(): void
+    {
+        $subscription = $this->linked();
+        $newPrice = Price::create(['plan_id' => $this->price->plan_id, 'currency' => 'USD', 'amount' => 4900, 'pricing_type' => 'flat', 'interval' => 'month', 'interval_count' => 1]);
+
+        Http::fake(['https://sandbox-api.paddle.com/subscriptions/sub_1' => Http::sequence()
+            ->push(['data' => [...$this->entity($subscription), 'status' => 'trialing']])
+            ->push(['data' => [...$this->entity($subscription), 'status' => 'trialing']]),
+        ]);
+
+        $subscription->swapPlan($newPrice);
+
+        Http::assertSent(fn ($request) => $request->method() === 'PATCH' && $request['proration_billing_mode'] === 'do_not_bill');
     }
 
     public function test_the_completed_checkout_pays_the_first_payment_and_links_the_subscription_before_the_listener_sees_it(): void

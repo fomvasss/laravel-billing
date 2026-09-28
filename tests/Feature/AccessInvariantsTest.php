@@ -44,10 +44,14 @@ class AccessInvariantsTest extends TestCase
             );
         }
 
-        // Stronger for a provider-managed row: the schedulers must not write to it at all — its
-        // state belongs to the provider and reaches the row only through applyProviderSnapshot().
+        // Stronger for a provider-managed row: the schedulers must not change its state at all — it
+        // belongs to the provider and reaches the row only through applyProviderSnapshot(). The one
+        // column they may touch is the local reminder marker (trial notices for a provider that
+        // sends none of its own).
+        $state = fn (array $attributes) => array_diff_key($attributes, array_flip(['trial_notices_sent', 'updated_at']));
+
         foreach ($providerRows as $label => $attributes) {
-            $this->assertSame($attributes, $subscriptions[$label]->fresh()->getAttributes(), "A scheduler wrote to the [{$label}] subscription.");
+            $this->assertSame($state($attributes), $state($subscriptions[$label]->fresh()->getAttributes()), "A scheduler changed the [{$label}] subscription.");
         }
     }
 
@@ -134,6 +138,7 @@ class AccessInvariantsTest extends TestCase
             'paused, resume due tomorrow' => ['status' => SubscriptionStatus::Paused, 'pause_ends_at' => now()->addDay()],
             'canceled' => ['status' => SubscriptionStatus::Canceled],
             'ended' => ['status' => SubscriptionStatus::Ended],
+            'provider-managed, trialing, ends tomorrow' => ['gateway' => 'stripe', 'external_id' => 'sub_trial_soon', 'status' => SubscriptionStatus::Trialing, 'trial_ends_at' => now()->addDay()],
             'provider-managed, trialing, lapsed an hour ago' => ['gateway' => 'stripe', 'external_id' => 'sub_trial', 'status' => SubscriptionStatus::Trialing, 'trial_ends_at' => now()->subHour()],
             'provider-managed, active, period ended an hour ago' => ['gateway' => 'stripe', 'external_id' => 'sub_active', 'status' => SubscriptionStatus::Active, 'current_period_ends_at' => now()->subHour()],
             'provider-managed, past_due, no grace window' => ['gateway' => 'stripe', 'external_id' => 'sub_past_due', 'status' => SubscriptionStatus::PastDue],

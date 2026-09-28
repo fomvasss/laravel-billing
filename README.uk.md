@@ -575,7 +575,7 @@ php artisan billing:paddle-register-webhook   # створює або оновл
 - **Checkout → Checkout settings → Default payment link** — постав `https://твій-домен/billing/paddle/checkout`. Без нього Paddle не створює жодної транзакції, і саме туди він шле клієнтів оновлювати картку підписки.
 - **Checkout → Website approval** — додай свій домен і дочекайся схвалення перед запуском на проді.
 
-**Підписки на Paddle — провайдер-керовані** (див. «Хто веде продовження» нижче) — Paddle не списує зі збереженої картки поза власною підпискою, тож пакето-керована модель там недоступна. Старт — `Billing::startSubscription($payment)`; Paddle сам продовжує, ретраїть і скасовує, кожне продовження (і кожна доплата за зміну тарифу) приходить окремим рядком `Payment` з підпискою як payable, а `cancel()`/`pause()`/`resume()`/`swapPlan()` ідуть у Paddle. Пауза діє з кінця оплаченого періоду; `PADDLE_PRORATION_BILLING_MODE` (за замовчуванням `prorated_immediately`) визначає, скільки коштує зміна тарифу, а доплату, меншу за мінімум Paddle (29.00 UAH, 0.70 USD), Paddle відхиляє — тоді `swapPlan()` кидає `BillingException` з причиною від Paddle. Поки ні: ціни з тріалом (відхиляються одразу), metered-ціни й інтервали minute/hour (Paddle рахує днями, тижнями, місяцями або роками).
+**Підписки на Paddle — провайдер-керовані** (див. «Хто веде продовження» нижче) — Paddle не списує зі збереженої картки поза власною підпискою, тож пакето-керована модель там недоступна. Старт — `Billing::startSubscription($payment)`; Paddle сам продовжує, ретраїть і скасовує, кожне продовження (і кожна доплата за зміну тарифу) приходить окремим рядком `Payment` з підпискою як payable, а `cancel()`/`pause()`/`resume()`/`swapPlan()` ідуть у Paddle. Пауза діє з кінця оплаченого періоду; `PADDLE_PRORATION_BILLING_MODE` (за замовчуванням `prorated_immediately`) визначає, скільки коштує зміна тарифу, а доплату, меншу за мінімум Paddle (29.00 UAH, 0.70 USD), Paddle відхиляє — тоді `swapPlan()` кидає `BillingException` з причиною від Paddle. Ціна з `trial_days` запускає безкоштовний тріал із карткою: перший платіж створюй з `amount` 0 (каса зберігає картку і нічого не списує), а повну суму Paddle спише наприкінці тріалу. Поки ні: metered-ціни й інтервали minute/hour (Paddle рахує днями, тижнями, місяцями або роками).
 
 Одного default payment link на акаунт буває замало: кілька сайтів одного бізнесу або staging поруч із продом на тому самому sandbox-акаунті. `PADDLE_CHECKOUT_URL` (кред `checkout_url`) шле кожну транзакцію на власну `https://той-сайт/billing/paddle/checkout`. Її домен спершу має пройти Website approval — Paddle відхиляє несхвалений навіть у sandbox — тому це опція, а не поведінка за замовчуванням. Default payment link лишається обов'язковим у будь-якому разі.
 
@@ -1284,6 +1284,61 @@ $oldPrice->update(['is_active' => false]); // сховати від нових �
 ```php
 Subscription::where('price_id', $oldPrice->id)->each(fn ($s) => $s->swapPlan($newPrice));
 ```
+
+### 9. Підписка через Paddle — продовжує провайдер
+
+Paddle не списує зі збереженої картки поза власною підпискою, тож Paddle-підписка **провайдер-керована**: Paddle сам продовжує, ретраїть і скасовує, а рядок віддзеркалює те, що він повідомляє (див. «Хто веде продовження» вище). Налаштування на боці Paddle — одноразовий список у «Налаштування вебхуків»: ключі, default payment link, `billing:paddle-register-webhook`, схвалення домену для live. У каталог Paddle нічого не заводиться: ціна їде inline у кожній транзакції.
+
+```php
+$price = $plan->prices()->create([
+    'gateway' => 'paddle',
+    'currency' => 'USD',
+    'amount' => 2900, // $29.00/міс
+    'pricing_type' => PricingType::Flat,
+    'interval' => Interval::Month, // day, week, month або year — коротших циклів у Paddle нема
+    'interval_count' => 1,
+]);
+
+$subscription = Subscription::create([
+    'status' => SubscriptionStatus::Incomplete,
+    'gateway' => 'paddle', // на відміну від пакето-керованої каси, провайдер відомий наперед
+    'price_id' => $price->id,
+    'billable_type' => $organization::class,
+    'billable_id' => $organization->id,
+]);
+
+$payment = Payment::create([
+    'gateway' => 'paddle',
+    'amount' => $price->amount,
+    'currency' => $price->currency,
+    'payable_type' => $subscription->getMorphClass(),
+    'payable_id' => $subscription->id,
+    'billable_type' => $organization::class,
+    'billable_id' => $organization->id,
+]);
+
+$result = Billing::startSubscription($payment); // не charge()
+
+return redirect($result->url);
+```
+
+Далі все вебхуками. Перший платіж стає `paid`, рядок отримує `sub_…` Paddle в `external_id`, стає `active` з оплаченим періодом від Paddle, фаєряться `SubscriptionCreated` + `SubscriptionRenewed` (`previousStatus` `Incomplete`). Кожне наступне продовження — **новий** рядок `Payment` з підпискою як payable (`initiation` `automatic`, комісія Paddle заповнена) і посуває `current_period_ends_at`; невдале переводить рядок у `past_due`, поки Paddle ретраїть (доступ за `grace_access`, власного grace-вікна нема), а коли Paddle здається — скасовує. Повертати будь-який із цих платежів — звичним `Billing::refund()`.
+
+Керування — звичний API, що пересилається в Paddle:
+
+```php
+$subscription->cancel();                   // у кінці оплаченого періоду
+$subscription->cancel(atPeriodEnd: false); // одразу
+$subscription->pause(now()->addMonth());   // з кінця оплаченого періоду, відновиться сама
+$subscription->resume();                   // відновити зараз (новий період списується) або зняти заплановану паузу
+$subscription->swapPlan($otherPrice);      // доплату визначає PADDLE_PRORATION_BILLING_MODE
+```
+
+- **Paddle може відмовити в зміні** — доплата менша за його мінімум (0.70 USD, 29.00 UAH), будь-яка зміна в `past_due`, зміна за 30 хвилин до продовження. Прилітає `BillingException` з кодом Paddle — покажи його тому, хто натиснув.
+- **Клієнт може скасувати на боці Paddle** — посилання в листах Paddle, його клієнтський портал. Рядок підтягнеться, `SubscriptionCancelled` фаєриться так само.
+- **Грандфазеринг (рецепт 8) тут інший**: `swapPlan()` іде в Paddle і списує за режимом proration, а не мовчки діє з наступного продовження — постав `do_not_bill` у `PADDLE_PRORATION_BILLING_MODE`, якщо потрібна саме така поведінка.
+- **Тріали**: дай ціні `trial_days` і створи перший платіж з `amount` 0 — каса Paddle зберігає картку і сьогодні нічого не списує. Рядок `trialing` з `trial_ends_at` від Paddle (оплаченого періоду ще нема); коли тріал закінчується, Paddle списує повну суму — вона приходить новим `Payment` і `SubscriptionRenewed` з `previousStatus` `Trialing`. Вебхука «тріал скоро скінчиться» Paddle не шле, тож `billing:expire-trials` фаєрить `TrialWillEnd` з віддзеркаленої дати (лише нагадування — статус лишається за Paddle). Зміна тарифу під час тріалу нічого не списує (`do_not_bill` — єдиний режим, який Paddle тоді дозволяє). На відміну від пакето-керованого тріалу, без картки не почати: безкарткові тріали в Paddle ще в early access.
+- **Поки не підтримано**: metered-ціни, інтервали minute/hour.
 
 ## Гроші
 

@@ -591,7 +591,7 @@ Paddle also needs its **checkout page** set up, because it has no hosted checkou
 - **Checkout → Checkout settings → Default payment link** — set it to `https://your-domain/billing/paddle/checkout`. Paddle refuses to create any transaction without one, and sends customers there to update a subscription's card too.
 - **Checkout → Website approval** — add your domain and wait for approval before going live.
 
-**Subscriptions on Paddle are provider-managed** (see "Who runs the renewal" below) — Paddle can't charge a saved card outside its own subscription, so the package-managed model isn't available there. Start one with `Billing::startSubscription($payment)`; Paddle renews, retries and cancels on its own, every renewal (and every prorated plan change) arrives as its own `Payment` row with the subscription as payable, and `cancel()`/`pause()`/`resume()`/`swapPlan()` go to Paddle. Pausing takes effect at the end of the paid period; `PADDLE_PRORATION_BILLING_MODE` (default `prorated_immediately`) decides what a plan change costs, and Paddle refuses a prorated charge under its minimum (29.00 UAH, 0.70 USD) — `swapPlan()` then throws a `BillingException` with Paddle's reason. Not yet: prices with a trial (refused up front), metered prices, and minute/hour intervals (Paddle bills by day, week, month or year).
+**Subscriptions on Paddle are provider-managed** (see "Who runs the renewal" below) — Paddle can't charge a saved card outside its own subscription, so the package-managed model isn't available there. Start one with `Billing::startSubscription($payment)`; Paddle renews, retries and cancels on its own, every renewal (and every prorated plan change) arrives as its own `Payment` row with the subscription as payable, and `cancel()`/`pause()`/`resume()`/`swapPlan()` go to Paddle. Pausing takes effect at the end of the paid period; `PADDLE_PRORATION_BILLING_MODE` (default `prorated_immediately`) decides what a plan change costs, and Paddle refuses a prorated charge under its minimum (29.00 UAH, 0.70 USD) — `swapPlan()` then throws a `BillingException` with Paddle's reason. A price with `trial_days` starts a card-required free trial: create the first payment with `amount` 0 (the checkout stores the card and charges nothing), and Paddle bills the full price when the trial ends. Not yet: metered prices and minute/hour intervals (Paddle bills by day, week, month or year).
 
 One default payment link per account can be too few: several sites of one business, or staging next to production on the same sandbox account. `PADDLE_CHECKOUT_URL` (the `checkout_url` credential) sends each transaction to that site's own `https://that-site/billing/paddle/checkout` instead. Its domain must pass Website approval first — Paddle refuses an unapproved one even in the sandbox — which is why it's opt-in. The default payment link stays required either way.
 
@@ -1301,6 +1301,61 @@ Existing subscriptions keep their old `price_id`, so `billing:process-recurring-
 ```php
 Subscription::where('price_id', $oldPrice->id)->each(fn ($s) => $s->swapPlan($newPrice));
 ```
+
+### 9. Subscribe with Paddle — the provider runs the renewals
+
+Paddle can't charge a saved card outside its own subscription, so a Paddle subscription is **provider-managed**: Paddle renews, retries and cancels, the row mirrors what it reports (see "Who runs the renewal" above). Setup on Paddle's side is the one-time list under "Setting up webhooks" — keys, the default payment link, `billing:paddle-register-webhook`, domain approval for live. Nothing goes into Paddle's catalog: the price travels inline with every transaction.
+
+```php
+$price = $plan->prices()->create([
+    'gateway' => 'paddle',
+    'currency' => 'USD',
+    'amount' => 2900, // $29.00/month
+    'pricing_type' => PricingType::Flat,
+    'interval' => Interval::Month, // day, week, month or year — Paddle has no shorter cycles
+    'interval_count' => 1,
+]);
+
+$subscription = Subscription::create([
+    'status' => SubscriptionStatus::Incomplete,
+    'gateway' => 'paddle', // unlike a package-managed checkout, the provider is known up front
+    'price_id' => $price->id,
+    'billable_type' => $organization::class,
+    'billable_id' => $organization->id,
+]);
+
+$payment = Payment::create([
+    'gateway' => 'paddle',
+    'amount' => $price->amount,
+    'currency' => $price->currency,
+    'payable_type' => $subscription->getMorphClass(),
+    'payable_id' => $subscription->id,
+    'billable_type' => $organization::class,
+    'billable_id' => $organization->id,
+]);
+
+$result = Billing::startSubscription($payment); // not charge()
+
+return redirect($result->url);
+```
+
+From here it's webhooks. The first payment turns `paid`, the row gets Paddle's `sub_…` id in `external_id`, becomes `active` with Paddle's paid period, and `SubscriptionCreated` + `SubscriptionRenewed` (`previousStatus` `Incomplete`) fire. Every renewal after that is a **new** `Payment` row with the subscription as payable (`initiation` `automatic`, Paddle's fee filled in) and moves `current_period_ends_at`; a failed one puts the row `past_due` while Paddle retries (access follows `grace_access`, no grace window of ours), and Paddle cancels it when it gives up. Refund any of those payments with `Billing::refund()` as usual.
+
+Managing it is the usual API, forwarded to Paddle:
+
+```php
+$subscription->cancel();                   // at the end of the paid period
+$subscription->cancel(atPeriodEnd: false); // right away
+$subscription->pause(now()->addMonth());   // from the end of the paid period, resumes by itself
+$subscription->resume();                   // resumes now (a new period is billed), or drops a scheduled pause
+$subscription->swapPlan($otherPrice);      // PADDLE_PRORATION_BILLING_MODE decides the charge
+```
+
+- **Paddle may refuse a change** — a prorated charge under its minimum (0.70 USD, 29.00 UAH), any change while `past_due`, a change in the 30 minutes before a renewal. You get a `BillingException` with Paddle's code; show it to whoever clicked.
+- **The customer can cancel on Paddle's side** — the links in Paddle's emails, its customer portal. The row follows and `SubscriptionCancelled` fires all the same.
+- **Grandfathering (recipe 8) works differently here**: `swapPlan()` goes to Paddle and bills per the proration mode instead of silently applying from the next renewal — pass `do_not_bill` in `PADDLE_PRORATION_BILLING_MODE` if that's the behaviour you want.
+- **Trials**: give the price `trial_days` and create the first payment with `amount` 0 — Paddle's checkout stores the card and charges nothing today. The row is `trialing` with Paddle's `trial_ends_at` (no paid period yet); when the trial ends Paddle charges the full price, which arrives as a new `Payment` and `SubscriptionRenewed` with `previousStatus` `Trialing`. Paddle sends no "trial ends soon" webhook, so `billing:expire-trials` fires `TrialWillEnd` from the mirrored date (reminder only — the status stays Paddle's). A plan swap during the trial bills nothing (`do_not_bill` — the only mode Paddle allows then). Unlike a package-managed trial, there is no card-free way in: Paddle's cardless trials are still early access.
+- **Not supported yet**: metered prices, minute/hour intervals.
 
 ## Money
 

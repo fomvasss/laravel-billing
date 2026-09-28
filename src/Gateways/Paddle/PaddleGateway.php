@@ -77,19 +77,35 @@ class PaddleGateway extends AbstractGateway implements RefundsPayments, ChecksPa
         $subscription = $payment->payable;
         $price = $subscription->price;
         $qty = max(1, (int) $subscription->qty);
+        $trialDays = (int) ($price->trial_days ?? 0);
 
-        // A card-required trial completes its checkout transaction at zero; the first payment would
-        // then be marked paid for a sum nobody paid. Until that's modelled, no trials.
-        if (($price->trial_days ?? 0) > 0) {
-            throw new NotSupportedException("Paddle: subscriptions with a trial are not supported yet (price {$price->id}).");
+        if ($trialDays > 0) {
+            // A card-required free trial: the checkout stores the card and charges nothing today,
+            // Paddle bills the full price when the trial ends. The first payment records that zero —
+            // created at the full price it would read `paid` for money nobody paid. The recurring
+            // price itself comes from the Price, since the payment carries no amount to take it from.
+            if ($payment->amount !== 0) {
+                throw new BillingException("Paddle: price {$price->id} starts with a {$trialDays}-day trial, which charges nothing at checkout — create payment {$payment->id} with amount 0.");
+            }
+
+            $unit = Billing::resolveChargeAmount($price, $this->gatewayName)->money;
+            $unitAmount = $unit->amount;
+            $currency = $unit->currency;
+        } else {
+            if ($payment->amount % $qty !== 0) {
+                throw new BillingException("Paddle: payment {$payment->id} amount {$payment->amount} doesn't split evenly over quantity {$qty}.");
+            }
+
+            $unitAmount = intdiv($payment->amount, $qty);
+            $currency = $payment->currency;
         }
 
-        if ($payment->amount % $qty !== 0) {
-            throw new BillingException("Paddle: payment {$payment->id} amount {$payment->amount} doesn't split evenly over quantity {$qty}.");
+        if (strcasecmp($currency, $payment->currency) !== 0) {
+            throw new BillingException("Paddle: payment {$payment->id} is in {$payment->currency}, the subscription price resolves to {$currency}.");
         }
 
         return $this->openTransaction($payment, $options, [
-            $this->recurringItem($price, $qty, intdiv($payment->amount, $qty), $payment->currency, product: [
+            $this->recurringItem($price, $qty, $unitAmount, $currency, trialDays: $trialDays, product: [
                 'name' => Str::limit($options->description ?? $price->plan?->name ?? "Subscription {$subscription->id}", 197),
                 'tax_category' => $this->credentials['tax_category'] ?? 'standard',
             ]),
@@ -150,7 +166,11 @@ class PaddleGateway extends AbstractGateway implements RefundsPayments, ChecksPa
 
         return $this->snapshotOrFail($this->manage()->patch("/subscriptions/{$subscription->external_id}", [
             'items' => [$this->recurringItem($price, $qty, $amount->amount, $amount->currency, productId: $productId)],
-            'proration_billing_mode' => $this->credentials['proration_billing_mode'] ?? 'prorated_immediately',
+            // Paddle accepts nothing else on a trialing subscription — there is no paid period to
+            // prorate yet; the new price simply applies when the trial converts.
+            'proration_billing_mode' => ($current['status'] ?? null) === 'trialing'
+                ? 'do_not_bill'
+                : ($this->credentials['proration_billing_mode'] ?? 'prorated_immediately'),
         ]), $price->id);
     }
 
@@ -505,7 +525,11 @@ class PaddleGateway extends AbstractGateway implements RefundsPayments, ChecksPa
         }
 
         $entity = $this->http()->get("/subscriptions/{$transaction['subscription_id']}")->throw()->json('data');
-        $snapshot = $this->snapshotFrom($entity, $occurredAt, $transaction['billing_period']['ends_at'] ?? null);
+
+        // A zero transaction (a trial's checkout) pays for nothing: its billing_period is the trial,
+        // which must neither become current_period_ends_at nor fire SubscriptionRenewed.
+        $paid = (int) ($transaction['details']['totals']['grand_total'] ?? 0) > 0;
+        $snapshot = $this->snapshotFrom($entity, $occurredAt, $paid ? ($transaction['billing_period']['ends_at'] ?? null) : null);
 
         if ($snapshot !== null) {
             $subscription->applyProviderSnapshot($snapshot);
@@ -576,7 +600,7 @@ class PaddleGateway extends AbstractGateway implements RefundsPayments, ChecksPa
      * A recurring non-catalog price, with the quantity pinned like one-off items. $product for a new
      * subscription, $productId to stay on the product a subscription already bills.
      */
-    protected function recurringItem(Price $price, int $qty, int $unitAmount, string $currency, ?array $product = null, ?string $productId = null): array
+    protected function recurringItem(Price $price, int $qty, int $unitAmount, string $currency, int $trialDays = 0, ?array $product = null, ?string $productId = null): array
     {
         if ($price->pricing_type === PricingType::Metered) {
             throw new NotSupportedException('Paddle: metered prices can\'t be billed by a Paddle subscription — it charges a fixed amount per period.');
@@ -593,6 +617,7 @@ class PaddleGateway extends AbstractGateway implements RefundsPayments, ChecksPa
                 'description' => "Price {$price->id}",
                 'quantity' => ['minimum' => $qty, 'maximum' => $qty],
                 'billing_cycle' => ['interval' => $interval, 'frequency' => max(1, (int) $price->interval_count)],
+                'trial_period' => $trialDays > 0 ? ['interval' => 'day', 'frequency' => $trialDays] : null,
                 'unit_price' => ['amount' => (string) $unitAmount, 'currency_code' => $currency],
                 'product' => $product,
                 'product_id' => $productId,
@@ -752,6 +777,12 @@ class PaddleGateway extends AbstractGateway implements RefundsPayments, ChecksPa
 
         if (! is_array($items) || $items === []) {
             return null;
+        }
+
+        // A trial checkout is issued at the full price but charges nothing today — its payment is
+        // recorded at zero, and zero is what has to match.
+        if (collect($items)->contains(fn (array $item) => ! empty($item['price']['trial_period']))) {
+            return (int) ($transaction['details']['totals']['grand_total'] ?? 0);
         }
 
         return array_sum(array_map(

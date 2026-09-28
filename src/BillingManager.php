@@ -139,6 +139,17 @@ class BillingManager
         ]])->all();
     }
 
+    /**
+     * Names of the registered gateways whose driver implements $contract — for the package's own
+     * passes that treat gateways by capability without building a driver per row.
+     *
+     * @return list<string>
+     */
+    public function gatewaysImplementing(string $contract): array
+    {
+        return array_keys(array_filter($this->drivers, fn (string $class) => is_subclass_of($class, $contract)));
+    }
+
     public function gateway(string $name): ?array
     {
         return $this->gateways()[$name] ?? null;

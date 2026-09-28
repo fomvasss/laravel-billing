@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Fomvasss\Billing\Console;
 
+use Fomvasss\Billing\BillingManager;
+use Fomvasss\Billing\Contracts\ReportsTrialEnding;
 use Fomvasss\Billing\Enums\SubscriptionStatus;
 use Fomvasss\Billing\Events\TrialEnded;
 use Fomvasss\Billing\Events\TrialWillEnd;
@@ -83,13 +85,15 @@ class ExpireTrialsCommand extends Command
     protected function dispatchTrialEndingNotices(): void
     {
         $default = (array) config('billing.trial_ending_notices', ['3 days']);
+        $selfReporting = app(BillingManager::class)->gatewaysImplementing(ReportsTrialEnding::class);
 
         Subscription::query()
             ->with('price')
             ->where('status', SubscriptionStatus::Trialing)
-            // The provider sends its own trial-ending webhook (Stripe trial_will_end) which the
-            // driver maps to TrialWillEnd — local notices on top would double every reminder.
-            ->whereNull('external_id')
+            // A provider-managed trial gets these reminders too — only the marker is written, never
+            // the status — unless its provider sends its own trial-ending event (ReportsTrialEnding),
+            // which the driver already maps to TrialWillEnd: local notices on top would double it.
+            ->where(fn ($query) => $query->whereNull('external_id')->orWhereNotIn('gateway', $selfReporting))
             ->whereNotNull('trial_ends_at')
             ->where('trial_ends_at', '>', now())
             ->chunkById(200, function ($subscriptions) use ($default) {

@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [Unreleased]
+## [0.12.1] - 2026-09-28
 
 ### Fixed
 - An invoice asked for after its payment was paid (`issueInvoice()` on a paid payment) named the subscription's *next* period — by then the renewal had moved the subscription on. It now leaves the period out, like a receipt without an invoice; the invoice `auto_invoice` issues at payment time still names the period just paid for.

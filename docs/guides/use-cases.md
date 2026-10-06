@@ -1,8 +1,8 @@
 # Real-world use cases
 
-The README documents the package feature by feature; this document shows how the features compose into whole systems. Each case states the business problem, splits the design into *what the package owns* and *what your app owns*, and shows the glue code. The recurring theme is the package's core boundary: **it owns money movement (charges, webhooks, saved cards, renewal mechanics) and signals everything as events — your app owns products, entitlements and messaging.**
+The usage pages document the package feature by feature; this document shows how the features compose into whole systems. Each case states the business problem, splits the design into *what the package owns* and *what your app owns*, and shows the glue code. The recurring theme is the package's core boundary: **it owns money movement (charges, webhooks, saved cards, renewal mechanics) and signals everything as events — your app owns products, entitlements and messaging.**
 
-All examples assume the setup from the README (migrations published, a gateway configured, the schedule enabled).
+All examples assume the [installation](../installation.md) is done: migrations published, a gateway configured, the schedule enabled.
 
 ---
 
@@ -38,7 +38,7 @@ $subscription = Subscription::create([
 ]);
 ```
 
-Conversion is just a payment against the subscription (see the README's trial recipe): `Billing::charge($payment, new ChargeOptions(saveCard: true))` → the listener flips it to `active`, the card is saved, renewals run themselves. On every successful renewal the quota resets to a fresh 4,000 automatically (any price with `included_units` does).
+Conversion is just a payment against the subscription (see [Trials → Converting](../usage/trials.md#converting)): `Billing::charge($payment, new ChargeOptions(saveCard: true))` → the listener flips it to `active`, the card is saved, renewals run themselves. On every successful renewal the quota resets to a fresh 4,000 automatically (any price with `included_units` does).
 
 The trial's smaller quota is a one-line wrapper — a per-subscription quota override isn't package schema, it's your rule:
 
@@ -65,7 +65,7 @@ Schema::create('token_transactions', function (Blueprint $table) {
 });
 ```
 
-Selling a pack is the README's "one-off purchase" recipe — a plain `Payment` whose `meta` says what it is, credited by a listener:
+Selling a pack is a one-off purchase ([Payments → What a payment is for](../usage/payments.md#what-a-payment-is-for)) — a plain `Payment` whose `meta` says what it is, credited by a listener:
 
 ```php
 $payment = Payment::create([
@@ -134,7 +134,7 @@ class Order extends Model implements Payable, HasReceiptItems
 }
 ```
 
-`Billing::charge($payment)` picks the basket up automatically — Monobank/WayForPay/Stripe/Hutko fiscalize it as-is (LiqPay's catalog-id-based `rro_info` goes via `ChargeOptions::$raw`, see the README recipe). Fulfilment is a `PaymentSucceeded` listener.
+`Billing::charge($payment)` picks the basket up automatically — Monobank, WayForPay and Hutko fiscalize it as-is, Stripe and Paddle show it as line items (LiqPay's catalog-id-based `rro_info` goes via `ChargeOptions::$raw`, see [Fiscal receipt items](../usage/fiscal-receipts.md)). Fulfilment is a `PaymentSucceeded` listener.
 
 ### App side — expenses
 
@@ -187,7 +187,7 @@ $price = $plan->prices()->create([
 ```
 
 - **Charging cadence** — already covered: `billing:process-recurring-charges` runs every minute by default, so a period ending at 13:23 is charged at 13:23–13:24.
-- **Dunning** — the monthly defaults (3 retries, 24 h apart, 3-day grace) are absurd against a one-hour period; a failed hourly charge should end the rental:
+- **Dunning** — the monthly defaults (retries after 6 h, 24 h and 48 h, a 3-day grace) are absurd against a one-hour period; a failed hourly charge should end the rental:
 
 ```dotenv
 BILLING_MAX_RECURRING_ATTEMPTS=1   # first failure → canceled, no past_due limbo
@@ -204,6 +204,9 @@ Schedule::command('billing:process-recurring-charges')->everyMinute()->withoutOv
 Schedule::command('billing:reconcile-pending-payments')->everyFiveMinutes()->withoutOverlapping();
 Schedule::command('billing:expire-trials')->everyMinute();
 Schedule::command('billing:expire-pauses')->everyMinute();
+Schedule::command('billing:send-period-notices')->hourly();
+Schedule::command('billing:reset-usage-quotas')->hourly();
+Schedule::command('model:prune', ['--model' => [\Fomvasss\Billing\Webhooks\BillingWebhookCall::class]])->daily();
 ```
 
 - **Access is exact regardless of all this**: `isActive()` derives entitlement from the row's dates, so a first hour that ends at 13:23 stops granting access at 13:23 even if the scheduler is lagging or switched off — the commands above only write the status down and fire the events. The cadence buys you prompt notices and honest dashboards, not correct billing.
@@ -312,9 +315,9 @@ Everything downstream now agrees on one number: the checkout page shows the UAH 
 
 ### The gateway's cut
 
-When the paid callback arrives, the driver also parses the gateway's commission into `payments.fee` where the gateway reports it (Monobank, LiqPay, WayForPay, Hutko — Stripe keeps fees on a separate API object, so it stays `null` there). `null` means "unknown", never a guessed zero; `$payment->netAmount()` gives `amount - fee` once the fee is known.
+When the paid callback arrives, the driver also parses the gateway's commission into `payments.fee` where the gateway reports it (Monobank, LiqPay, WayForPay, Hutko, Paddle — Stripe keeps fees on a separate API object, so it stays `null` there). `null` means "unknown", never a guessed zero; `$payment->netAmount()` gives `amount - fee` once the fee is known.
 
-If the business prefers its *own* booked commission (a flat percent agreed with finance rather than the bank's exact cut), a `PaymentSucceeded` listener overwrites or fills the same column — it runs after the driver, so it can see what the bank reported and decide. The README's "Gateway fee and net amount" section has the listener.
+If the business prefers its *own* booked commission (a flat percent agreed with finance rather than the bank's exact cut), a `PaymentSucceeded` listener overwrites or fills the same column — it runs after the driver, so it can see what the bank reported and decide. [Payments → Gateway fee and net amount](../usage/payments.md#gateway-fee-and-net-amount) has the listener.
 
 ### Reporting back in USD
 
@@ -530,6 +533,6 @@ Event::listen(TrialWillEnd::class, function (TrialWillEnd $event) {
 
 **Sales/analytics signals with no payment weight.** `PaymentLinkOpened` (the permanent `billing.pay` link was visited) and `CheckoutReturned` (the browser came back from a gateway) prove nothing about money — which is exactly what makes them useful as behavioral signals: "opened the invoice twice this week, still unpaid" is a follow-up trigger, not a billing state.
 
-**A state journal.** The subscription row keeps only its current status; if you want the history ("was past_due from the 3rd to the 5th"), one listener over the transition events writes it — the README's "Statuses and history" section has the worked example.
+**A state journal.** The subscription row keeps only its current status; if you want the history ("was past_due from the 3rd to the 5th"), one listener over the transition events writes it — [Subscriptions → Statuses](../usage/subscriptions.md#statuses) has the worked example.
 
 The inverse rule matters just as much: never *act on money* from the UX-side signals. Fulfilment, entitlements, wallet credits — only from `PaymentSucceeded`/`PaymentFailed`/`PaymentRefunded`, which come exclusively through the verified webhook/reconciliation pipeline.

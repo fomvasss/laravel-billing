@@ -1,6 +1,6 @@
-# Testing webhooks by hand (Postman / curl / a tunnel)
+# Testing webhooks by hand
 
-Automated feature tests should use the `fake` gateway (see the README's Testing section) — it runs the exact real pipeline. This document is for *manual* poking: replaying gateway callbacks from Postman/curl, and receiving real ones locally through a tunnel.
+Automated feature tests should use the `fake` gateway (see [Testing](../usage/testing.md)) — it runs the exact real pipeline. This document is for *manual* poking: replaying gateway callbacks from Postman/curl, and receiving real ones locally through a tunnel.
 
 ## No signature needed: the `fake` gateway
 
@@ -15,12 +15,20 @@ Content-Type: application/json
 
 ## Real gateways: compute the signature with your own secret
 
-The HMAC gateways (LiqPay, WayForPay, Hutko, Stripe) verify against a secret you hold, so a valid request is fully forgeable *by you*. Stripe in a Postman pre-request script:
+The HMAC gateways (LiqPay, WayForPay, Hutko, Stripe, Paddle) verify against a secret you hold, so a valid request is fully forgeable *by you*. Stripe in a Postman pre-request script:
 
 ```javascript
 const t = Math.floor(Date.now() / 1000); // fresh — there's a 5-minute replay window
 const sig = CryptoJS.HmacSHA256(`${t}.${pm.request.body.raw}`, 'whsec_...').toString();
 pm.request.headers.add({key: 'Stripe-Signature', value: `t=${t},v1=${sig}`});
+```
+
+Paddle is the same idea with a colon and its own header:
+
+```javascript
+const ts = Math.floor(Date.now() / 1000);
+const h1 = CryptoJS.HmacSHA256(`${ts}:${pm.request.body.raw}`, 'pdl_ntfset_...').toString();
+pm.request.headers.add({key: 'Paddle-Signature', value: `ts=${ts};h1=${h1}`});
 ```
 
 The signature recipes for every gateway (LiqPay's `base64(sha1(priv.data.priv))`, WayForPay's HMAC-MD5 field list, Hutko's ksort-pipe-sha1) are implemented, with test vectors, in the package's own `tests/Feature/WebhookSignatureValidationTest.php` — copy from there rather than re-deriving.
@@ -58,4 +66,4 @@ ngrok http --domain=your-domain.ngrok-free.app --host-header=rewrite your-app.te
 
 Then set `APP_NGROK_URL=https://your-domain.ngrok-free.app`, `config:clear`, restart your queue worker — and every `server_url`/`webHookUrl` the drivers send in charge requests points at the tunnel. Diagnostics live in ngrok's inspector (`http://127.0.0.1:4040`): you see each gateway POST and your response (200 accepted / 403 signature / 405 wrong method).
 
-Tunnel-specific traps: a 502 on the tunnel domain means ngrok couldn't reach your local host (typo in the hostname, missing `/etc/hosts` entry) — not an app problem; `--host-header=rewrite` is required when nginx routes by vhost; and browse the demo/checkout through the tunnel domain too, or you'll be bouncing between origins. **Stripe is the exception to "nothing to configure"**: its webhook endpoint is registered on Stripe's side (one `POST /v1/webhook_endpoints` API call returns the `whsec_` secret), so changing the tunnel domain means re-creating the endpoint.
+Tunnel-specific traps: a 502 on the tunnel domain means ngrok couldn't reach your local host (typo in the hostname, missing `/etc/hosts` entry) — not an app problem; `--host-header=rewrite` is required when nginx routes by vhost; and browse the demo/checkout through the tunnel domain too, or you'll be bouncing between origins. **Stripe and Paddle are the exception to "nothing to configure"**: their endpoints are registered on their side, so after changing the tunnel domain re-run `billing:stripe-register-webhook` (a new endpoint and a new `whsec_` secret) or `billing:paddle-register-webhook`. Paddle also opens its checkout on the default payment link — point it at the tunnel's `/billing/paddle/checkout` or set `PADDLE_CHECKOUT_URL` (the domain needs approval).

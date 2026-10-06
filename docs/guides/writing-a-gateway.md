@@ -2,7 +2,7 @@
 
 Everything needed to add a payment gateway this package doesn't ship with — in your own app, or as a satellite package (`fomvasss/laravel-billing-yourgateway`). No core changes required either way.
 
-The five built-in drivers (`src/Gateways/`) are the reference implementations; each one is a real, verified integration, so reading the closest match to your gateway is usually faster than starting from scratch.
+The six built-in drivers (`src/Gateways/`) are the reference implementations; each one is a real, verified integration, so reading the closest match to your gateway is usually faster than starting from scratch.
 
 ## Before you write code: verify against the official source
 
@@ -297,8 +297,8 @@ No introspection endpoint? Probe with the **status of a nonexistent payment** an
 Three shapes exist in the wild, and which one you get decides how you write it:
 
 1. **Synchronous frontend token** (Stripe's SetupIntent path): the frontend SDK hands your backend a token, `attachPaymentMethod()` persists it directly and dispatches `PaymentMethodAttached` itself. (Stripe *also* supports the no-frontend shape — hosted checkout with `setup_future_usage`, the method pulled off the session's intent inside `handleWebhook()` — see `StripeGateway::attachFromCheckoutSession()` for the worked example of a webhook-side attach that needs a follow-up API call.)
-2. **Async, separate webhook delivery** (Monobank): the token arrives in its own webhook, distinct from the payment-status one. Return `WebhookResult(type: PaymentMethod, status: 'attached')` from `handleWebhook()` and let `WebhookResultDispatcher` fire the event.
-3. **Async, same delivery as the payment status** (LiqPay, WayForPay, Hutko): the token rides along in the payment-status callback. That `WebhookResult` is already reporting the `Payment` outcome, so persist the method as a side effect and dispatch `PaymentMethodAttached` **directly** — there's no second return value for the dispatcher to work with. Guard the dispatch with `$method->wasRecentlyCreated`: a direct dispatch runs before the job-level dedup claim, so without the guard a re-delivered callback fires the event again.
+2. **Async, separate webhook delivery**: the token arrives in its own webhook, distinct from the payment-status one. Return `WebhookResult(type: PaymentMethod, status: 'attached', paymentMethod: $method, externalId: ...)` from `handleWebhook()` and let `WebhookResultDispatcher` fire the event. (Monobank looks like this — the token comes in a later delivery of the invoice webhook — but nothing guarantees the token and the payment status arrive separately, so its driver treats it as shape 3.)
+3. **Async, same delivery as the payment status** (LiqPay, WayForPay, Hutko, Monobank): the token rides along in the payment-status callback. That `WebhookResult` is already reporting the `Payment` outcome, so persist the method as a side effect and dispatch `PaymentMethodAttached` **directly** — there's no second return value for the dispatcher to work with. Guard the dispatch with `$method->wasRecentlyCreated`: a direct dispatch runs before the job-level dedup claim, so without the guard a re-delivered callback fires the event again.
 
 Use `AbstractGateway::persistPaymentMethod()` for the actual row-writing in all three cases; it demotes the previous default and upserts on `(gateway, billable_type, billable_id, external_customer_id, external_id)` — the billable is part of the key, since one physical card may be saved by two billables — deliberately without dispatching, precisely because the three cases dispatch at different times.
 
@@ -325,7 +325,7 @@ $response = $this->http()                                              // key av
     ->post('/charge', $fields);
 ```
 
-All five built-in drivers do this; `StripeGateway` is the one that sends a key (a fresh one per `refund()` call, so two deliberate partial refunds of the same amount both go through).
+All built-in drivers do this. `StripeGateway` sends idempotency keys instead: a fresh one per `refund()` call (two deliberate partial refunds of the same amount both go through), `charge-{payment id}` for off-session charges, a fresh one per plan swap.
 
 Relatedly, a declined card is a *business outcome*, not a transport failure — return it as a `PaymentResult` rather than throwing, so the caller can record the failure. Only genuine wiring errors (bad credentials, malformed request) should throw.
 

@@ -206,9 +206,9 @@ $subscription->swapPlan($newPrice);        // new price_id, no proration, applie
 ```
 
 - `pause()` fires `SubscriptionPaused`, `resume()` `SubscriptionResumed`. Both are no-ops on a row already in that state.
-- A pause doesn't move `current_period_ends_at`. After a long pause the period end is usually in the past, so the next `process-recurring-charges` run charges right after `resume()`.
+- A pause doesn't move `current_period_ends_at`. If the period ran out during the pause, `resume()` sets it to now: the next `process-recurring-charges` run charges once and the new period starts from the resume. The unused rest of the period paid before the pause is not carried over. Before 0.12.7 the renewal advanced from the old end, which stayed in the past, so every run charged again until it caught up.
 - `cancel()` at period end only stamps `cancels_at = current_period_ends_at`; `billing:process-recurring-charges` finalizes it when the moment passes (status `canceled`, `SubscriptionCancelled`). Access ends at `cancels_at` regardless.
-- `cancel()` on a row **without** `current_period_ends_at` (a trial, an `incomplete` row) cancels immediately even with `atPeriodEnd: true`.
+- `cancel()` on a trial stamps `cancels_at = trial_ends_at`: the trial runs to its end, then `billing:expire-trials` ends it. Paying for it before then clears `cancels_at`. An `incomplete` row (nothing paid, no period) cancels immediately even with `atPeriodEnd: true`.
 - `markCanceled()` is the single way into `canceled` (clears `next_retry_at`/`grace_ends_at`, keeps `recurring_attempts`).
 
 On a provider-managed subscription the same calls go to the provider, see [Provider-managed subscriptions](provider-managed.md#managing-it).

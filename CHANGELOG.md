@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.12.7] - 2026-10-07
+
+### Fixed
+- `resume()` after a pause longer than the period: the renewal advanced from the old period end, which stayed in the past, so `billing:process-recurring-charges` charged again on every run until the period caught up with today. A period that ran out during the pause now restarts at the resume — one charge, the new period from then on
+- `cancel()` (at period end) on a trial cancelled it immediately. It now schedules `cancels_at` at `trial_ends_at`; paying for the trial before then clears it
+
 ## [0.12.6] - 2026-10-07
 
 ### Fixed

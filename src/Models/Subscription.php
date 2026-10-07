@@ -172,7 +172,14 @@ class Subscription extends Model
             return;
         }
 
-        $this->update(['status' => SubscriptionStatus::Active, 'pause_ends_at' => null]);
+        $this->update([
+            'status' => SubscriptionStatus::Active,
+            'pause_ends_at' => null,
+            // A period that ran out during the pause restarts now: renewing it from the old end
+            // would leave the new end in the past too, and every run would charge again until
+            // the period caught up with today.
+            ...($this->current_period_ends_at?->isPast() ? ['current_period_ends_at' => now()] : []),
+        ]);
 
         SubscriptionResumed::dispatch($this);
     }
@@ -190,8 +197,13 @@ class Subscription extends Model
             return;
         }
 
-        if ($atPeriodEnd && $this->current_period_ends_at !== null) {
-            $this->update(['cancels_at' => $this->current_period_ends_at]);
+        // a trial has no paid period yet — it runs until trial_ends_at; an incomplete row has
+        // nothing to run until, so it cancels now
+        $endsAt = $this->current_period_ends_at
+            ?? ($this->status === SubscriptionStatus::Trialing ? $this->trial_ends_at : null);
+
+        if ($atPeriodEnd && $endsAt !== null) {
+            $this->update(['cancels_at' => $endsAt]);
 
             return;
         }
@@ -399,6 +411,8 @@ class Subscription extends Model
             'recurring_attempts' => 0,
             'grace_ends_at' => null,
             'next_retry_at' => null,
+            // paying for a trial scheduled to cancel at its end is a change of mind
+            ...($previousStatus === SubscriptionStatus::Trialing ? ['cancels_at' => null] : []),
             ...$this->freshAllowance(),
         ]);
 

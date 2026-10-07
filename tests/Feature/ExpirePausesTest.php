@@ -34,6 +34,20 @@ class ExpirePausesTest extends TestCase
         Event::assertDispatched(SubscriptionResumed::class, fn ($event) => $event->subscription->is($due));
     }
 
+    public function test_a_period_that_ran_out_during_the_pause_restarts_on_resume(): void
+    {
+        $expired = $this->pausedSubscription(null);
+        $expired->update(['current_period_ends_at' => now()->subMonths(3)]);
+        $running = $this->pausedSubscription(null);
+        $running->update(['current_period_ends_at' => $runningEnd = now()->addWeek()->startOfSecond()]);
+
+        $expired->resume();
+        $running->resume();
+
+        $this->assertTrue($expired->fresh()->current_period_ends_at->isSameMinute(now()));
+        $this->assertTrue($running->fresh()->current_period_ends_at->equalTo($runningEnd));
+    }
+
     public function test_provider_managed_paused_subscriptions_are_skipped(): void
     {
         $subscription = $this->pausedSubscription(now()->subHour());

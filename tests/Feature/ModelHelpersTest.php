@@ -48,6 +48,31 @@ class ModelHelpersTest extends TestCase
         $this->assertFalse($subscription->fresh()->isCancelling());
     }
 
+    public function test_cancelling_a_trial_at_period_end_keeps_it_until_the_trial_ends(): void
+    {
+        $trialEndsAt = now()->addWeek()->startOfSecond();
+        $subscription = $this->subscription(['status' => SubscriptionStatus::Trialing, 'trial_ends_at' => $trialEndsAt]);
+
+        $subscription->cancel();
+
+        $this->assertSame(SubscriptionStatus::Trialing, $subscription->fresh()->status);
+        $this->assertTrue($subscription->fresh()->cancels_at->equalTo($trialEndsAt));
+        $this->assertTrue($subscription->fresh()->isActive());
+
+        $subscription->fresh()->recordRenewalSuccess('fake');
+
+        $this->assertNull($subscription->fresh()->cancels_at);
+    }
+
+    public function test_cancelling_an_incomplete_subscription_at_period_end_cancels_it_now(): void
+    {
+        $subscription = $this->subscription(['status' => SubscriptionStatus::Incomplete]);
+
+        $subscription->cancel();
+
+        $this->assertTrue($subscription->fresh()->isCanceled());
+    }
+
     public function test_grace_access_can_be_disabled_globally(): void
     {
         $subscription = $this->subscription(['status' => SubscriptionStatus::PastDue, 'grace_ends_at' => now()->addDay()]);

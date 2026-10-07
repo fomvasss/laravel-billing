@@ -74,8 +74,8 @@ $method = Billing::driver('stripe')->attachPaymentMethod($user, ['payment_method
 | WayForPay | `rec_token` | No |
 | Hutko | `rectoken` | No |
 
-> [!WARNING]
-> `attachPaymentMethod()` and `createCustomer()` store the billable as its class name (`$billable::class`), while payments and the webhook path use the morph class. With a morph map (`Relation::enforceMorphMap()`) a card attached this way doesn't match the billable's payments: `chargeWithMethod()` rejects it as another billable's card and renewals don't find it. Stripe's customer lookup has the same mismatch and may create a new Stripe customer per saving checkout. Without a morph map both are the same string.
+> [!NOTE]
+> Before 0.12.3 `attachPaymentMethod()` and `createCustomer()` stored the billable as its class name while payments used the morph class, so with a morph map such cards didn't match their billable. Rows saved that way need a one-time rewrite — see [Upgrading](../upgrading.md).
 
 `createCustomer($billable)` returns the gateway-side customer id. Only Stripe creates a real object; the others derive a stable id from the billable (Monobank's `walletId`).
 

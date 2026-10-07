@@ -18,7 +18,7 @@
 |---|---|---|
 | `extend(string $name, string $class)` | `BillingManager` | Register a driver class under a name. `fake` outside `local`/`testing` throws |
 | `registerWebhook(string $name, string $validator, ?string $responder = null)` | `BillingManager` | Register the signature validator (and optional responder) for a name |
-| `driver(string $name, ?string $tenantId = null)` | `PaymentGatewayContract` | A fresh driver with resolved credentials. Unknown name → `BillingException` |
+| `driver(?string $name, ?string $tenantId = null)` | `PaymentGatewayContract` | A fresh driver with resolved credentials. Unknown name or `null` → `BillingException` |
 | `gateways()` | `array` | Metadata of every registered gateway, see [Gateways overview](../usage/gateways.md#gateway-metadata-for-a-settings-ui) |
 | `gateway(string $name)` | `?array` | One entry of `gateways()` |
 | `supportedCurrencies(string $gateway)` | `array` | Config override or the driver's list |

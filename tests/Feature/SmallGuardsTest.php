@@ -47,6 +47,25 @@ class SmallGuardsTest extends TestCase
         $this->assertSame(['kept'], $headers['x-custom']);
     }
 
+    public function test_charging_or_refunding_a_payment_without_a_gateway_is_a_billing_exception(): void
+    {
+        $user = TestUser::create(['name' => 'Buyer']);
+        $payment = Payment::create([
+            'status' => 'pending', 'type' => 'charge', 'gateway' => null, 'amount' => 100, 'currency' => 'UAH',
+            'payable_type' => TestUser::class, 'payable_id' => $user->id,
+            'billable_type' => TestUser::class, 'billable_id' => $user->id,
+        ]);
+
+        foreach ([fn () => \Fomvasss\Billing\Facades\Billing::charge($payment), fn () => \Fomvasss\Billing\Facades\Billing::refund($payment)] as $call) {
+            try {
+                $call();
+                $this->fail('No exception');
+            } catch (\Fomvasss\Billing\Exceptions\BillingException $e) {
+                $this->assertStringContainsString('No gateway set', $e->getMessage());
+            }
+        }
+    }
+
     public function test_usage_cannot_be_reported_as_a_negative_correction(): void
     {
         $subscription = $this->subscription();

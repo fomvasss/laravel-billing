@@ -104,8 +104,14 @@ class BillingManager
         return $this->responders[$name] ?? DefaultWebhookResponder::class;
     }
 
-    public function driver(string $name, ?string $tenantId = null): PaymentGatewayContract
+    public function driver(?string $name, ?string $tenantId = null): PaymentGatewayContract
     {
+        // a payment or subscription without a gateway (manual, or a trial not paid yet) — the
+        // caller passed $payment->gateway straight through
+        if ($name === null) {
+            throw new BillingException('No gateway set — a manual payment or subscription has no driver to call.');
+        }
+
         $class = $this->drivers[$name] ?? throw BillingException::unknownGateway($name);
 
         $credentials = app(CredentialResolverContract::class)->resolve($name, $tenantId);

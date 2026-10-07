@@ -129,7 +129,7 @@ Payment::create([
 `paid_at` is stamped automatically whenever `status` becomes `paid` (and cleared when it moves away). A row created this way fires no `PaymentSucceeded` — dispatch your own logic, and call `Billing::issueReceipt()` yourself if you use [invoices](invoices.md).
 
 > [!WARNING]
-> `charge()`, `chargeWithMethod()` and `refund()` need a registered gateway name. A payment with `gateway` null hits a `TypeError`; a free-text label that isn't registered throws `BillingException` ("not registered").
+> `charge()`, `chargeWithMethod()` and `refund()` need a registered gateway name. A payment with `gateway` null throws `BillingException` ("No gateway set"), so does a free-text label that isn't registered ("not registered").
 
 ## Payment numbers
 

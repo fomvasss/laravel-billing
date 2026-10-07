@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.12.10] - 2026-10-07
+
+### Fixed
+- `charge()`, `chargeWithMethod()`, `refund()` and `Billing::driver()` with a payment without a gateway (`gateway` null) threw a `TypeError`; they now throw `BillingException` like an unregistered gateway name
+- The CHANGELOG entries of 0.5.0 and 0.6.0 named migration groups that don't exist (`billing-migrations-payments`, `billing-migrations-prices`); corrected to `billing-migrations-core` and `billing-migrations-subscriptions`
+
 ## [0.12.9] - 2026-10-07
 
 ### Fixed
@@ -159,7 +165,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   The defaults follow the usual pair, but the mechanism and the initiator can disagree, so both calls take `ChargeOptions(initiation: ...)`: a one-click "pay with the saved card" button is the off-session code path with a person standing right there, and a retry a consumer's own scheduler pushes through `charge()` is automatic.
 
   **The column is nullable and never guessed.** A payment created outside those two methods has no initiation, and both helpers answer `false` for it — unknown is not a claim either way. Rows written before this release stay `null`; backfilling them is the consumer's call, since only the consumer's own data can tell the two apart.
-- `payments.initiation` column, in the existing `billing-migrations-payments` migration group.
+- `payments.initiation` column, in the existing `billing-migrations-core` migration group.
 
 ## [0.5.2] - 2026-08-26
 
@@ -179,7 +185,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `quota_interval` is honoured only together with `included_units` (on its own there is nothing to reset). Unused allowance expires rather than accumulating: a gap of several missed cycles grants one fresh allowance, not several. A paid renewal restarts the cycle from that moment. Provider-managed subscriptions are reset too — unlike every other scheduled command here, a quota reset touches no gateway and no money. Paused and ended subscriptions keep their stale boundary and get a fresh allowance when they resume.
 
   **Nothing changes for prices without `quota_interval`** — the column is nullable, the default stays "the quota follows the paid period", and existing subscriptions are untouched.
-- `prices.quota_interval`, `prices.quota_interval_count` and `subscriptions.quota_period_ends_at` columns, in the existing `billing-migrations-prices` / `billing-migrations-subscriptions` migration groups.
+- `prices.quota_interval`, `prices.quota_interval_count` and `subscriptions.quota_period_ends_at` columns, in the existing `billing-migrations-subscriptions` migration group.
 
 ## [0.4.0] - 2026-08-26
 

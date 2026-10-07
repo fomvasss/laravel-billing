@@ -176,7 +176,7 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
     /** No API call — Monobank has no "create wallet" endpoint, walletId is ours to pick and stable per billable. */
     public function createCustomer(Model&Billable $billable): string
     {
-        return $this->walletId($billable::class, (string) $billable->getKey());
+        return $this->walletId($billable->getMorphClass(), (string) $billable->getKey());
     }
 
     /**
@@ -187,7 +187,7 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
     public function attachPaymentMethod(Model&Billable $billable, array $token): PaymentMethod
     {
         $cardToken = $token['card_token'] ?? throw new BillingException('Monobank: token must include "card_token".');
-        $walletId = $this->walletId($billable::class, (string) $billable->getKey());
+        $walletId = $this->walletId($billable->getMorphClass(), (string) $billable->getKey());
 
         $wallet = $this->http()->get('/api/merchant/wallet', ['walletId' => $walletId])->throw()->json('wallet', []);
         $card = collect($wallet)->firstWhere('cardToken', $cardToken)
@@ -196,7 +196,7 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
         $maskedPan = $card['maskedPan'] ?? null;
 
         $method = $this->persistPaymentMethod(
-            $billable::class,
+            $billable->getMorphClass(),
             (string) $billable->getKey(),
             $billable->tenantId(),
             $walletId,

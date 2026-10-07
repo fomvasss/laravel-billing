@@ -16,7 +16,7 @@ interface TokenizesPaymentMethod
     /**
      * $billable is always an Eloquent model in practice (the morphTo target of PaymentMethod's
      * billable_type/billable_id) — Model&Billable, not the bare marker interface, so drivers can
-     * read $billable->getKey()/$billable::class without an instanceof check.
+     * read $billable->getKey()/$billable->getMorphClass() without an instanceof check.
      *
      * Returns external_customer_id.
      */

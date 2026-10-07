@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.12.3] - 2026-10-07
+
+### Fixed
+- With a morph map (`Relation::enforceMorphMap()`), `attachPaymentMethod()` and `createCustomer()` of every driver stored the billable as its class name while payments and webhooks used the alias. A manually attached card was rejected by `chargeWithMethod()`, missing from `$billable->paymentMethods` and not found at renewal; Stripe could create a new customer on every checkout that saved a card; Monobank used different `walletId`s for the same billable. All drivers now use the alias. Rows saved before the fix keep the class name — see the upgrade guide. Apps without a morph map are not affected
+
 ## [0.12.2] - 2026-09-28
 
 ### Fixed

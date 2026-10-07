@@ -241,7 +241,7 @@ class HutkoGateway extends AbstractGateway implements RefundsPayments, Tokenizes
     /** No gateway-side "customer" object — same reasoning as Monobank/LiqPay/WayForPay, ours to pick and stable per billable. */
     public function createCustomer(Model&Billable $billable): string
     {
-        return $this->customerId($billable::class, (string) $billable->getKey());
+        return $this->customerId($billable->getMorphClass(), (string) $billable->getKey());
     }
 
     /**
@@ -254,10 +254,10 @@ class HutkoGateway extends AbstractGateway implements RefundsPayments, Tokenizes
         $rectoken = $token['rectoken'] ?? throw new BillingException('Hutko: token must include "rectoken".');
 
         $method = $this->persistPaymentMethod(
-            $billable::class,
+            $billable->getMorphClass(),
             (string) $billable->getKey(),
             $billable->tenantId(),
-            $this->customerId($billable::class, (string) $billable->getKey()),
+            $this->customerId($billable->getMorphClass(), (string) $billable->getKey()),
             $rectoken,
         );
 

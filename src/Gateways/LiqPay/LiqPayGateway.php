@@ -171,7 +171,7 @@ class LiqPayGateway extends AbstractGateway implements RefundsPayments, ChecksPa
     /** No gateway-side "customer" object — same reasoning as Monobank's walletId, ours to pick and stable per billable. */
     public function createCustomer(Model&Billable $billable): string
     {
-        return $this->customerId($billable::class, (string) $billable->getKey());
+        return $this->customerId($billable->getMorphClass(), (string) $billable->getKey());
     }
 
     /**
@@ -185,10 +185,10 @@ class LiqPayGateway extends AbstractGateway implements RefundsPayments, ChecksPa
         $cardToken = $token['card_token'] ?? throw new BillingException('LiqPay: token must include "card_token".');
 
         $method = $this->persistPaymentMethod(
-            $billable::class,
+            $billable->getMorphClass(),
             (string) $billable->getKey(),
             $billable->tenantId(),
-            $this->customerId($billable::class, (string) $billable->getKey()),
+            $this->customerId($billable->getMorphClass(), (string) $billable->getKey()),
             $cardToken,
         );
 

@@ -676,7 +676,7 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
     {
         $data = $this->http()->asForm()->post('/customers', [
             'metadata' => [
-                'billable_type' => $billable::class,
+                'billable_type' => $billable->getMorphClass(),
                 'billable_id' => (string) $billable->getKey(),
             ],
         ])->throw()->json();
@@ -705,7 +705,7 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             ->throw();
 
         $method = $this->persistPaymentMethod(
-            $billable::class,
+            $billable->getMorphClass(),
             (string) $billable->getKey(),
             $billable->tenantId(),
             $customerId,
@@ -1005,7 +1005,7 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
     protected function resolveCustomerId(Model&Billable $billable): string
     {
         $existing = PaymentMethod::query()
-            ->where('billable_type', $billable::class)
+            ->where('billable_type', $billable->getMorphClass())
             ->where('billable_id', $billable->getKey())
             ->where('gateway', $this->gatewayName)
             ->whereNotNull('external_customer_id')

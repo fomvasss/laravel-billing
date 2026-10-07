@@ -10,6 +10,18 @@ The package is pre-1.0: the API and schema may change between minor versions. Th
 - `billing.invoices.number_per_tenant` (default `true`, unchanged behaviour). `false` numbers all tenants' documents in one sequence.
 - 0.12.1: an invoice issued for an already paid payment no longer names the subscription's (next) period.
 - 0.12.2: `auto_invoice`/`auto_receipt` issue nothing while the seller has no name.
+- 0.12.3: with a morph map, drivers now store the billable's alias instead of its class name in `billing_payment_methods.billable_type`. Without a morph map nothing changes. With one, rows saved by `attachPaymentMethod()` before the upgrade still hold the class name and stay invisible to `$billable->paymentMethods` and renewals — rewrite them once:
+
+  ```php
+  use Fomvasss\Billing\Models\PaymentMethod;
+  use Illuminate\Database\Eloquent\Relations\Relation;
+
+  foreach (Relation::morphMap() as $alias => $class) {
+      PaymentMethod::where('billable_type', $class)->update(['billable_type' => $alias]);
+  }
+  ```
+
+  If a billable then has two rows for the same card (one from a checkout, one attached by hand), delete the duplicate. On Stripe, a billable may also have extra customers created before the fix; they are harmless, the package reuses the customer of the billable's first saved card.
 
 ## 0.11
 

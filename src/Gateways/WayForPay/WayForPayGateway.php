@@ -212,7 +212,7 @@ class WayForPayGateway extends AbstractGateway implements ChecksPaymentStatus, T
     /** No gateway-side "customer" object — same reasoning as Monobank/LiqPay, ours to pick and stable per billable. */
     public function createCustomer(Model&Billable $billable): string
     {
-        return $this->customerId($billable::class, (string) $billable->getKey());
+        return $this->customerId($billable->getMorphClass(), (string) $billable->getKey());
     }
 
     /**
@@ -225,10 +225,10 @@ class WayForPayGateway extends AbstractGateway implements ChecksPaymentStatus, T
         $recToken = $token['rec_token'] ?? throw new BillingException('WayForPay: token must include "rec_token".');
 
         $method = $this->persistPaymentMethod(
-            $billable::class,
+            $billable->getMorphClass(),
             (string) $billable->getKey(),
             $billable->tenantId(),
-            $this->customerId($billable::class, (string) $billable->getKey()),
+            $this->customerId($billable->getMorphClass(), (string) $billable->getKey()),
             $recToken,
         );
 

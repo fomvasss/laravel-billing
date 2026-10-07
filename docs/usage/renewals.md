@@ -122,8 +122,8 @@ Billing::charge($payment, new ChargeOptions(saveCard: true));
 
 The payment reactivates the subscription and the new card becomes the default. Remove the old one with `detachPaymentMethod()` if you like.
 
-> [!WARNING]
-> The listener can't tell a renewal from any other payment against the subscription: **every** `failed` or `canceled` payment whose payable is an `active`/`past_due` subscription counts as a failed renewal attempt. An abandoned "update card" or upgrade checkout that reconciliation writes off after `reconcile_after_minutes`, or a declined card on it, moves an `active` subscription to `past_due` even if its period isn't due. Point such side payments at a payable of your own if that is not what you want.
+> [!NOTE]
+> A `failed` or `canceled` payment against an `active` subscription whose period hasn't ended yet is ignored — renewals are only charged after `current_period_ends_at`, so it is some other payment: an abandoned "update card" or upgrade checkout, a declined early payment. Against a `past_due` subscription every failure still counts as a renewal attempt. Before 0.12.4 any failure moved an `active` subscription to `past_due`, and a subscription without a gateway was canceled.
 
 > [!NOTE]
 > While a renewal payment is `pending`, the scheduler won't charge again. A checkout like the one above is also a pending renewal payment — an unpaid one blocks scheduled retries until it resolves (or `billing:reconcile-pending-payments` writes it off).

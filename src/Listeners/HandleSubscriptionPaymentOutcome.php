@@ -80,6 +80,19 @@ class HandleSubscriptionPaymentOutcome
             return;
         }
 
+        // Renewals are only charged once the period has ended (ProcessRecurringChargesCommand). A
+        // failure while an active subscription's period is still running is some other payment
+        // against it — an abandoned card-update checkout, a declined early payment — and must not
+        // start dunning for a period that is paid for.
+        if ($subscription->status === SubscriptionStatus::Active
+            && ($subscription->current_period_ends_at === null || $subscription->current_period_ends_at->isFuture())) {
+            Log::info('Billing: ignored a failed payment for a subscription whose period has not ended', [
+                'subscription_id' => $subscription->id,
+            ]);
+
+            return;
+        }
+
         // Grace/retries only for gateway-managed recurring charges — a manually-paid subscription
         // (gateway=null) has no saved method to retry against, so there's nothing to wait for.
         if ($subscription->gateway === null) {

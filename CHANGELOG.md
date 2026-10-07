@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.12.4] - 2026-10-07
+
+### Fixed
+- A failed or canceled payment against an `active` subscription whose period hadn't ended (an abandoned card-update checkout, a declined early payment) was counted as a failed renewal: the subscription went to `past_due` and dunning started for a paid period; a subscription without a gateway was canceled. Such failures are now ignored; renewals are only charged after the period ends
+
 ## [0.12.3] - 2026-10-07
 
 ### Fixed

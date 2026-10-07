@@ -64,6 +64,21 @@ class SubscriptionRenewalTest extends TestCase
         $this->assertNotNull($subscription->grace_ends_at);
     }
 
+    public function test_a_failure_before_the_period_ends_does_not_start_dunning(): void
+    {
+        $subscription = $this->activeMonthlySubscription();
+        $subscription->update(['current_period_ends_at' => now()->addWeek()]);
+
+        PaymentFailed::dispatch($this->renewalPayment($subscription));
+        \Fomvasss\Billing\Events\PaymentCanceled::dispatch($this->renewalPayment($subscription));
+
+        $subscription->refresh();
+
+        $this->assertSame(SubscriptionStatus::Active, $subscription->status);
+        $this->assertSame(0, $subscription->recurring_attempts);
+        $this->assertNull($subscription->grace_ends_at);
+    }
+
     public function test_repeated_failures_cancel_the_subscription_once_max_attempts_is_reached(): void
     {
         config(['billing.max_recurring_attempts' => 3]);

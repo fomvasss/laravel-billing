@@ -88,6 +88,21 @@ class RecurringChargeGuardsTest extends TestCase
         Http::assertSentCount(1);
     }
 
+    public function test_a_due_subscription_on_a_gateway_without_off_session_charges_enters_dunning(): void
+    {
+        Http::fake();
+
+        // a saved card, but the fake driver (like Paddle) can't charge it off-session
+        $subscription = $this->dueSubscription('fake', 'UAH');
+
+        $this->artisan('billing:process-recurring-charges')->assertSuccessful();
+
+        $subscription->refresh();
+        $this->assertSame(SubscriptionStatus::PastDue, $subscription->status);
+        $this->assertSame(1, $subscription->recurring_attempts);
+        Http::assertNothingSent();
+    }
+
     public function test_a_due_subscription_with_no_saved_card_enters_dunning_instead_of_stalling(): void
     {
         Event::fake([\Fomvasss\Billing\Events\SubscriptionPaymentFailed::class]);

@@ -107,11 +107,10 @@ class ProcessRecurringChargesCommand extends Command
 
     protected function charge(Subscription $subscription, BillingManager $billing): bool
     {
-        $driver = $billing->driver($subscription->gateway, $subscription->billable?->tenantId());
-
-        if (! $driver instanceof TokenizesPaymentMethod) {
-            return false; // gateway can't do off-session charges — nothing this command can do
-        }
+        // A gateway that can't charge off-session (Paddle outside its own subscriptions, a custom
+        // driver) has no card to charge either — claimRenewal() then dunns it like a missing card.
+        // Skipped instead, the subscription stayed `active` on a stale period for good.
+        $tokenizes = $billing->driver($subscription->gateway, $subscription->billable?->tenantId()) instanceof TokenizesPaymentMethod;
 
         // Deciding whether this period gets charged is a read (is a renewal already pending?)
         // followed by a write (the Payment row) — two of these interleaving debit the card twice.
@@ -119,7 +118,7 @@ class ProcessRecurringChargesCommand extends Command
         // and only when the app's cache store is shared, so it can't be the thing standing between
         // a manual `artisan billing:process-recurring-charges` and the scheduled one. The gateway
         // call itself stays outside — a transaction must never span an HTTP round trip.
-        $claim = DB::transaction(function () use ($subscription, $billing) {
+        $claim = DB::transaction(function () use ($subscription, $billing, $tokenizes) {
             // Re-read under the lock and re-apply the same conditions the batch query used: by now
             // a concurrent run may have advanced the period, stamped next_retry_at or cancelled it.
             $subscription = $this->dueForRenewal(Subscription::query())
@@ -127,7 +126,7 @@ class ProcessRecurringChargesCommand extends Command
                 ->lockForUpdate()
                 ->first();
 
-            return $subscription === null ? null : $this->claimRenewal($subscription, $billing);
+            return $subscription === null ? null : $this->claimRenewal($subscription, $billing, $tokenizes);
         });
 
         if ($claim === null) {
@@ -167,7 +166,7 @@ class ProcessRecurringChargesCommand extends Command
      *
      * @return array{Payment, PaymentMethod, Subscription}|null
      */
-    protected function claimRenewal(Subscription $subscription, BillingManager $billing): ?array
+    protected function claimRenewal(Subscription $subscription, BillingManager $billing, bool $tokenizes = true): ?array
     {
         // A pending renewal from a previous run whose webhook hasn't landed yet — initiating
         // another charge now would debit the card twice for the same period. Reconciliation
@@ -202,7 +201,7 @@ class ProcessRecurringChargesCommand extends Command
             return null;
         }
 
-        $method = PaymentMethod::query()
+        $method = ! $tokenizes ? null : PaymentMethod::query()
             ->where('billable_type', $subscription->billable_type)
             ->where('billable_id', $subscription->billable_id)
             ->where('gateway', $subscription->gateway)

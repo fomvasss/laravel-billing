@@ -41,7 +41,7 @@ Per run, the command:
 The command only initiates; outcomes come back through the webhook pipeline and the built-in listener (`HandleSubscriptionPaymentOutcome`).
 
 > [!WARNING]
-> A gateway whose driver can't charge off-session (Paddle, or a custom driver without `TokenizesPaymentMethod`) is silently skipped. A package-managed subscription on such a gateway is never renewed, stays `active` and keeps access — use the provider-managed mode there.
+> A gateway whose driver can't charge off-session (Paddle, or a custom driver without `TokenizesPaymentMethod`) is treated like a subscription without a saved card: at the end of the period it goes to `past_due` and through dunning, and stays alive only if someone pays the renewal another way (a payment link). For automatic renewals on such a gateway use the provider-managed mode. Before 0.12.5 these subscriptions were skipped, stayed `active` and kept access for good.
 
 ## On success
 

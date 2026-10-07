@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.12.5] - 2026-10-07
+
+### Fixed
+- A package-managed subscription on a gateway that can't charge off-session (Paddle, a custom driver without `TokenizesPaymentMethod`) was skipped by `billing:process-recurring-charges`, stayed `active` past its period and kept access for good. It now goes through dunning like a subscription without a saved card
+
 ## [0.12.4] - 2026-10-07
 
 ### Fixed

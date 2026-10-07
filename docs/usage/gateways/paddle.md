@@ -69,7 +69,7 @@ Provider-managed only, through `Billing::startSubscription()` — see [Provider-
 - Not supported: metered prices, minute/hour intervals.
 
 > [!WARNING]
-> Don't let a Paddle payment activate a package-managed subscription (a `charge()` against an `incomplete` row): the driver can't charge off-session, so `process-recurring-charges` skips it forever and the row stays `active` with access.
+> Don't let a Paddle payment activate a package-managed subscription (a `charge()` against an `incomplete` row): the driver can't charge off-session, so at the end of the period the subscription goes through dunning and is canceled unless the renewal is paid another way. (Before 0.12.5 it stayed `active` with access for good.)
 
 ## Health
 

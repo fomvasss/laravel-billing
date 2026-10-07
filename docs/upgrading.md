@@ -10,6 +10,7 @@ The package is pre-1.0: the API and schema may change between minor versions. Th
 - `billing.invoices.number_per_tenant` (default `true`, unchanged behaviour). `false` numbers all tenants' documents in one sequence.
 - 0.12.1: an invoice issued for an already paid payment no longer names the subscription's (next) period.
 - 0.12.2: `auto_invoice`/`auto_receipt` issue nothing while the seller has no name.
+- 0.12.5: package-managed subscriptions on a gateway without off-session charges (Paddle, custom drivers) enter dunning when their period ends instead of staying `active`. Check for such rows before upgrading — overdue ones go to `past_due` on the next run.
 - 0.12.4: a failed payment against an `active` subscription before its period ends no longer starts dunning.
 - 0.12.3: with a morph map, drivers now store the billable's alias instead of its class name in `billing_payment_methods.billable_type`. Without a morph map nothing changes. With one, rows saved by `attachPaymentMethod()` before the upgrade still hold the class name and stay invisible to `$billable->paymentMethods` and renewals — rewrite them once:
 

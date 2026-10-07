@@ -12,6 +12,11 @@ use RuntimeException;
  */
 class BillingException extends RuntimeException
 {
+    public static function priceHasSubscriptions(string $priceId): self
+    {
+        return new self("Price {$priceId} has subscriptions and can't be deleted. Retire it with is_active = false instead.");
+    }
+
     public static function unknownGateway(string $name): self
     {
         return new self("Billing gateway \"{$name}\" is not registered.");

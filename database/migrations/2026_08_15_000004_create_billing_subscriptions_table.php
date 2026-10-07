@@ -45,7 +45,7 @@ return new class extends Migration
             // String morph id — billables with int and UUID keys both fit (same as billing_payments).
             $table->string('billable_type');
             $table->string('billable_id', 64);
-            $table->foreignUuid('price_id')->constrained('billing_prices')->cascadeOnDelete();
+            $table->foreignUuid('price_id')->constrained('billing_prices')->restrictOnDelete();
 
             $table->index(['billable_type', 'billable_id']);
             $table->index(['status', 'current_period_ends_at']);

@@ -83,12 +83,12 @@ Group `billing-migrations-subscriptions`.
 | `recurring_attempts` | unsigned int, default 0 | |
 | `tenant_id` | string(100), nullable | |
 | `billable_type`, `billable_id` | string, string(64) | |
-| `price_id` | uuid FK → prices, cascade delete | |
+| `price_id` | uuid FK → prices, restrict delete (since 0.12.8) | |
 
 Indexes: billable, `(status, current_period_ends_at)`, `(status, pause_ends_at)`, `quota_period_ends_at`, `(gateway, external_id)`.
 
 > [!WARNING]
-> `price_id` and `plan_id` cascade on delete — deleting a plan or price deletes its subscriptions. Retire prices with `is_active = false` instead.
+> A price or plan with subscriptions (any status) can't be deleted: `Price::delete()` and `Plan::delete()` throw `BillingException`. Retire prices with `is_active = false` instead. `prices.plan_id` still cascades, so a plan whose prices have no subscriptions deletes with them. In a database created before 0.12.8 `subscriptions.price_id` cascades — a raw `DELETE` (query builder, not a model) still takes the subscriptions with it, see [Upgrading](../upgrading.md).
 
 ## billing_payment_methods
 

@@ -6,6 +6,7 @@ namespace Fomvasss\Billing\Models;
 
 use Fomvasss\Billing\Enums\Interval;
 use Fomvasss\Billing\Enums\PricingType;
+use Fomvasss\Billing\Exceptions\BillingException;
 use Fomvasss\Billing\Support\Money;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Model;
@@ -38,6 +39,16 @@ class Price extends Model
             'is_active' => 'boolean',
             'meta' => 'array',
         ];
+    }
+
+    protected static function booted(): void
+    {
+        // deleting a price would take its subscriptions with it — paying customers included
+        static::deleting(function (self $price) {
+            if ($price->subscriptions()->exists()) {
+                throw BillingException::priceHasSubscriptions((string) $price->getKey());
+            }
+        });
     }
 
     public function plan(): BelongsTo

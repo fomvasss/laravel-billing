@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.12.8] - 2026-10-07
+
+### Fixed
+- Deleting a price or a plan deleted every subscription on it through the database cascade, paid ones included. `Price::delete()` and `Plan::delete()` now throw `BillingException` while subscriptions exist, and the subscriptions migration restricts the delete. Existing databases keep the cascade for raw deletes — see the upgrade guide
+
 ## [0.12.7] - 2026-10-07
 
 ### Fixed

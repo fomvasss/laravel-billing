@@ -73,6 +73,25 @@ class ModelHelpersTest extends TestCase
         $this->assertTrue($subscription->fresh()->isCanceled());
     }
 
+    public function test_a_price_or_plan_with_subscriptions_cannot_be_deleted(): void
+    {
+        $subscription = $this->subscription(['status' => SubscriptionStatus::Canceled]);
+        $price = $subscription->price;
+
+        foreach ([$price, $price->plan] as $model) {
+            try {
+                $model->delete();
+                $this->fail(class_basename($model) . ' was deleted');
+            } catch (\Fomvasss\Billing\Exceptions\BillingException) {
+            }
+        }
+
+        $this->assertNotNull($subscription->fresh());
+
+        $unused = Price::create(['plan_id' => $price->plan_id, 'currency' => 'UAH', 'amount' => 100, 'pricing_type' => 'flat']);
+        $this->assertTrue($unused->delete());
+    }
+
     public function test_grace_access_can_be_disabled_globally(): void
     {
         $subscription = $this->subscription(['status' => SubscriptionStatus::PastDue, 'grace_ends_at' => now()->addDay()]);

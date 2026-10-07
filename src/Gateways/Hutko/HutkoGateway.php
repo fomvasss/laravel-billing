@@ -118,8 +118,8 @@ class HutkoGateway extends AbstractGateway implements RefundsPayments, Tokenizes
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
         }
 
-        // rectoken rides along in the SAME callback as the payment status, automatically on any
-        // approved card payment (no opt-in flag — see class docblock). Persisted as a side effect,
+        // rectoken rides along in the SAME callback as the payment status — only when charge() sent
+        // required_rectoken='Y' (opt-in via ChargeOptions::$saveCard, see class docblock). Persisted as a side effect,
         // dispatched directly: this call's WebhookResult already carries the Payment outcome below,
         // so there's no second return value for WebhookResultDispatcher to fire
         // PaymentMethodAttached from.

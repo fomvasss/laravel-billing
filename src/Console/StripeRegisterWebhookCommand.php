@@ -15,8 +15,9 @@ use Illuminate\Support\Facades\Http;
  * command instead of the Dashboard or a hand-written curl. Stripe returns the whsec_ signing
  * secret ONLY in the creation response (it can never be re-fetched), which dictates the shape:
  * create → print the secret → you paste it into STRIPE_WEBHOOK_SECRET. A re-run against an
- * already-registered URL refuses (the secret is unrecoverable) unless --fresh deletes and
- * re-creates — the tunnel-domain-changed workflow.
+ * already-registered URL updates its event list in place (the secret survives an update);
+ * --fresh deletes and re-creates it with a new secret — for an API version change or the
+ * tunnel-domain-changed workflow.
  */
 class StripeRegisterWebhookCommand extends Command
 {

@@ -150,6 +150,21 @@ class PaymentLinkTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_an_off_session_charge_awaiting_its_webhook_is_not_given_a_checkout(): void
+    {
+        Http::fake();
+
+        // chargeWithMethod() stored the gateway reference; the outcome webhook hasn't landed yet
+        $payment = $this->payment(['external_id' => 'inv_off_session', 'initiation' => 'automatic']);
+
+        $this->get(route('billing.pay', $payment))
+            ->assertStatus(303)
+            ->assertRedirect('https://example.test/thanks?payment=' . $payment->id);
+
+        Http::assertNothingSent();
+        $this->assertSame('inv_off_session', $payment->fresh()->external_id);
+    }
+
     public function test_refund_rows_and_unknown_payments_are_404(): void
     {
         $refund = $this->payment(['type' => 'refund', 'status' => 'paid']);

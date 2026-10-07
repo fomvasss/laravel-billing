@@ -34,7 +34,10 @@ class PaymentLinkController extends Controller
 
         PaymentLinkOpened::dispatch($payment);
 
-        if ($payment->isPaid()) {
+        // An off-session charge (chargeWithMethod(), a renewal) still waiting for its webhook: the
+        // gateway already has it, with no checkout page. Issuing one now would let the customer pay
+        // a second time (Monobank, Stripe) or fail on the reused order id (Hutko, LiqPay, WayForPay)
+        if ($payment->isPaid() || ($payment->isPending() && $payment->payment_url === null && $payment->external_id !== null)) {
             $target = config('billing.return_urls.success');
 
             abort_if($target === null, 404);

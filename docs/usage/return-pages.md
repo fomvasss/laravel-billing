@@ -61,13 +61,14 @@ Billing::charge($payment, new ChargeOptions(returnParams: ['order' => $order->nu
 | `pending` with a live checkout (`hasActivePaymentUrl()`) | Redirects to the gateway |
 | Expired, `failed` or `canceled` | Issues a fresh checkout via `charge()`, then redirects. The old gateway-side checkout is left to expire (Paddle cancels it) |
 | `paid` | Redirects to `return_urls.success` with `?payment={id}` |
+| `pending` with `external_id` and no `payment_url` — an off-session charge (`chargeWithMethod()`, a renewal) waiting for its webhook | Redirects to `return_urls.success` with `?payment={id}`; no checkout is issued (since 0.12.11) |
 | A refund row | 404 |
 
 Every visit fires `PaymentLinkOpened($payment)` — an analytics signal ("opened twice, never paid"), nothing more.
 
 The link is public and unauthenticated by design: it opens a checkout, not a document, and the id is a UUID. Re-issues are serialized per payment with a cache lock (`billing:reissue:{id}`, waits up to 15 s), so a double click or a mail client prefetching links doesn't create two live checkouts — the second request reuses the link the first one stored. The lock is only as wide as your cache store (see [Refunds](refunds.md#concurrency)).
 
-A gateway may refuse a re-issue for a reference it considers final; that surfaces as the driver's exception.
+A gateway may refuse a re-issue for a reference it considers final; that surfaces as the driver's exception. Hutko, LiqPay and WayForPay use the payment id as their order id, so they refuse a re-issue of a payment they have already seen (Hutko: `Duplicate order`) — for a failed or expired payment there, create a new `Payment`.
 
 ### What a re-issue sends
 

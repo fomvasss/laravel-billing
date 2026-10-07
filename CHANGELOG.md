@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.12.11] - 2026-10-07
+
+### Fixed
+- `billing.pay` opened for an off-session charge still waiting for its webhook (`chargeWithMethod()`, a renewal — `pending`, with `external_id`, without `payment_url`) issued a new checkout: on Monobank and Stripe the customer could pay the same payment a second time, on Hutko, LiqPay and WayForPay it failed with a duplicate order id. It now redirects to `return_urls.success`, like a paid payment
+
 ## [0.12.10] - 2026-10-07
 
 ### Fixed

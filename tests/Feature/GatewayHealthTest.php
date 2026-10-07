@@ -77,6 +77,17 @@ class GatewayHealthTest extends TestCase
             ->assertFailed(); // one gateway down → non-zero exit for monitoring
     }
 
+    public function test_the_health_command_skips_gateways_without_credentials(): void
+    {
+        foreach (['monobank', 'liqpay', 'wayforpay', 'hutko', 'stripe'] as $gateway) {
+            config(["billing.gateways.{$gateway}" => []]);
+        }
+
+        $this->artisan('billing:health')
+            ->expectsOutputToContain('not configured')
+            ->assertSuccessful();
+    }
+
     public function test_the_health_command_for_a_single_healthy_gateway_succeeds(): void
     {
         $this->artisan('billing:health', ['gateway' => 'fake'])->assertSuccessful();

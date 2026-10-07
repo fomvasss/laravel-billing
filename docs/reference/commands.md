@@ -38,7 +38,7 @@ Resets usage of prices with their own quota cycle. Hourly.
 php artisan billing:health {gateway?}
 ```
 
-Probes one gateway, or every registered health-capable gateway, and prints a table (gateway, status, latency, detail). Exit code 1 if any is down — an unconfigured built-in counts as down. An unknown name throws.
+Probes one gateway, or every registered health-capable gateway, and prints a table (gateway, status, latency, detail). Exit code 1 if any is down. Without an argument a gateway with none of its secret credentials set is listed as `skipped` / "not configured" and doesn't affect the exit code; a named gateway is always probed. An unknown name throws.
 
 ## billing:stripe-register-webhook
 

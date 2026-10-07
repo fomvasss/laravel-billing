@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.12.6] - 2026-10-07
+
+### Fixed
+- `billing:health` without an argument reported every built-in gateway the app never configured as DOWN and exited 1, so a monitoring cron always failed. Gateways with none of their secret credentials set are now listed as "not configured" and skipped
+
 ## [0.12.5] - 2026-10-07
 
 ### Fixed

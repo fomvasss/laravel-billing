@@ -47,7 +47,7 @@ Billing::health('monobank');
 ```
 
 ```bash
-php artisan billing:health            # table of every health-capable gateway, exit 1 if any is down
+php artisan billing:health            # table of every configured health-capable gateway, exit 1 if any is down
 php artisan billing:health monobank
 ```
 
@@ -63,8 +63,8 @@ php artisan billing:health monobank
 
 A probe never throws — a failure (including missing credentials) becomes `ok: false` with the reason.
 
-> [!WARNING]
-> `billing:health` without an argument probes **every registered** health-capable gateway, including built-ins you never configured — they report DOWN ("credential ... is missing") and the command exits 1. For a monitoring cron, pass the gateways you use: `billing:health monobank`.
+> [!NOTE]
+> `billing:health` without an argument skips gateways with none of their secret credentials set (`credential_fields` with `secret: true`, read through the credential resolver without a tenant) and lists them as "not configured". With per-tenant credentials only, every gateway is skipped — name it: `billing:health monobank`. Before 0.12.6 unconfigured built-ins reported DOWN and the command exited 1.
 
 ## Choosing a gateway per price
 

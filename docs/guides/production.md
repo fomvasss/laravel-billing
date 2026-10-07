@@ -34,7 +34,7 @@ The cache store backs the refund lock, the pay-link re-issue lock, `withoutOverl
 - **Watch the log** for `paid webhook amount/currency mismatch` (a paid callback left pending for review) and `a reversal was reported for a payment but not recorded` (a refund to record by hand).
 - **Bind `ReissueChargeOptionsContract`** if a re-issued checkout must save the card or carry a fiscal basket.
 - **Bind `RenewalChargeOptionsContract`** (or enable `BILLING_RENEWAL_RECEIPT_ITEMS`) if renewals must be fiscalized.
-- **Monitor gateways** with `billing:health <gateway>` — name the gateways you use; without arguments unconfigured built-ins report DOWN.
+- **Monitor gateways** with `billing:health` — it probes the gateways that have credentials. With per-tenant credentials name them: `billing:health <gateway>`.
 
 ## Invoices
 

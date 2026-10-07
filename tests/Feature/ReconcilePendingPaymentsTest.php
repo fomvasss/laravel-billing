@@ -94,6 +94,33 @@ class ReconcilePendingPaymentsTest extends TestCase
         $this->assertSame(PaymentStatus::Canceled, $payment->fresh()->status);
     }
 
+    public function test_a_reissued_checkout_is_not_written_off_while_it_is_fresh(): void
+    {
+        $reissued = $this->stalePendingPayment(null, gateway: 'fake');
+        $reissued->update(['payment_url' => 'https://example.test/pay']); // updated_at = now
+        $linkStillValid = $this->stalePendingPayment(null, gateway: 'fake');
+        Payment::whereKey($linkStillValid->id)->update(['payment_url' => 'https://example.test/pay', 'payment_url_expires_at' => now()->addHour()]);
+
+        $this->artisan('billing:reconcile-pending-payments')->assertSuccessful();
+
+        $this->assertSame(PaymentStatus::Pending, $reissued->fresh()->status);
+        $this->assertSame(PaymentStatus::Pending, $linkStillValid->fresh()->status);
+    }
+
+    public function test_a_payment_without_a_gateway_reference_is_not_polled(): void
+    {
+        $payment = $this->stalePendingPayment(null);
+
+        Http::fake();
+
+        $this->artisan('billing:reconcile-pending-payments')
+            ->doesntExpectOutputToContain('Payment ')
+            ->assertSuccessful();
+
+        Http::assertNothingSent();
+        $this->assertSame(PaymentStatus::Pending, $payment->fresh()->status);
+    }
+
     /**
      * The webhook path refuses a "paid" callback whose sum doesn't match the row — polling has to
      * refuse the same evidence, or reconciliation quietly marks paid an hour later exactly what the
@@ -136,6 +163,7 @@ class ReconcilePendingPaymentsTest extends TestCase
             'billable_type' => TestUser::class,
             'billable_id' => $user->id,
             'created_at' => now()->subHours(2),
+            'updated_at' => now()->subHours(2),
         ]);
     }
 }

@@ -10,6 +10,7 @@ The package is pre-1.0: the API and schema may change between minor versions. Th
 - `billing.invoices.number_per_tenant` (default `true`, unchanged behaviour). `false` numbers all tenants' documents in one sequence.
 - 0.12.1: an invoice issued for an already paid payment no longer names the subscription's (next) period.
 - 0.12.2: `auto_invoice`/`auto_receipt` issue nothing while the seller has no name.
+- 0.12.9: `billing:reconcile-pending-payments` measures age from `updated_at` instead of `created_at` — any update to a pending payment postpones its reconciliation by `reconcile_after_minutes`.
 - 0.12.8: `Price::delete()` and `Plan::delete()` throw `BillingException` when the price (or one of the plan's prices) has subscriptions. Before, the database cascaded and deleted them. The published migration now creates `billing_subscriptions.price_id` with `restrictOnDelete()`; an existing database keeps the cascade, which still applies to deletes bypassing the models. To change it:
 
   ```php

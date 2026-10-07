@@ -34,7 +34,9 @@ class ReconcilePendingPaymentsCommand extends Command
 
         Payment::query()
             ->where('status', PaymentStatus::Pending)
-            ->where('created_at', '<', $cutoff)
+            // updated_at, not created_at: a checkout re-issued through billing.pay is a fresh
+            // attempt on an old row — measured from created_at it was written off right away
+            ->where('updated_at', '<', $cutoff)
             ->chunkById(200, function ($payments) use ($billing, &$count) {
                 foreach ($payments as $payment) {
                     try {
@@ -85,6 +87,11 @@ class ReconcilePendingPaymentsCommand extends Command
         if ($driver instanceof ChecksPaymentStatus) {
             WebhookResultDispatcher::dispatchOnce($payment->gateway, $driver->checkStatus($payment));
 
+            return;
+        }
+
+        // A checkout link that is still valid can still be paid — nothing proves it dead yet.
+        if ($payment->payment_url_expires_at?->isFuture()) {
             return;
         }
 

@@ -530,7 +530,7 @@ class PaddleGatewayTest extends TestCase
         Event::fake([PaymentRefunded::class]);
         $payment = $this->paidPayment();
         $refund = Payment::recordRefundOf($payment, new Money(10000, 'UAH'), 'adj_1', [], PaymentStatus::Pending);
-        $refund->forceFill(['created_at' => now()->subHours(2)])->save();
+        Payment::whereKey($refund->id)->update(['created_at' => now()->subHours(2), 'updated_at' => now()->subHours(2)]);
 
         Http::fake(['https://sandbox-api.paddle.com/adjustments*' => Http::response(['data' => [$this->adjustment('approved', type: 'full')]])]);
 

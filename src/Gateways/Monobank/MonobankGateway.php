@@ -250,6 +250,11 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
 
     public function checkStatus(Payment $payment): WebhookResult
     {
+        // no invoice issued yet (a payment created up front for the billing.pay link) — nothing to poll
+        if ($payment->external_id === null) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored');
+        }
+
         $data = $this->http()
             ->get('/api/merchant/invoice/status', ['invoiceId' => $payment->external_id])
             ->throw()

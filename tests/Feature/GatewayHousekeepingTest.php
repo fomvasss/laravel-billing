@@ -105,7 +105,7 @@ class GatewayHousekeepingTest extends TestCase
     {
         Http::fake(['https://api.wayforpay.com/api' => Http::response(['transactionStatus' => 'Expired'])]);
 
-        $payment = $this->payment('wayforpay', 'UAH', ['created_at' => now()->subHours(2)]);
+        $payment = $this->payment('wayforpay', 'UAH', ['created_at' => now()->subHours(2), 'updated_at' => now()->subHours(2)]);
 
         $this->artisan('billing:reconcile-pending-payments')->assertSuccessful();
 

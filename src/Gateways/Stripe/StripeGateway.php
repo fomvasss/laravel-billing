@@ -779,6 +779,11 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
 
     public function checkStatus(Payment $payment): WebhookResult
     {
+        // no session or PaymentIntent yet (a payment created up front for the billing.pay link)
+        if ($payment->external_id === null) {
+            return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored');
+        }
+
         // external_id starts out as the Checkout Session id, but becomes the PaymentIntent id once
         // a webhook lands — and is a PI from the very start for off-session chargePaymentMethod()
         // payments. Poll whichever object it actually is.

@@ -24,21 +24,15 @@ Every command skips provider-managed subscriptions, except `reset-usage-quotas` 
 
 ## `billing:reconcile-pending-payments`
 
-The fallback for a lost webhook, and for gateway statuses that never get one (an expired checkout). Looks at `pending` payments created more than `reconcile_after_minutes` (60) ago:
+The fallback for a lost webhook, and for gateway statuses that never get one (an expired checkout). Looks at `pending` payments not updated for more than `reconcile_after_minutes` (60). The age runs from `updated_at`, so a checkout re-issued through the pay link counts as fresh:
 
 - `gateway` null — skipped (manual payment);
 - gateway no longer registered — left alone;
 - a subscription payment with neither `external_id` nor `payment_url` — a renewal whose initiation never got a reference — written off as `canceled`;
-- the driver implements `ChecksPaymentStatus` — the gateway is polled and the outcome goes through the same dedup as webhooks (`paid`, `failed`, `canceled`; non-terminal states stay pending). Paddle also cancels an open transaction whose link TTL has passed, and polls pending Paddle refunds;
-- no status polling (the `fake` gateway, custom drivers) — written off as `canceled` (`PaymentCanceled`).
+- the driver implements `ChecksPaymentStatus` — the gateway is polled (a Monobank, Stripe or Paddle payment without `external_id`, never charged yet, is skipped) and the outcome goes through the same dedup as webhooks (`paid`, `failed`, `canceled`; non-terminal states stay pending). Paddle also cancels an open transaction whose link TTL has passed, and polls pending Paddle refunds;
+- no status polling (the `fake` gateway, custom drivers) — written off as `canceled` (`PaymentCanceled`), unless its `payment_url_expires_at` is still in the future.
 
 One failing payment is reported and skipped, never blocks the rest.
-
-> [!NOTE]
-> The age is measured from `created_at`, not from the last checkout. A payment created long ago and re-issued through the pay link a minute ago is polled on the next run — harmless on gateways with status polling (the poll answers "pending"), but on a gateway without it the fresh checkout is written off.
-
-> [!NOTE]
-> A pending Monobank or Stripe payment that was never charged (`external_id` null — e.g. created for an emailed pay link nobody opened yet) is polled with an empty reference every run, and the error is reported every 15 minutes until someone opens the link.
 
 ## Custom cadence
 

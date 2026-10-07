@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.12.9] - 2026-10-07
+
+### Fixed
+- `billing:reconcile-pending-payments` measured a payment's age from `created_at`, so a checkout re-issued through the pay link on an old row was written off at once on gateways without status polling. The age now runs from `updated_at`, and such a gateway's payment is not written off while its `payment_url_expires_at` is in the future
+- A pending Monobank or Stripe payment that was never charged (`external_id` null, e.g. created for an emailed pay link) was polled with an empty reference and reported an error every 15 minutes. It is skipped until the gateway gives it a reference
+
 ## [0.12.8] - 2026-10-07
 
 ### Fixed

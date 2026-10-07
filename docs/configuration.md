@@ -9,7 +9,7 @@
 | `debug` | `BILLING_DEBUG` | `false` | Driver-level debug log (`AbstractGateway::log()`) through the default log channel. Dev/staging only — a driver may log request data |
 | `return_urls.success` | `BILLING_RETURN_URL_SUCCESS` | `null` | Your page the customer lands on after checkout, see [Return pages](usage/return-pages.md) |
 | `return_urls.failed` | `BILLING_RETURN_URL_FAILED` | `null` | Your page for a failed/cancelled checkout. Only Stripe and Paddle ever use it |
-| `reconcile_after_minutes` | `BILLING_RECONCILE_AFTER_MINUTES` | `60` | How old a `pending` payment must be before `billing:reconcile-pending-payments` polls the gateway for it (or writes it off) |
+| `reconcile_after_minutes` | `BILLING_RECONCILE_AFTER_MINUTES` | `60` | How long a `pending` payment must stay unchanged (`updated_at`) before `billing:reconcile-pending-payments` polls the gateway for it (or writes it off) |
 | `schedule.enabled` | `BILLING_SCHEDULE_ENABLED` | `false` | Registers the package's [scheduled commands](usage/scheduling.md). Off: nothing is renewed, reconciled or expired |
 
 > [!NOTE]

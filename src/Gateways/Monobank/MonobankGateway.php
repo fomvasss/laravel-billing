@@ -138,6 +138,7 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
         if (! $payment->transitionTo($status, [
             'external_id' => $payload['invoiceId'] ?? $payment->external_id,
             ...$this->feeFrom($payload['paymentInfo']['fee'] ?? null),
+            ...$this->failureFrom($status, $payload['errCode'] ?? null, $payload['failureReason'] ?? null),
         ])) {
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
         }
@@ -282,6 +283,7 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
         if (! $payment->transitionTo($status, [
             'external_id' => $data['invoiceId'],
             ...$this->feeFrom($data['paymentInfo']['fee'] ?? null),
+            ...$this->failureFrom($status, $data['errCode'] ?? null, $data['failureReason'] ?? null),
         ])) {
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $data);
         }

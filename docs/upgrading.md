@@ -5,6 +5,17 @@ The package is pre-1.0: the API and schema may change between minor versions. Th
 > [!WARNING]
 > New columns are added to the package's **existing** migration files, and `vendor:publish` skips a migration that is already published. An installed app doesn't get them by re-publishing — compare the published files with `vendor/fomvasss/laravel-billing/database/migrations` and write your own migration for the difference. The columns each release added are listed below.
 
+## 0.13
+
+- New columns `billing_payments.failure_code` (nullable string(100)) and `failure_message` (nullable string(255)). Payments failed before the upgrade keep both `null`.
+
+  ```php
+  Schema::table('billing_payments', function (Blueprint $table) {
+      $table->string('failure_code', 100)->nullable()->after('paid_at');
+      $table->string('failure_message')->nullable()->after('failure_code');
+  });
+  ```
+
 ## 0.12
 
 - `billing.invoices.number_per_tenant` (default `true`, unchanged behaviour). `false` numbers all tenants' documents in one sequence.

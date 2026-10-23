@@ -163,6 +163,24 @@ abstract class AbstractGateway implements PaymentGatewayContract
     }
 
     /**
+     * The gateway's reason for a refused charge, as transitionTo() attributes. Failed only — and
+     * both keys always, so a later decline that gives no reason doesn't keep an earlier one's.
+     * Only what the gateway reported: an absent or empty field stays null.
+     */
+    protected function failureFrom(PaymentStatus $status, mixed $code, mixed $message): array
+    {
+        if ($status !== PaymentStatus::Failed) {
+            return [];
+        }
+
+        $text = fn (mixed $value, int $limit) => is_scalar($value) && trim((string) $value) !== ''
+            ? Str::limit(trim((string) $value), $limit, '')
+            : null;
+
+        return ['failure_code' => $text($code, 100), 'failure_message' => $text($message, 255)];
+    }
+
+    /**
      * A "paid" outcome whose sum/currency doesn't match this Payment row is NOT proof this row was
      * paid — the classic case is a stale checkout link paid after the amount was edited and
      * charge() re-issued. The driver refuses to mark paid on a mismatch; the row stays pending for

@@ -39,7 +39,7 @@ class AcmePayGateway implements PaymentGatewayContract
 }
 ```
 
-Extend `AbstractGateway` instead of implementing the interface directly and you get a constructor (`$credentials`, `$gatewayName`), a debug logger, a `requiresDashboardWebhook()` default (`false` — most gateways take the callback URL per charge request), and the `webhookUrl()`/`successUrl()`/`failUrl()`/`linkTtlMinutes()`/`persistPaymentMethod()`/`paidAmountMismatch()`/`feeFrom()`/`findPaymentByReference()` helpers. Both paths are equally supported — the base class just saves boilerplate.
+Extend `AbstractGateway` instead of implementing the interface directly and you get a constructor (`$credentials`, `$gatewayName`), a debug logger, a `requiresDashboardWebhook()` default (`false` — most gateways take the callback URL per charge request), and the `webhookUrl()`/`successUrl()`/`failUrl()`/`linkTtlMinutes()`/`persistPaymentMethod()`/`paidAmountMismatch()`/`feeFrom()`/`failureFrom()`/`findPaymentByReference()` helpers. Both paths are equally supported — the base class just saves boilerplate.
 
 ### `charge()`
 
@@ -125,6 +125,10 @@ public function handleWebhook(BillingWebhookCall $webhookCall): WebhookResult
         // unreported fee stays null ("unknown"), never a guessed 0. Pass decimal: true when
         // your gateway sends decimal amounts.
         ...$this->feeFrom($payload['fee'] ?? null),
+        // If the callback says why a charge was refused, record it. failureFrom() returns
+        // failure_code/failure_message for a Failed status (null where the field is absent or
+        // empty), [] for any other — and a later paid transition clears both.
+        ...$this->failureFrom($status, $payload['error_code'] ?? null, $payload['error_message'] ?? null),
     ])) {
         return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
     }
@@ -369,6 +373,7 @@ Add a tamper case (flip a byte in the body, expect rejection) and, if the gatewa
 - [ ] Non-terminal gateway statuses and unknown references return `Ignored`, not an error
 - [ ] Paid callbacks checked against the payment's amount/currency (`paidAmountMismatch()`)
 - [ ] Gateway commission parsed into `fee` where the callback reports it (`feeFrom()`)
+- [ ] Decline reason parsed into `failure_code`/`failure_message`, in `handleWebhook()` and `checkStatus()` alike (`failureFrom()`)
 - [ ] Credentials read from `$this->credentials`, not `config()`
 - [ ] Charges and refunds are sent exactly once (`retry(1)`) unless an idempotency key makes a retry safe
 - [ ] Validator fails closed on a missing secret; `hash_equals()` for comparison; rotating keys cached with one throttled retry

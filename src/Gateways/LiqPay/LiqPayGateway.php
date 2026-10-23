@@ -137,6 +137,7 @@ class LiqPayGateway extends AbstractGateway implements RefundsPayments, ChecksPa
         if (! $payment->transitionTo($status, [
             'external_id' => $decoded['payment_id'] ?? $decoded['transaction_id'] ?? null,
             ...$this->feeFrom($decoded['receiver_commission'] ?? null, decimal: true),
+            ...$this->failureFrom($status, $decoded['err_code'] ?? null, $decoded['err_description'] ?? null),
         ])) {
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $decoded);
         }
@@ -260,6 +261,7 @@ class LiqPayGateway extends AbstractGateway implements RefundsPayments, ChecksPa
         if (! $payment->transitionTo($status, [
             'external_id' => $externalId,
             ...$this->feeFrom($data['receiver_commission'] ?? null, decimal: true),
+            ...$this->failureFrom($status, $data['err_code'] ?? null, $data['err_description'] ?? null),
         ])) {
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $data);
         }

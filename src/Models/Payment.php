@@ -99,6 +99,23 @@ class Payment extends Model
         return $this->status === PaymentStatus::Failed;
     }
 
+    /**
+     * The gateway's reason for a refused charge, for a person to read — "Insufficient funds (1104)".
+     * Null when the gateway didn't say, or the payment isn't failed.
+     */
+    public function failureReason(): ?string
+    {
+        if (! $this->isFailed() || ($this->failure_code === null && $this->failure_message === null)) {
+            return null;
+        }
+
+        return match (true) {
+            $this->failure_message === null => $this->failure_code,
+            $this->failure_code === null => $this->failure_message,
+            default => "{$this->failure_message} ({$this->failure_code})",
+        };
+    }
+
     public function isRefund(): bool
     {
         return $this->type === PaymentType::Refund;
@@ -142,6 +159,12 @@ class Payment extends Model
             ]);
 
             return false;
+        }
+
+        // A decline followed by a successful retry on the same row (Stripe reuses the PaymentIntent,
+        // WayForPay/Hutko the order reference) must not keep showing the old refusal.
+        if ($status === PaymentStatus::Paid) {
+            $attributes = [...$attributes, 'failure_code' => null, 'failure_message' => null];
         }
 
         $this->update([...$attributes, 'status' => $status]);

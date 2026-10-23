@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.13.0] - 2026-10-23
+
+### Added
+- **A failed payment records why.** `payments.failure_code` and `payments.failure_message` hold the gateway's own reason, filled from the decline callback and the status poll: WayForPay `reasonCode`/`reason`, Monobank `errCode`/`failureReason`, LiqPay `err_code`/`err_description`, Hutko `response_code`/`response_description`, Stripe `last_payment_error.decline_code` (else `.code`)/`.message`. `Payment::failureReason()` gives both for a person to read (`Insufficient funds (1104)`). Never guessed: a field the gateway didn't send stays `null`; `canceled` gets no reason; a row paid after a decline has both cleared by `transitionTo()`. Custom drivers: `AbstractGateway::failureFrom()`
+- `payments.failure_code` and `payments.failure_message` columns, in the existing `billing-migrations-core` migration group
+
 ## [0.12.11] - 2026-10-07
 
 ### Fixed

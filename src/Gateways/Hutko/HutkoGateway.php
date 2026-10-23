@@ -141,6 +141,7 @@ class HutkoGateway extends AbstractGateway implements RefundsPayments, Tokenizes
         if (! $payment->transitionTo($status, [
             ...array_filter(['external_id' => $externalId]),
             ...$this->feeFrom($payload['fee'] ?? null),
+            ...$this->failureFrom($status, $payload['response_code'] ?? null, $payload['response_description'] ?? null),
         ])) {
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
         }
@@ -364,6 +365,7 @@ class HutkoGateway extends AbstractGateway implements RefundsPayments, Tokenizes
         if (! $payment->transitionTo($status, [
             ...array_filter(['external_id' => $externalId]),
             ...$this->feeFrom($data['fee'] ?? null),
+            ...$this->failureFrom($status, $data['response_code'] ?? null, $data['response_description'] ?? null),
         ])) {
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $data ?? []);
         }

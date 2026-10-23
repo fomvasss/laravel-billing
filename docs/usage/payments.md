@@ -218,3 +218,24 @@ The webhook (or [reconciliation](scheduling.md#billingreconcile-pending-payments
 A `paid` payment is never moved to another status by a later callback (`Payment::transitionTo()`); a `failed`/`canceled` one can still become `paid` — the customer paid a re-issued checkout. See [Webhooks → Guarantees](webhooks.md#what-the-pipeline-guarantees).
 
 Helpers: `isPaid()`, `isPending()`, `isFailed()`, `isRefund()`, `hasActivePaymentUrl()`, scopes `paid()`, `pending()`, `forBillable($model)`. Full list — [Models](../reference/models.md#payment).
+
+## Why a payment failed
+
+A `failed` payment records the gateway's own reason, from the callback or the status poll:
+
+- `payments.failure_code` — the gateway's code: WayForPay `reasonCode`, Monobank `errCode`, LiqPay `err_code`, Hutko `response_code`, Stripe `last_payment_error.decline_code` (the bank's reason), else `.code` (Stripe's own)
+- `payments.failure_message` — its text: WayForPay `reason`, Monobank `failureReason`, LiqPay `err_description`, Hutko `response_description`, Stripe `last_payment_error.message`
+- `$payment->failureReason()` — both for a person to read: `Insufficient funds (1104)`; `null` when the payment isn't failed or the gateway gave no reason
+
+Codes and texts are the gateway's, not normalized — `59` from Monobank and `insufficient_funds` from Stripe mean the same thing. A field the gateway didn't send stays `null`. `canceled` (an expired checkout) has no reason: nobody's card was refused. A row paid after a decline — Stripe reuses the PaymentIntent, WayForPay and Hutko the order reference — has both cleared.
+
+Not covered:
+
+- Stripe Checkout: a declined card inside an open session isn't an outcome (the customer tries another card on the same page), and an expired session carries no reason. Only off-session charges get one
+- Paddle: `transaction.payment_failed` reports only `error_code`, and the package doesn't act on it for a checkout
+
+```php
+Event::listen(function (PaymentFailed $event) {
+    Log::info('Payment refused', ['payment' => $event->payment->id, 'reason' => $event->payment->failureReason()]);
+});
+```

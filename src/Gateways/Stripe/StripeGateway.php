@@ -316,7 +316,15 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             $externalId = $payment->external_id;
         }
 
-        if (! $payment->transitionTo($status, array_filter(['external_id' => $externalId]))) {
+        // last_payment_error rides on the PaymentIntent of payment_intent.payment_failed —
+        // decline_code ("insufficient_funds") is the bank's reason, code ("card_declined",
+        // "incorrect_number") Stripe's own, and the only one present for a non-decline error.
+        $error = $object['last_payment_error'] ?? [];
+
+        if (! $payment->transitionTo($status, [
+            ...array_filter(['external_id' => $externalId]),
+            ...$this->failureFrom($status, $error['decline_code'] ?? $error['code'] ?? null, $error['message'] ?? null),
+        ])) {
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $event);
         }
 
@@ -851,7 +859,9 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $data);
         }
 
-        if (! $payment->transitionTo($status)) {
+        $error = $data['last_payment_error'] ?? [];
+
+        if (! $payment->transitionTo($status, $this->failureFrom($status, $error['decline_code'] ?? $error['code'] ?? null, $error['message'] ?? null))) {
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $data);
         }
 

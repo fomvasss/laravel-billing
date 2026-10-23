@@ -153,7 +153,10 @@ class WayForPayGateway extends AbstractGateway implements ChecksPaymentStatus, T
         }
 
         // fee — WayForPay's commission, decimal like the callback's own `amount`.
-        if (! $payment->transitionTo($status, $this->feeFrom($payload['fee'] ?? null, decimal: true))) {
+        if (! $payment->transitionTo($status, [
+            ...$this->feeFrom($payload['fee'] ?? null, decimal: true),
+            ...$this->failureFrom($status, $payload['reasonCode'] ?? null, $payload['reason'] ?? null),
+        ])) {
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $payload);
         }
 
@@ -322,7 +325,10 @@ class WayForPayGateway extends AbstractGateway implements ChecksPaymentStatus, T
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $data);
         }
 
-        if (! $payment->transitionTo($status, $this->feeFrom($data['fee'] ?? null, decimal: true))) {
+        if (! $payment->transitionTo($status, [
+            ...$this->feeFrom($data['fee'] ?? null, decimal: true),
+            ...$this->failureFrom($status, $data['reasonCode'] ?? null, $data['reason'] ?? null),
+        ])) {
             return new WebhookResult(type: WebhookEventType::Ignored, status: 'ignored', raw: $data);
         }
 

@@ -34,6 +34,10 @@ return new class extends Migration
             $table->string('payment_url', 2048)->nullable();
             $table->timestamp('payment_url_expires_at')->nullable();
             $table->timestamp('paid_at')->nullable();
+            // The gateway's own reason for a refused charge — written on `failed` only, cleared once
+            // the row is paid, never guessed. See "Why a payment failed" in docs/usage/payments.md.
+            $table->string('failure_code', 100)->nullable();
+            $table->string('failure_message')->nullable();
             // Gateway's refund-API response (refund rows only) — webhook payloads live in billing_webhook_calls.
             $table->json('raw_response')->nullable();
             // Opaque, consumer-controlled — the package never reads or writes it. See "Recipes" in README.

@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Fixed
+- The return route (`billing.return`) sent every customer coming back through the gateway's single return URL (Monobank, LiqPay, WayForPay, Hutko) to `return_urls.success`, a declined card included. It now picks the page by the payment's status — `paid` → `success`, `failed`/`canceled` → `failed`, still `pending` → the URL's outcome — after one status poll (`ChecksPaymentStatus`, deduplicated like `billing:reconcile-pending-payments`) for a `pending` payment with an `external_id`. The final URL also carries `status={status}`
+
 ## [0.13.0] - 2026-10-23
 
 ### Added

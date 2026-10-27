@@ -7,6 +7,7 @@ The package is pre-1.0: the API and schema may change between minor versions. Th
 
 ## 0.13
 
+- 0.13.1: the return route (`billing.return`) picks the page by the payment's status instead of the URL's `{outcome}`: a `failed`/`canceled` payment lands on `return_urls.failed` even when the gateway returned through `success` (Monobank, LiqPay, WayForPay, Hutko). A `pending` payment is polled once (`ChecksPaymentStatus`) before deciding. The final URL also carries `status={status}`.
 - New columns `billing_payments.failure_code` (nullable string(100)) and `failure_message` (nullable string(255)). Payments failed before the upgrade keep both `null`.
 
   ```php

@@ -15,12 +15,14 @@ Configure your final pages once — app routes, or a frontend/SPA on another ori
 The gateway is not sent there directly. It gets the package's return route, `billing/return/{payment}/{outcome}` (`billing.return`, GET and POST, no CSRF), which:
 
 1. fires `CheckoutReturned($payment, $outcome, $data)`;
-2. 303-redirects to `return_urls.{outcome}` with `?payment={id}` appended (and any incoming query params).
+2. settles a still-`pending` payment that has an `external_id` with one status poll, when the gateway supports it (`ChecksPaymentStatus` — every bundled driver). The outcome goes through the same dedup as `billing:reconcile-pending-payments`, so it fires the events a webhook would, never twice. A failed poll is reported and the payment stays `pending`;
+3. picks the page by the payment's status — `paid` → `success`, `failed`/`canceled` → `failed`, still `pending` → the `{outcome}` from the URL;
+4. 303-redirects there with `?payment={id}&status={status}` appended (and any incoming query params).
 
 The hop exists because WayForPay and Hutko return the customer with an auto-submitted **POST**, which the route accepts without CSRF exceptions on your side, and the 303 turns into a plain GET — something a SPA page could never receive directly.
 
 > [!WARNING]
-> `success`/`failed` name the return **slot**, not the verdict. Only Stripe (`success_url`/`cancel_url`) and Paddle (the overlay closed without paying) ever use the `failed` slot. Monobank, LiqPay, WayForPay and Hutko have a single return URL, so their customers land on your `success` page whatever happened — including a declined card. The page must read the real state: `$payment->isPaid()`, `isFailed()`, or "processing" while the webhook hasn't arrived.
+> Monobank, LiqPay, WayForPay and Hutko have a single return URL, so the gateway always sends the customer back through `success` — including after a declined card. Step 3 corrects that once the outcome is known. When neither the webhook nor the poll has settled the payment yet, the customer still lands on `success` with `status=pending`: show "processing", not "paid".
 
 The return page is UX only. The browser may come back before the webhook, after it, or never; `CheckoutReturned` and its `$data` (whatever the gateway put in the redirect) are unverified. Never fulfil an order from them.
 
@@ -43,10 +45,10 @@ Need more than the payment id on your page? `ChargeOptions::$returnParams` rides
 
 ```php
 Billing::charge($payment, new ChargeOptions(returnParams: ['order' => $order->number]));
-// → https://app.example.com/checkout/success?order=1042&payment={id}
+// → https://app.example.com/checkout/success?order=1042&payment={id}&status=paid
 ```
 
-`payment` always wins over a same-named param. These are display hints — not proof of anything.
+`payment` and `status` always win over same-named params. These are display hints — not proof of anything.
 
 ### Bypassing the return route
 

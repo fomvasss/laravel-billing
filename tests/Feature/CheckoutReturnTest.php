@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Fomvasss\Billing\Tests\Feature;
 
+use Fomvasss\Billing\Enums\PaymentStatus;
 use Fomvasss\Billing\Events\CheckoutReturned;
 use Fomvasss\Billing\Facades\Billing;
 use Fomvasss\Billing\Models\Payment;
@@ -28,7 +29,7 @@ class CheckoutReturnTest extends TestCase
         $response = $this->get(route('billing.return', ['payment' => $payment, 'outcome' => 'success']));
 
         $response->assertStatus(303);
-        $response->assertRedirect('https://example.test/thanks?payment=' . $payment->id);
+        $response->assertRedirect('https://example.test/thanks?payment=' . $payment->id . '&status=pending');
         Event::assertDispatched(CheckoutReturned::class, fn ($event) => $event->payment->is($payment) && $event->outcome === 'success');
     }
 
@@ -45,7 +46,7 @@ class CheckoutReturnTest extends TestCase
         );
 
         $response->assertStatus(303); // 303 turns the gateway's POST into a plain GET on the final page
-        $response->assertRedirect('https://example.test/fail?payment=' . $payment->id);
+        $response->assertRedirect('https://example.test/fail?payment=' . $payment->id . '&status=pending');
         Event::assertDispatched(CheckoutReturned::class, fn ($event) => $event->outcome === 'failed'
             && ($event->data['transactionStatus'] ?? null) === 'Declined');
     }
@@ -92,7 +93,7 @@ class CheckoutReturnTest extends TestCase
         // ...and the proxy forwards them (plus payment) onto the final page.
         $this->get($proxyUrl)
             ->assertStatus(303)
-            ->assertRedirect('https://example.test/thanks?order=1042&payment=' . $payment->id);
+            ->assertRedirect('https://example.test/thanks?order=1042&payment=' . $payment->id . '&status=pending');
     }
 
     public function test_an_explicit_charge_options_url_bypasses_the_return_route(): void
@@ -111,11 +112,69 @@ class CheckoutReturnTest extends TestCase
         Http::assertSent(fn ($request) => $request['redirectUrl'] === 'https://shop.test/thanks?order=1042');
     }
 
-    private function pendingPayment(): Payment
+    /** Monobank has one redirectUrl: a declined card comes back through "success" — the row's own status decides */
+    public function test_a_declined_payment_returning_through_success_lands_on_the_failed_page(): void
+    {
+        config()->set('billing.gateways.monobank.token', 'test-token');
+        Http::fake([
+            'https://api.monobank.ua/api/merchant/invoice/status*' => Http::response(['invoiceId' => 'inv_1', 'status' => 'failure', 'failureReason' => '3DS']),
+        ]);
+
+        $payment = $this->pendingPayment(['external_id' => 'inv_1']);
+
+        $this->get(route('billing.return', ['payment' => $payment, 'outcome' => 'success']))
+            ->assertStatus(303)
+            ->assertRedirect('https://example.test/fail?payment=' . $payment->id . '&status=failed');
+
+        $this->assertSame(PaymentStatus::Failed, $payment->refresh()->status);
+    }
+
+    public function test_a_payment_the_gateway_still_processes_lands_on_the_success_page_as_pending(): void
+    {
+        config()->set('billing.gateways.monobank.token', 'test-token');
+        Http::fake([
+            'https://api.monobank.ua/api/merchant/invoice/status*' => Http::response(['invoiceId' => 'inv_1', 'status' => 'processing']),
+        ]);
+
+        $payment = $this->pendingPayment(['external_id' => 'inv_1']);
+
+        $this->get(route('billing.return', ['payment' => $payment, 'outcome' => 'success']))
+            ->assertRedirect('https://example.test/thanks?payment=' . $payment->id . '&status=pending');
+    }
+
+    /** A failing poll must not break the return — the webhook or reconcile settles the row later */
+    public function test_a_failing_status_poll_keeps_the_payment_pending(): void
+    {
+        config()->set('billing.gateways.monobank.token', 'test-token');
+        Http::fake([
+            'https://api.monobank.ua/api/merchant/invoice/status*' => Http::response([], 500),
+        ]);
+
+        $payment = $this->pendingPayment(['external_id' => 'inv_1']);
+
+        $this->get(route('billing.return', ['payment' => $payment, 'outcome' => 'success']))
+            ->assertRedirect('https://example.test/thanks?payment=' . $payment->id . '&status=pending');
+
+        $this->assertSame(PaymentStatus::Pending, $payment->refresh()->status);
+    }
+
+    public function test_a_settled_payment_is_not_polled_and_its_status_wins_over_the_outcome(): void
+    {
+        Http::fake();
+
+        $payment = $this->pendingPayment(['external_id' => 'inv_1', 'status' => 'paid']);
+
+        $this->get(route('billing.return', ['payment' => $payment, 'outcome' => 'failed']))
+            ->assertRedirect('https://example.test/thanks?payment=' . $payment->id . '&status=paid');
+
+        Http::assertNothingSent();
+    }
+
+    private function pendingPayment(array $attributes = []): Payment
     {
         $user = TestUser::create(['name' => 'Buyer']);
 
-        return Payment::create([
+        return Payment::create([...[
             'status' => 'pending',
             'type' => 'charge',
             'gateway' => 'monobank',
@@ -125,6 +184,6 @@ class CheckoutReturnTest extends TestCase
             'payable_id' => $user->id,
             'billable_type' => TestUser::class,
             'billable_id' => $user->id,
-        ]);
+        ], ...$attributes]);
     }
 }

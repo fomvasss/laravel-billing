@@ -45,6 +45,7 @@ See [Invoices and receipts](../usage/invoices.md).
 | Exception | When |
 |---|---|
 | `Fomvasss\Billing\Exceptions\BillingException` | Configuration and business errors: unknown gateway, missing return URL or credential, unsupported currency, basket not matching the amount, refund guards, a gateway refusing a refund or a subscription change, wrong card for the payment |
+| `Fomvasss\Billing\Exceptions\TooManyCheckoutsException` | `charge()`/`startSubscription()` over `checkout_rate_limit`. Extends `BillingException`; renders as 429 with `Retry-After`, `$retryAfter` in seconds |
 | `Fomvasss\Billing\Exceptions\NotSupportedException` | The driver lacks the capability (refunds, tokenization, provider subscriptions, health), or the provider can't do the operation (Stripe pause) |
 | `Illuminate\Http\Client\RequestException` | A gateway HTTP error the driver didn't translate |
 

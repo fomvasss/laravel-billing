@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.14.0] - 2026-10-28
+
+### Added
+- **Checkout rate limit** against card testing: `checkout_rate_limit.max_attempts` checkouts per `decay_minutes` (`BILLING_CHECKOUT_RATE_LIMIT`, `BILLING_CHECKOUT_RATE_LIMIT_DECAY`), counted by `charge()` and `startSubscription()` per billable and per `ChargeOptions::$customerIp`, and by the pay link (`billing.pay`) per visitor IP on every re-issue. Over the limit `TooManyCheckoutsException` (extends `BillingException`, renders as 429 with `Retry-After`). Off-session charges and `initiation: Automatic` are not counted. Off by default
+- The webhook route is limited by default: `webhook.rate_limit` requests per minute per gateway and IP (`BILLING_WEBHOOK_RATE_LIMIT`, 600) answered 429 above it, and `webhook.max_payload_kb` (`BILLING_WEBHOOK_MAX_PAYLOAD_KB`, 1024) answered 413 before the body is stored. `null` disables either; `webhook.middleware` runs after the built-in throttle
+
 ## [0.13.1] - 2026-10-27
 
 ### Fixed

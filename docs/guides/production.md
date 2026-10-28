@@ -10,6 +10,11 @@ What to check before taking real money, and why each item matters.
 - **Listener side effects are idempotent.** The webhook job retries (3 tries); DB writes roll back with the dedup claim, emails and external API calls don't.
 - **Stripe and Paddle endpoints are registered** for the production URL (`billing:stripe-register-webhook`, `billing:paddle-register-webhook`), and the Paddle default payment link and domain approval are set.
 - **Webhook middleware** doesn't block gateways — no basic auth, no IP allowlist that misses the gateway's addresses, no `web` group.
+- **`webhook.rate_limit` fits your peak.** 600 per minute per gateway and IP is far above normal traffic; a mass renewal behind a proxy that hides the gateway's IP (`TrustProxies` not set) shares one counter for every gateway address.
+
+## Card testing
+
+- **`BILLING_CHECKOUT_RATE_LIMIT`** is set, and your checkout controller passes `customerIp` — see [Checkout rate limit](../usage/payments.md#checkout-rate-limit).
 
 ## Scheduler
 
@@ -18,7 +23,7 @@ What to check before taking real money, and why each item matters.
 
 ## Cache
 
-The cache store backs the refund lock, the pay-link re-issue lock, `withoutOverlapping()`, LiqPay's checkout forms, Paddle's checkout settings, Monobank's public key and usage idempotency keys. Use a shared store (`redis`, `memcached`, `database`) when you run more than one app server — `file` locks only within one machine, `array` protects nothing.
+The cache store backs the checkout and webhook rate limits, the refund lock, the pay-link re-issue lock, `withoutOverlapping()`, LiqPay's checkout forms, Paddle's checkout settings, Monobank's public key and usage idempotency keys. Use a shared store (`redis`, `memcached`, `database`) when you run more than one app server — `file` locks only within one machine, `array` protects nothing.
 
 ## Configuration
 

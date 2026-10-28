@@ -181,6 +181,25 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Checkout rate limit
+    |--------------------------------------------------------------------------
+    |
+    | Card-testing protection: at most `max_attempts` checkouts opened in
+    | `decay_minutes` — charge(), startSubscription() and pay link re-issues —
+    | per billable, and per IP when ChargeOptions::$customerIp is passed
+    | (billing.pay counts the visitor's IP itself). Over the limit
+    | TooManyCheckoutsException (HTTP 429). Off-session charges (renewals,
+    | chargeWithMethod()) are never limited. Off by default (null).
+    |
+    */
+
+    'checkout_rate_limit' => [
+        'max_attempts' => env('BILLING_CHECKOUT_RATE_LIMIT'),
+        'decay_minutes' => env('BILLING_CHECKOUT_RATE_LIMIT_DECAY', 10),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Scheduled commands
     |--------------------------------------------------------------------------
     |
@@ -223,8 +242,11 @@ return [
     | the driver/signature validator/responder from that segment. Override
     | `path` to match your own convention (e.g. 'webhook/billing/{gateway}');
     | `middleware` is empty by default — webhook endpoints deliberately skip
-    | the `web` group (no CSRF, no session), add your own (IP allowlist, rate
-    | limiting, logging) here if needed. `prune_after_days` — how long stored
+    | the `web` group (no CSRF, no session), add your own (IP allowlist,
+    | logging) here if needed. `rate_limit` — requests per minute per gateway
+    | and IP, answered 429 above it (gateways retry later); `max_payload_kb` —
+    | a larger body is refused with 413 before it is stored. null disables
+    | either. `prune_after_days` — how long stored
     | webhook calls are kept before `model:prune` (scheduled daily when
     | billing.schedule.enabled) deletes them; pruned rows also drop their
     | dedup claims, so keep it beyond any gateway's retry horizon (WayForPay
@@ -235,6 +257,8 @@ return [
     'webhook' => [
         'path' => env('BILLING_WEBHOOK_PATH', 'billing/webhooks/{gateway}'),
         'middleware' => [],
+        'rate_limit' => env('BILLING_WEBHOOK_RATE_LIMIT', 600),
+        'max_payload_kb' => env('BILLING_WEBHOOK_MAX_PAYLOAD_KB', 1024),
         'prune_after_days' => env('BILLING_WEBHOOK_PRUNE_AFTER_DAYS', 30),
     ],
 

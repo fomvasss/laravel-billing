@@ -13,7 +13,8 @@ Billing and payments for Laravel: pluggable payment gateways, one-off payments, 
 - **Subscriptions** — flat, per-seat and metered prices, minute-to-year intervals, trials, pause, plan swaps, quotas, a retry ladder with grace access; renewed by the package or by the provider (Stripe Billing, Paddle)
 - **Refunds** — through the API, plus refunds made in a gateway's dashboard, recorded from webhooks
 - **Invoices and receipts** — numbered PDF documents, snapshots at issue time
-- **Webhook guarantees** — fail-closed signatures, amount verification, per-outcome dedup, reconciliation of lost webhooks
+- **Webhook guarantees** — fail-closed signatures, amount verification, per-outcome dedup, reconciliation of lost webhooks, rate and size limits on the endpoint
+- **Card-testing protection** — an optional limit on checkouts per customer and IP
 - **Multi-tenant** — per-tenant credentials and several accounts of one gateway
 - No dependencies beyond `illuminate/*`, Octane-safe, MySQL/MariaDB, PostgreSQL, SQLite
 

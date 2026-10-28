@@ -5,6 +5,11 @@ The package is pre-1.0: the API and schema may change between minor versions. Th
 > [!WARNING]
 > New columns are added to the package's **existing** migration files, and `vendor:publish` skips a migration that is already published. An installed app doesn't get them by re-publishing — compare the published files with `vendor/fomvasss/laravel-billing/database/migrations` and write your own migration for the difference. The columns each release added are listed below.
 
+## 0.14
+
+- The webhook route is throttled and size-limited by default: `webhook.rate_limit` 600 requests per minute per gateway and IP (429 above it), `webhook.max_payload_kb` 1024 (413 above it). A `throttle` you added to `webhook.middleware` yourself still runs, after the built-in one. Set either to `null` to turn it off.
+- `checkout_rate_limit` is new and off by default — nothing changes until you set `BILLING_CHECKOUT_RATE_LIMIT`. A published `config/billing.php` needs no edits: the defaults apply without the new keys.
+
 ## 0.13
 
 - 0.13.1: the return route (`billing.return`) picks the page by the payment's status instead of the URL's `{outcome}`: a `failed`/`canceled` payment lands on `return_urls.failed` even when the gateway returned through `success` (Monobank, LiqPay, WayForPay, Hutko). A `pending` payment is polled once (`ChecksPaymentStatus`) before deciding. The final URL also carries `status={status}`.

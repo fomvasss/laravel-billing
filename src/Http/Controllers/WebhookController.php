@@ -25,6 +25,13 @@ class WebhookController extends Controller
     {
         $manager = app(BillingManager::class);
 
+        // Before anything reads or stores the body: every call lands in billing_webhook_calls.
+        $maxKb = (int) config('billing.webhook.max_payload_kb', 1024);
+
+        if ($maxKb > 0 && strlen($request->getContent()) > $maxKb * 1024) {
+            abort(413);
+        }
+
         try {
             $validator = app($manager->signatureValidatorFor($gateway));
         } catch (BillingException) {

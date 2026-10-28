@@ -23,6 +23,7 @@ use Fomvasss\Billing\DTO\WebhookResult;
 use Fomvasss\Billing\Enums\WebhookEventType;
 use Fomvasss\Billing\Exceptions\BillingException;
 use Fomvasss\Billing\Exceptions\NotSupportedException;
+use Fomvasss\Billing\Exceptions\TooManyCheckoutsException;
 use Fomvasss\Billing\Models\Payment;
 use Fomvasss\Billing\Models\PaymentMethod;
 use Fomvasss\Billing\Models\Price;
@@ -48,6 +49,7 @@ use Fomvasss\Billing\Support\InvoiceDocumentFactory;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\URL;
 
@@ -235,6 +237,7 @@ class BillingManager
         }
 
         $this->assertReceiptItemsMatchAmount($payment, $options);
+        $this->throttleCheckout($payment, $options);
         $options = $this->withTenantHint($payment, $options);
 
         $result = $issue($driver, $options);
@@ -319,6 +322,52 @@ class BillingManager
         ])->save();
 
         return $result;
+    }
+
+    /**
+     * Card testing runs through fresh checkouts: each one is another page to try stolen cards on,
+     * and the gateway fines or blocks the merchant, not the attacker. Counted per billable and,
+     * when the caller passes $options->customerIp, per IP — a guest flow that creates a billable
+     * per order is only caught by the latter. An explicit Automatic initiation (a dunning retry
+     * pushed through charge()) is the app's own scheduler, not a visitor.
+     */
+    protected function throttleCheckout(Payment $payment, ChargeOptions $options): void
+    {
+        $maxAttempts = (int) config('billing.checkout_rate_limit.max_attempts');
+
+        if ($maxAttempts < 1 || $options->initiation === PaymentInitiation::Automatic) {
+            return;
+        }
+
+        $keys = array_filter([
+            "billing:checkout:{$payment->billable_type}:{$payment->billable_id}",
+            $options->customerIp !== null ? "billing:checkout:ip:{$options->customerIp}" : null,
+        ]);
+
+        self::hitCheckoutLimit($keys, $maxAttempts);
+    }
+
+    /**
+     * All keys are checked before any is hit, so a refused attempt doesn't eat into another key's
+     * allowance. Shared with billing.pay, which counts the visitor's IP from its own Request.
+     *
+     * @internal
+     *
+     * @param  array<int, string>  $keys
+     */
+    public static function hitCheckoutLimit(array $keys, int $maxAttempts): void
+    {
+        foreach ($keys as $key) {
+            if (RateLimiter::tooManyAttempts($key, $maxAttempts)) {
+                throw new TooManyCheckoutsException(RateLimiter::availableIn($key));
+            }
+        }
+
+        $decaySeconds = (int) config('billing.checkout_rate_limit.decay_minutes', 10) * 60;
+
+        foreach ($keys as $key) {
+            RateLimiter::hit($key, $decaySeconds);
+        }
     }
 
     /**

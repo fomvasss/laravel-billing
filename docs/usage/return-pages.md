@@ -68,6 +68,8 @@ Billing::charge($payment, new ChargeOptions(returnParams: ['order' => $order->nu
 
 Every visit fires `PaymentLinkOpened($payment)` — an analytics signal ("opened twice, never paid"), nothing more.
 
+With the [checkout rate limit](payments.md#checkout-rate-limit) on, a re-issue counts the visitor's IP and the payment's billable; over the limit the link answers 429.
+
 The link is public and unauthenticated by design: it opens a checkout, not a document, and the id is a UUID. Re-issues are serialized per payment with a cache lock (`billing:reissue:{id}`, waits up to 15 s), so a double click or a mail client prefetching links doesn't create two live checkouts — the second request reuses the link the first one stored. The lock is only as wide as your cache store (see [Refunds](refunds.md#concurrency)).
 
 A gateway may refuse a re-issue for a reference it considers final; that surfaces as the driver's exception. Hutko, LiqPay and WayForPay use the payment id as their order id, so they refuse a re-issue of a payment they have already seen (Hutko: `Duplicate order`) — for a failed or expired payment there, create a new `Payment`.

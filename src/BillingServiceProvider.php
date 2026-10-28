@@ -37,8 +37,11 @@ use Fomvasss\Billing\Listeners\HandleSubscriptionPaymentOutcome;
 use Fomvasss\Billing\Support\DefaultCredentialResolver;
 use Fomvasss\Billing\Support\DefaultReissueChargeOptions;
 use Fomvasss\Billing\Support\DefaultRenewalChargeOptions;
+use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Console\Scheduling\Schedule;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
 
@@ -158,8 +161,17 @@ class BillingServiceProvider extends ServiceProvider
             throw new BillingException('config("billing.webhook.path") must contain a {gateway} route parameter.');
         }
 
+        // Read per request, not here: a config set after boot (tests, a tenant) still applies.
+        RateLimiter::for('billing-webhook', static function (Request $request) {
+            $perMinute = (int) config('billing.webhook.rate_limit', 600);
+
+            return $perMinute > 0
+                ? Limit::perMinute($perMinute)->by($request->route('gateway') . '|' . $request->ip())
+                : Limit::none();
+        });
+
         Route::post($path, [WebhookController::class, 'handle'])
-            ->middleware((array) config('billing.webhook.middleware', []))
+            ->middleware(['throttle:billing-webhook', ...(array) config('billing.webhook.middleware', [])])
             ->name('billing.webhook');
     }
 

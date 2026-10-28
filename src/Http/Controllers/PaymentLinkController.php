@@ -50,10 +50,24 @@ class PaymentLinkController extends Controller
         // Reuse the existing checkout only while it's genuinely usable — pending AND unexpired.
         // failed/canceled always get a fresh one: their old gateway page is a dead end.
         if (! $payment->isPending() || ! $payment->hasActivePaymentUrl()) {
+            $this->throttle($request);
             $this->reissue($payment);
         }
 
         return redirect()->away($payment->payment_url, 303);
+    }
+
+    /**
+     * The link is public and the re-issue carries no customerIp, so charge() alone counts only the
+     * billable — the visitor's IP is counted here.
+     */
+    protected function throttle(Request $request): void
+    {
+        $maxAttempts = (int) config('billing.checkout_rate_limit.max_attempts');
+
+        if ($maxAttempts > 0) {
+            BillingManager::hitCheckoutLimit(['billing:checkout:ip:' . $request->ip()], $maxAttempts);
+        }
     }
 
     /**

@@ -70,6 +70,7 @@ Event::listen(function (PaymentSucceeded $event) {
 - **Events are deduplicated per outcome, not per reference** (`{type}:{status}:{reference}`). A re-delivered "paid" never fires `PaymentSucceeded` twice, but "declined, then paid on the same checkout" fires both. Reconciliation and `Billing::refund()` share the same claims, so a poll racing a late webhook can't double-dispatch.
 - **Money-moving calls aren't retried at the transport level** — a timeout doesn't say whether the bank debited the card. Stripe's calls carry idempotency keys instead.
 - **Unknown payments are ignored** — a callback for another integration on the same merchant account, or a reference that isn't a UUID, is not a failed job.
+- **Floods and oversized bodies are refused before storage.** `webhook.rate_limit` (600 requests per minute per gateway and IP) answers 429, `webhook.max_payload_kb` (1024) answers 413. A gateway that retries delivers later; for one that doesn't, reconciliation polls the payment. Raise or disable (`null`) either if your traffic needs it.
 - **Stored calls are pruned** after `webhook.prune_after_days` (30) by the daily `model:prune`. Pruning drops dedup claims too — keep the window beyond the longest gateway retry (WayForPay, 4 days).
 
 ## Queue
@@ -126,7 +127,9 @@ For all of them: `APP_URL` must be your public URL (the callback is built with `
 // config/billing.php
 'webhook' => [
     'path' => 'webhook/billing/{gateway}',  // must keep {gateway}
-    'middleware' => ['throttle:60,1'],      // empty by default; no `web` group, no CSRF
+    'middleware' => [],                     // added after the built-in throttle; no `web` group, no CSRF
+    'rate_limit' => 600,                    // per minute per gateway and IP, null disables
+    'max_payload_kb' => 1024,               // null disables
 ],
 ```
 

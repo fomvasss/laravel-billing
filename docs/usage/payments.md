@@ -96,7 +96,7 @@ It returns a `PaymentResult` (`url` or `form`, `expiresAt`, `externalId`, `raw`)
 |---|---|---|
 | `receiptItems` | `array` | Fiscal basket, `[['name', 'qty', 'unitAmount', 'sku'?], ...]`. Auto-filled from a `HasReceiptItems` payable when empty. Must add up to the amount — see [Fiscal receipt items](fiscal-receipts.md) |
 | `customerEmail` | `?string` | Monobank `customerEmails`, WayForPay `clientEmail`, Hutko `sender_email`, Stripe `customer_email` |
-| `customerIp` | `?string` | Off-session charges: LiqPay `ip`, Hutko `client_ip`. Both fall back to `127.0.0.1` |
+| `customerIp` | `?string` | Off-session charges: LiqPay `ip`, Hutko `client_ip`. Both fall back to `127.0.0.1`. Also counted by the [checkout rate limit](#checkout-rate-limit) |
 | `locale` | `?string` | LiqPay `language` (narrowed to `uk`/`en`), Hutko `lang`, Stripe `locale`, Paddle checkout locale |
 | `description` | `?string` | Checkout description. Fallback is `Payment #{id}` where the gateway needs one |
 | `saveCard` | `bool` | Tokenize the card during this charge, see [Saved cards](saved-cards.md) |
@@ -108,6 +108,21 @@ It returns a `PaymentResult` (`url` or `form`, `expiresAt`, `externalId`, `raw`)
 | `raw` | `array` | Gateway-specific request fields, merged under the driver's own: they can add a field, never override the amount or the reference |
 
 `raw` is read only by the driver you charge through. Examples: LiqPay `rro_info`, Monobank `agentFeePercent`, Stripe `automatic_tax`, Paddle `discount_id`. On Hutko off-session charges `raw` keys are signed — an unknown key breaks the signature.
+
+### Checkout rate limit
+
+Every checkout is another page to try stolen cards on, and for card testing the gateway fines or blocks the merchant, not the attacker. `checkout_rate_limit` caps how many checkouts can be opened in a window:
+
+```env
+BILLING_CHECKOUT_RATE_LIMIT=10          # checkouts per window; off when empty
+BILLING_CHECKOUT_RATE_LIMIT_DECAY=10    # window, minutes
+```
+
+- `charge()` and `startSubscription()` count per billable, and per IP when you pass `ChargeOptions::$customerIp` — pass it from your checkout controller (`$request->ip()`): a guest flow that creates a billable per order is only caught by IP.
+- The [pay link](return-pages.md#permanent-pay-link) counts the visitor's IP on every re-issue; a redirect to a live checkout isn't counted.
+- Not counted: off-session charges (`chargeWithMethod()`, renewals) and `charge()` with `initiation: PaymentInitiation::Automatic`.
+
+Over the limit `Fomvasss\Billing\Exceptions\TooManyCheckoutsException` (extends `BillingException`) is thrown before the gateway is called; `$e->retryAfter` holds the seconds to wait. Uncaught, it renders as HTTP 429 with `Retry-After`. Counters live in the cache store — use a shared one across servers.
 
 ## Manual and offline payments
 

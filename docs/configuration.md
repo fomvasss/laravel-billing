@@ -38,12 +38,23 @@ With the defaults a failed renewal is retried after 6 h, 24 h and 48 h, then can
 | `queue.connection` | `BILLING_QUEUE_CONNECTION` | `null` (app default) | Connection for `ProcessWebhookJob`, the package's only queued job |
 | `queue.queue` | `BILLING_QUEUE` | `null` (app default) | Queue name for it |
 
+## Checkout rate limit
+
+Card-testing protection, off by default. See [Payments](usage/payments.md#checkout-rate-limit).
+
+| Key | Env | Default | Description |
+|---|---|---|---|
+| `checkout_rate_limit.max_attempts` | `BILLING_CHECKOUT_RATE_LIMIT` | `null` (off) | Checkouts allowed per billable, per `customerIp` and per pay-link visitor IP within the window |
+| `checkout_rate_limit.decay_minutes` | `BILLING_CHECKOUT_RATE_LIMIT_DECAY` | `10` | The window |
+
 ## Webhook route
 
 | Key | Env | Default | Description |
 |---|---|---|---|
 | `webhook.path` | `BILLING_WEBHOOK_PATH` | `billing/webhooks/{gateway}` | Path of the single webhook route. Must contain `{gateway}` — otherwise the provider throws on boot |
 | `webhook.middleware` | — | `[]` | Middleware for the webhook route. Deliberately outside the `web` group (no CSRF, no session) |
+| `webhook.rate_limit` | `BILLING_WEBHOOK_RATE_LIMIT` | `600` | Requests per minute per gateway and IP; above it 429. `null` disables |
+| `webhook.max_payload_kb` | `BILLING_WEBHOOK_MAX_PAYLOAD_KB` | `1024` | A larger body gets 413 and is not stored. `null` disables |
 | `webhook.prune_after_days` | `BILLING_WEBHOOK_PRUNE_AFTER_DAYS` | `30` | Stored webhook calls older than this are deleted by the daily `model:prune`. Pruning drops their dedup claims too — keep it beyond every gateway's retry horizon (WayForPay retries for 4 days) |
 
 The route name `billing.webhook` never changes, so callback URLs follow a changed path automatically.

@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.14.1] - 2026-10-30
+
+### Fixed
+- The pay link (`billing.pay`) answered 405 when opened with POST, as Instagram's in-app browser on iOS does with a link shared in a direct message. It now accepts GET and POST
+
 ## [0.14.0] - 2026-10-28
 
 ### Added

@@ -44,6 +44,23 @@ class PaymentLinkTest extends TestCase
         Event::assertDispatched(PaymentLinkOpened::class, fn ($event) => $event->payment->is($payment));
     }
 
+    /**
+     * Instagram's in-app browser on iOS opens a shared link with POST — a GET-only route gave 405.
+     */
+    public function test_a_post_opens_the_link_like_a_get(): void
+    {
+        Http::fake();
+
+        $payment = $this->payment([
+            'payment_url' => 'https://pay.mbnk.biz/live',
+            'payment_url_expires_at' => now()->addHour(),
+        ]);
+
+        $this->post(route('billing.pay', $payment))
+            ->assertStatus(303)
+            ->assertRedirect('https://pay.mbnk.biz/live');
+    }
+
     public function test_an_expired_checkout_is_reissued_on_the_fly(): void
     {
         Http::fake([

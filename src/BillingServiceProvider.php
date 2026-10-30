@@ -217,11 +217,12 @@ class BillingServiceProvider extends ServiceProvider
 
     /**
      * The permanent pay link for emails/invoices — redirects to a live checkout, re-issuing an
-     * expired one via charge() on the fly. See PaymentLinkController.
+     * expired one via charge() on the fly. See PaymentLinkController. GET+POST because some in-app
+     * browsers (Instagram on iOS) open a shared link with POST; no `web` group, so no CSRF to trip.
      */
     protected function registerPayLinkRoute(): void
     {
-        Route::get('billing/pay/{payment}', \Fomvasss\Billing\Http\Controllers\PaymentLinkController::class)
+        Route::match(['get', 'post'], 'billing/pay/{payment}', \Fomvasss\Billing\Http\Controllers\PaymentLinkController::class)
             ->middleware(\Illuminate\Routing\Middleware\SubstituteBindings::class)
             ->name('billing.pay');
     }

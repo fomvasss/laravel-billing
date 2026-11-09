@@ -38,6 +38,10 @@ Opt-in: without `saveCard` (`required_rectoken: Y`) the callback's `rectoken` is
 
 `POST reverse/order_id`, always with an explicit amount (partial supported). `response_status: failure` or `reverse_status: declined` → `BillingException`; `created` is accepted. The refund row's `external_id` is the reversal's `transaction_id`.
 
+## Voiding
+
+Not supported — `Billing::voidPayment()` on a payment with an open checkout throws `NotSupportedException`. Hutko has no call to withdraw an unpaid order: `reverse/order_id` answers `1000 General decline` for one in `created` (checked on the test merchant), the order stays payable and ends only when its `lifetime` (`link_ttl_minutes`) runs out.
+
 ## Health
 
 `status/order_id` of a nonexistent order: `error_code 1018` = credentials accepted; `1014` = invalid signature.

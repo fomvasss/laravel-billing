@@ -281,4 +281,4 @@ A pending payment with an open checkout (`payment_url`) needs a driver with `Voi
 | Fake | ✓ (its page answers 410) |
 | LiqPay | — no API to withdraw a checkout: the signed form isn't registered with LiqPay until it's submitted |
 | WayForPay | — `REMOVE_INVOICE` is documented only for invoices from `CREATE_INVOICE`, not the Purchase checkout the driver opens |
-| Hutko | — no API to withdraw an order; it ends only by its `lifetime` |
+| Hutko | — no API to withdraw an order; it ends only by its `lifetime`. `reverse/order_id` refuses an unpaid order (`1000 General decline`, checked on the test merchant) |

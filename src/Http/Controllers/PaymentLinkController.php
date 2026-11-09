@@ -18,7 +18,7 @@ use Illuminate\Routing\Controller;
  * never goes stale: a pending payment with a live checkout link redirects straight to it; an
  * expired/failed/canceled one gets a FRESH checkout via charge() first (a new gateway-side
  * invoice — the old one is simply left to expire on the gateway's side); an already-paid one
- * lands on the success page. Fires PaymentLinkOpened on every visit.
+ * lands on the success page, a voided one (Billing::voidPayment()) on the failed page. Fires PaymentLinkOpened on every visit.
  *
  * Re-issuing builds its ChargeOptions through ReissueChargeOptionsContract — empty by default,
  * so per-charge extras from the original call (saveCard, description, raw) are not remembered
@@ -33,6 +33,10 @@ class PaymentLinkController extends Controller
         abort_if($payment->isRefund(), 404);
 
         PaymentLinkOpened::dispatch($payment);
+
+        if ($payment->isVoided()) {
+            return $this->failedPage($payment);
+        }
 
         // An off-session charge (chargeWithMethod(), a renewal) still waiting for its webhook: the
         // gateway already has it, with no checkout page. Issuing one now would let the customer pay
@@ -54,7 +58,24 @@ class PaymentLinkController extends Controller
             $this->reissue($payment);
         }
 
+        // voided by the merchant while this request waited for the re-issue lock
+        if ($payment->isVoided()) {
+            return $this->failedPage($payment);
+        }
+
         return redirect()->away($payment->payment_url, 303);
+    }
+
+    /** A voided payment is withdrawn for good — no fresh checkout, the app's failed page instead. */
+    protected function failedPage(Payment $payment): RedirectResponse
+    {
+        $target = config('billing.return_urls.failed');
+
+        abort_if($target === null, 404);
+
+        $separator = str_contains($target, '?') ? '&' : '?';
+
+        return redirect()->away($target . $separator . http_build_query(['payment' => $payment->id, 'status' => $payment->status->value]), 303);
     }
 
     /**
@@ -82,7 +103,7 @@ class PaymentLinkController extends Controller
         Cache::lock("billing:reissue:{$payment->id}", 30)->block(15, function () use ($payment) {
             $payment->refresh();
 
-            if ($payment->isPending() && $payment->hasActivePaymentUrl()) {
+            if ($payment->isVoided() || ($payment->isPending() && $payment->hasActivePaymentUrl())) {
                 return;
             }
 

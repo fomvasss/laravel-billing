@@ -33,6 +33,7 @@ Bind in a service provider's `register()`; the defaults are in `Fomvasss\Billing
 |---|---|---|
 | `PaymentGatewayContract` (required) | `charge(Payment, ChargeOptions): PaymentResult`, `handleWebhook(BillingWebhookCall): WebhookResult`, static `label()`, `credentialFields()`, `supportedCurrencies()`, `requiresDashboardWebhook()` | — |
 | `RefundsPayments` | `refund(Payment, ?Money): PaymentResult` | `refunds` |
+| `VoidsPayments` | `void(Payment): void` | `voids` |
 | `ChecksPaymentStatus` | `checkStatus(Payment): WebhookResult` | used by reconciliation |
 | `ChecksGatewayHealth` | `healthCheck(): GatewayHealth` | `health` |
 | `TokenizesPaymentMethod` | `createCustomer(Model&Billable): string`, `attachPaymentMethod(Model&Billable, array $token): PaymentMethod`, `chargePaymentMethod(Payment, PaymentMethod, ChargeOptions): PaymentResult`, `detachPaymentMethod(PaymentMethod): void` | `tokenization` |

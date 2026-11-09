@@ -10,6 +10,7 @@ use Fomvasss\Billing\Contracts\HasReceiptItems;
 use Fomvasss\Billing\Contracts\ManagesProviderSubscriptions;
 use Fomvasss\Billing\Contracts\PaymentGatewayContract;
 use Fomvasss\Billing\Contracts\RefundsPayments;
+use Fomvasss\Billing\Contracts\VoidsPayments;
 use Fomvasss\Billing\Contracts\StartsProviderSubscriptions;
 use Fomvasss\Billing\Contracts\SubscriptionGatewayContract;
 use Fomvasss\Billing\Contracts\TokenizesPaymentMethod;
@@ -43,6 +44,7 @@ use Fomvasss\Billing\DTO\InvoiceDocument;
 use Fomvasss\Billing\Enums\InvoiceStatus;
 use Fomvasss\Billing\Enums\InvoiceType;
 use Fomvasss\Billing\Events\InvoiceIssued;
+use Fomvasss\Billing\Events\PaymentVoided;
 use Fomvasss\Billing\Models\Invoice;
 use Fomvasss\Billing\Support\DocumentNumber;
 use Fomvasss\Billing\Support\InvoiceDocumentFactory;
@@ -156,6 +158,7 @@ class BillingManager
             'webhook_requires_dashboard_setup' => $class::requiresDashboardWebhook(),
             'capabilities' => [
                 'refunds' => is_subclass_of($class, RefundsPayments::class),
+                'voids' => is_subclass_of($class, VoidsPayments::class),
                 'subscriptions' => is_subclass_of($class, StartsProviderSubscriptions::class)
                     || is_subclass_of($class, ManagesProviderSubscriptions::class)
                     || is_subclass_of($class, SubscriptionGatewayContract::class),
@@ -230,6 +233,10 @@ class BillingManager
     /** @param  \Closure(PaymentGatewayContract, ChargeOptions): PaymentResult  $issue */
     protected function openCheckout(Payment $payment, ChargeOptions $options, \Closure $issue): PaymentResult
     {
+        if ($payment->isVoided()) {
+            throw new BillingException("Payment {$payment->id} is voided — create a new payment instead of re-issuing it.");
+        }
+
         $driver = $this->driver($payment->gateway, $payment->billable?->tenantId());
 
         if ($options->receiptItems === [] && $payment->payable instanceof HasReceiptItems) {
@@ -505,6 +512,65 @@ class BillingManager
         ), source: 'refund');
 
         return $refund;
+    }
+
+    /**
+     * Withdraws an unpaid charge for good: the gateway invalidates its checkout (VoidsPayments), the
+     * row becomes `canceled` with `voided_at`, its payment_url is cleared, and PaymentVoided fires.
+     * Unlike an expired `canceled` row, the pay link never re-issues a voided one and charge()
+     * refuses it. Voiding twice is a no-op.
+     *
+     * Refused: a paid charge (refund() it), a refund row, and an off-session charge still waiting
+     * for its webhook — the gateway is already charging the card, there is no checkout to withdraw.
+     * A pending row with an open checkout (payment_url) on a driver without VoidsPayments throws
+     * NotSupportedException rather than voiding locally: the checkout would stay payable. A row
+     * nobody opened a checkout for is voided without an API call, as are failed/canceled rows,
+     * whose old checkout is already a dead end.
+     *
+     * Holds the same lock as the pay link's re-issue, so a visitor can't open a fresh checkout
+     * between the gateway call and the row update.
+     */
+    public function voidPayment(Payment $payment): Payment
+    {
+        return Cache::lock("billing:reissue:{$payment->id}", 30)->block(15, function () use ($payment) {
+            $payment = $payment->fresh();
+
+            if ($payment->isVoided()) {
+                return $payment;
+            }
+
+            if ($payment->isRefund() || $payment->isPaid()) {
+                throw new BillingException("Only an unpaid charge can be voided (payment {$payment->id} is {$payment->type->value}/{$payment->status->value}) — refund a paid one instead.");
+            }
+
+            if ($payment->isPending() && $payment->payment_url === null && $payment->external_id !== null) {
+                throw new BillingException("Payment {$payment->id} is an off-session charge awaiting the gateway's outcome — it can't be voided.");
+            }
+
+            // A checkout was opened — LiqPay, WayForPay and Fake have no external_id until the
+            // outcome, so payment_url is what says the gateway may still take money for it.
+            if ($payment->isPending() && $payment->payment_url !== null) {
+                $driver = $this->driver($payment->gateway, $payment->billable?->tenantId());
+
+                if (! $driver instanceof VoidsPayments) {
+                    throw NotSupportedException::forCapability($payment->gateway, VoidsPayments::class);
+                }
+
+                $driver->void($payment);
+            }
+
+            Cache::forget("billing.checkout_form.{$payment->id}");
+
+            $payment->transitionTo(PaymentStatus::Canceled, [
+                'voided_at' => now(),
+                'payment_url' => null,
+                'payment_url_expires_at' => null,
+            ]);
+
+            PaymentVoided::dispatch($payment);
+
+            return $payment;
+        });
     }
 
     /**

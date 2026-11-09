@@ -11,6 +11,7 @@ use Fomvasss\Billing\Contracts\RefundsPayments;
 use Fomvasss\Billing\Contracts\ReportsTrialEnding;
 use Fomvasss\Billing\Contracts\StartsProviderSubscriptions;
 use Fomvasss\Billing\Contracts\TokenizesPaymentMethod;
+use Fomvasss\Billing\Contracts\VoidsPayments;
 use Fomvasss\Billing\DTO\ChargeOptions;
 use Fomvasss\Billing\DTO\PaymentResult;
 use Fomvasss\Billing\DTO\SubscriptionSnapshot;
@@ -54,7 +55,7 @@ use Fomvasss\Billing\Webhooks\BillingWebhookCall;
  * chargePaymentMethod()'s own PaymentIntent — checkout.session.*, payment_intent.succeeded and
  * payment_intent.payment_failed all need it to look our Payment row back up.
  */
-class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPaymentStatus, TokenizesPaymentMethod, \Fomvasss\Billing\Contracts\ChecksGatewayHealth, StartsProviderSubscriptions, ManagesProviderSubscriptions, ReportsTrialEnding
+class StripeGateway extends AbstractGateway implements RefundsPayments, VoidsPayments, ChecksPaymentStatus, TokenizesPaymentMethod, \Fomvasss\Billing\Contracts\ChecksGatewayHealth, StartsProviderSubscriptions, ManagesProviderSubscriptions, ReportsTrialEnding
 {
     protected const BASE_URL = 'https://api.stripe.com/v1';
 
@@ -654,6 +655,32 @@ class StripeGateway extends AbstractGateway implements RefundsPayments, ChecksPa
         $payment = $paymentId === null ? null : $this->findPaymentByReference($paymentId);
 
         return $payment !== null && ! str_starts_with((string) $payment->external_id, 'pi_');
+    }
+
+    /**
+     * POST /checkout/sessions/{id}/expire — only an `open` session can be expired. A refusal is
+     * settled by the session's own status: `expired` — nothing left to pay; `complete` — the
+     * customer paid (or the payment is still processing), so voiding must not go ahead.
+     */
+    public function void(Payment $payment): void
+    {
+        $sessionId = (string) $payment->external_id;
+
+        if (! str_starts_with($sessionId, 'cs_')) {
+            throw new BillingException("Stripe: payment {$payment->id} has no Checkout Session to expire.");
+        }
+
+        $response = $this->manage()->post("/checkout/sessions/{$sessionId}/expire");
+
+        if ($response->successful()) {
+            return;
+        }
+
+        $status = $this->http()->get("/checkout/sessions/{$sessionId}")->throw()->json('status');
+
+        if ($status !== 'expired') {
+            throw new BillingException("Stripe: Checkout Session {$sessionId} could not be expired, its status is \"{$status}\": " . $response->body());
+        }
     }
 
     public function refund(Payment $payment, ?Money $amount = null): PaymentResult

@@ -10,6 +10,7 @@
 | `startSubscription(Payment $payment, ChargeOptions $options = new ChargeOptions())` | `PaymentResult` | Same, for the first payment of a provider-managed subscription. `$payment->payable` must be the `Subscription`. See [Provider-managed subscriptions](../usage/provider-managed.md) |
 | `chargeWithMethod(Payment $payment, PaymentMethod $method, ChargeOptions $options = new ChargeOptions())` | `PaymentResult` | Off-session charge with a saved card; the method must belong to the payment's gateway and billable. See [Saved cards](../usage/saved-cards.md#charging-a-saved-card) |
 | `refund(Payment $payment, ?Money $amount = null)` | `Payment` (the refund row) | Full remainder by default. See [Refunds](../usage/refunds.md) |
+| `voidPayment(Payment $payment)` | `Payment` | Withdraws an unpaid charge: the gateway invalidates the checkout, the row becomes `canceled` + `voided_at`. See [Voiding](../usage/payments.md#voiding-an-unpaid-payment) |
 | `resolveChargeAmount(Price $price, string $gateway)` | `ResolvedAmount` | Per-unit money for a price on a gateway. See [Currency resolution](../usage/money.md#currency-resolution) |
 
 ## Gateways
@@ -46,7 +47,7 @@ See [Invoices and receipts](../usage/invoices.md).
 |---|---|
 | `Fomvasss\Billing\Exceptions\BillingException` | Configuration and business errors: unknown gateway, missing return URL or credential, unsupported currency, basket not matching the amount, refund guards, a gateway refusing a refund or a subscription change, wrong card for the payment |
 | `Fomvasss\Billing\Exceptions\TooManyCheckoutsException` | `charge()`/`startSubscription()` over `checkout_rate_limit`. Extends `BillingException`; renders as 429 with `Retry-After`, `$retryAfter` in seconds |
-| `Fomvasss\Billing\Exceptions\NotSupportedException` | The driver lacks the capability (refunds, tokenization, provider subscriptions, health), or the provider can't do the operation (Stripe pause) |
+| `Fomvasss\Billing\Exceptions\NotSupportedException` | The driver lacks the capability (refunds, voids, tokenization, provider subscriptions, health), or the provider can't do the operation (Stripe pause) |
 | `Illuminate\Http\Client\RequestException` | A gateway HTTP error the driver didn't translate |
 
 Both package exceptions extend `RuntimeException`.

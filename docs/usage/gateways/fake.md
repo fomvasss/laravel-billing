@@ -23,6 +23,7 @@ The page (`billing.fake.show`) shows the amount and two buttons, **Paid** and **
 - No signature check, no amount check, no return URLs needed.
 - After a click the browser stays on the webhook's JSON response (`{"message":"ok"}`) — the fake page doesn't redirect to your return pages.
 - No checkout expiry, no refunds, no saved cards, no status polling. `billing:reconcile-pending-payments` writes a fake payment left pending past `reconcile_after_minutes` off as `canceled`.
+- `Billing::voidPayment()` makes no call; the page of a voided payment answers 410.
 - `billing:health fake` is always up.
 
 Supported currencies: UAH, USD, EUR.

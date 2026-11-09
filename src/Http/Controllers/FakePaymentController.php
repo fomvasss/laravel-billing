@@ -12,6 +12,8 @@ class FakePaymentController extends Controller
 {
     public function show(Payment $payment): View
     {
+        abort_if($payment->isVoided(), 410);
+
         return view('billing::fake.show', ['payment' => $payment]);
     }
 }

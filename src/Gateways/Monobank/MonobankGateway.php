@@ -8,6 +8,7 @@ use Fomvasss\Billing\Contracts\Billable;
 use Fomvasss\Billing\Contracts\ChecksPaymentStatus;
 use Fomvasss\Billing\Contracts\RefundsPayments;
 use Fomvasss\Billing\Contracts\TokenizesPaymentMethod;
+use Fomvasss\Billing\Contracts\VoidsPayments;
 use Fomvasss\Billing\DTO\ChargeOptions;
 use Fomvasss\Billing\DTO\PaymentResult;
 use Fomvasss\Billing\DTO\WebhookResult;
@@ -38,7 +39,7 @@ use Fomvasss\Billing\Webhooks\BillingWebhookCall;
  * against `support`'s production `MonobankPaymentService` (`wallet/payment` + `initiationKind:
  * merchant`, the same MIT — merchant-initiated-transaction — pattern used here).
  */
-class MonobankGateway extends AbstractGateway implements RefundsPayments, ChecksPaymentStatus, TokenizesPaymentMethod, \Fomvasss\Billing\Contracts\ChecksGatewayHealth
+class MonobankGateway extends AbstractGateway implements RefundsPayments, VoidsPayments, ChecksPaymentStatus, TokenizesPaymentMethod, \Fomvasss\Billing\Contracts\ChecksGatewayHealth
 {
     protected const BASE_URL = 'https://api.monobank.ua';
 
@@ -172,6 +173,32 @@ class MonobankGateway extends AbstractGateway implements RefundsPayments, Checks
         }
 
         return new PaymentResult(externalId: $payment->external_id, raw: $data);
+    }
+
+    /**
+     * POST /api/merchant/invoice/remove — "invalidates an invoice if no payment has been made yet".
+     * The docs don't say how it answers for an invoice that is already past being paid, so a refusal
+     * is settled by the invoice's own status: expired/failure — nothing payable left, fine;
+     * anything else (success, processing, hold, created) — the customer paid or is paying right
+     * now, and voiding must not go ahead.
+     */
+    public function void(Payment $payment): void
+    {
+        $response = $this->http()->retry(1, 0, null, false)
+            ->post('/api/merchant/invoice/remove', ['invoiceId' => $payment->external_id]);
+
+        if ($response->successful()) {
+            return;
+        }
+
+        $status = $this->http()
+            ->get('/api/merchant/invoice/status', ['invoiceId' => $payment->external_id])
+            ->throw()
+            ->json('status');
+
+        if (! in_array($status, ['expired', 'failure'], true)) {
+            throw new BillingException("Monobank: invoice {$payment->external_id} could not be invalidated, its status is \"{$status}\": " . $response->body());
+        }
     }
 
     /** No API call — Monobank has no "create wallet" endpoint, walletId is ours to pick and stable per billable. */

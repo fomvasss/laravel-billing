@@ -230,9 +230,9 @@ The webhook (or [reconciliation](scheduling.md#billingreconcile-pending-payments
 | `failed` | `PaymentFailed` | The card was tried and refused |
 | `canceled` | `PaymentCanceled` | The checkout expired or was voided, or reconciliation wrote it off — nobody's card was refused |
 
-A `paid` payment is never moved to another status by a later callback (`Payment::transitionTo()`); a `failed`/`canceled` one can still become `paid` — the customer paid a re-issued checkout. See [Webhooks → Guarantees](webhooks.md#what-the-pipeline-guarantees).
+A `paid` payment is never moved to another status by a later callback (`Payment::transitionTo()`); a `failed`/`canceled` one can still become `paid` — the customer paid a re-issued checkout. A [voided](#voiding-an-unpaid-payment) one is never re-issued. See [Webhooks → Guarantees](webhooks.md#what-the-pipeline-guarantees).
 
-Helpers: `isPaid()`, `isPending()`, `isFailed()`, `isRefund()`, `hasActivePaymentUrl()`, scopes `paid()`, `pending()`, `forBillable($model)`. Full list — [Models](../reference/models.md#payment).
+Helpers: `isPaid()`, `isPending()`, `isFailed()`, `isVoided()`, `isRefund()`, `hasActivePaymentUrl()`, scopes `paid()`, `pending()`, `forBillable($model)`. Full list — [Models](../reference/models.md#payment).
 
 ## Why a payment failed
 
@@ -254,3 +254,31 @@ Event::listen(function (PaymentFailed $event) {
     Log::info('Payment refused', ['payment' => $event->payment->id, 'reason' => $event->payment->failureReason()]);
 });
 ```
+
+## Voiding an unpaid payment
+
+An invoice sent by mistake, or paid some other way: withdraw it so the customer can no longer pay it.
+
+```php
+Billing::voidPayment($payment);
+```
+
+The gateway invalidates the checkout, the row becomes `canceled` with `voided_at`, `payment_url` is cleared and `PaymentVoided` fires. Unlike an expired `canceled` payment, a voided one is final:
+
+- the [pay link](return-pages.md#permanent-pay-link) sends it to `return_urls.failed` instead of issuing a fresh checkout, and `charge()` throws `BillingException` — create a new `Payment` instead
+- a later `failure`/`expired` callback for its old checkout is ignored; a `success` one (the money arrived anyway) still makes it `paid`, with a log warning
+- `PaymentCanceled` is not fired, so a voided renewal doesn't start dunning
+
+Voiding twice is a no-op. Refused with `BillingException`: a paid payment (refund it), a refund row, and an off-session charge waiting for its webhook (`pending`, with `external_id`, without `payment_url`) — the card is already being charged. When the gateway reports the checkout paid or still processing, `voidPayment()` throws and the row stays as it was.
+
+A pending payment with an open checkout (`payment_url`) needs a driver with `VoidsPayments` (`Billing::gateways()[$name]['capabilities']['voids']`) — otherwise `NotSupportedException`, rather than a local void that leaves the checkout payable. A payment nobody opened a checkout for, and a `failed`/`canceled` one, is voided without an API call. A cached LiqPay form page (`billing.checkout-form`) of a voided payment answers 410.
+
+| Gateway | Voiding a live checkout |
+|---|---|
+| Monobank | ✓ (`/invoice/remove`) |
+| Stripe | ✓ (`/checkout/sessions/{id}/expire`) |
+| Paddle | ✓ (transaction → `canceled`) |
+| Fake | ✓ (its page answers 410) |
+| LiqPay | — no API to withdraw a checkout: the signed form isn't registered with LiqPay until it's submitted |
+| WayForPay | — `REMOVE_INVOICE` is documented only for invoices from `CREATE_INVOICE`, not the Purchase checkout the driver opens |
+| Hutko | — no API to withdraw an order; it ends only by its `lifetime` |

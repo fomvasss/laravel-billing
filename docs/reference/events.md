@@ -9,6 +9,7 @@ Namespace `Fomvasss\Billing\Events`. All use `Dispatchable` and `SerializesModel
 | `PaymentSucceeded` | `payment` | Webhook/poll: a payment became `paid`; Stripe/Paddle renewal rows |
 | `PaymentFailed` | `payment` | Webhook/poll: refused; `process-recurring-charges` when an initiation fails |
 | `PaymentCanceled` | `payment` | Webhook/poll: expired/voided; reconciliation write-offs |
+| `PaymentVoided` | `payment` | `Billing::voidPayment()` — the merchant withdrew an unpaid charge; not followed by `PaymentCanceled` |
 | `PaymentRefunded` | `payment` — the **refund row** | `Billing::refund()` (non-pending), external refunds from webhooks, Paddle approvals |
 | `PaymentMethodAttached` | `paymentMethod` | A new card row — webhook attach or `attachPaymentMethod()` |
 | `PaymentMethodDetached` | `paymentMethod` | `detachPaymentMethod()` |

@@ -19,6 +19,8 @@ class CheckoutFormController extends Controller
 {
     public function show(Payment $payment): View
     {
+        abort_if($payment->isVoided(), 410);
+
         $form = Cache::get("billing.checkout_form.{$payment->id}");
 
         abort_if($form === null, 404, 'This checkout link has expired — charge the payment again to get a new one.');

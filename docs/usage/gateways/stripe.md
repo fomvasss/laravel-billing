@@ -56,6 +56,10 @@ The fee isn't in Stripe's webhooks — `payments.fee` stays `null`.
 
 `POST /refunds` on the PaymentIntent with a fresh idempotency key per call (two deliberate partial refunds of the same amount both go through). `failed`/`canceled` → `BillingException`. The refund row's `external_id` is the refund id (`re_...`). Dashboard refunds and disputes arrive as `charge.refunded`.
 
+## Voiding
+
+`Billing::voidPayment()` expires the Checkout Session (`POST /checkout/sessions/{id}/expire`); Stripe allows it only for an `open` session. A refusal is settled by the session's status: `expired` — voided anyway; `complete` — `BillingException`, the row stays as it was.
+
 ## Subscriptions (Stripe Billing)
 
 Stripe supports both models: `charge()` with `saveCard` keeps a subscription package-managed; `Billing::startSubscription()` hands it to Stripe — a Checkout Session in `subscription` mode with an inline price (no catalog) and `subscription_data.metadata` carrying our ids.

@@ -40,6 +40,7 @@ class Payment extends Model
             'exchange_rate_at' => 'datetime',
             'payment_url_expires_at' => 'datetime',
             'paid_at' => 'datetime',
+            'voided_at' => 'datetime',
             'raw_response' => 'array',
             'meta' => 'array',
         ];
@@ -92,6 +93,15 @@ class Payment extends Model
     public function isPending(): bool
     {
         return $this->status === PaymentStatus::Pending;
+    }
+
+    /**
+     * Withdrawn by the merchant through Billing::voidPayment() — final, unlike a plain `canceled`
+     * (an expired checkout), which the pay link re-issues.
+     */
+    public function isVoided(): bool
+    {
+        return $this->voided_at !== null;
     }
 
     public function isFailed(): bool
@@ -159,6 +169,16 @@ class Payment extends Model
             ]);
 
             return false;
+        }
+
+        // A voided charge stays voided: a late `failure`/`expired` delivery for its old invoice
+        // must not reopen it. Paid still wins — money that did arrive is recorded, not dropped.
+        if ($this->isVoided() && $status !== PaymentStatus::Paid) {
+            return false;
+        }
+
+        if ($this->isVoided()) {
+            Log::warning('Billing: a voided payment was paid', ['payment_id' => $this->id]);
         }
 
         // A decline followed by a successful retry on the same row (Stripe reuses the PaymentIntent,

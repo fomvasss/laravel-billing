@@ -5,6 +5,18 @@ The package is pre-1.0: the API and schema may change between minor versions. Th
 > [!WARNING]
 > New columns are added to the package's **existing** migration files, and `vendor:publish` skips a migration that is already published. An installed app doesn't get them by re-publishing — compare the published files with `vendor/fomvasss/laravel-billing/database/migrations` and write your own migration for the difference. The columns each release added are listed below.
 
+## 0.15
+
+- New column `billing_payments.voided_at` (nullable timestamp), set by `Billing::voidPayment()`. Without it voiding fails, nothing else changes.
+
+  ```php
+  Schema::table('billing_payments', function (Blueprint $table) {
+      $table->timestamp('voided_at')->nullable()->after('failure_message');
+  });
+  ```
+
+- `Billing::gateways()[...]['capabilities']` has a new `voids` key.
+
 ## 0.14
 
 - The webhook route is throttled and size-limited by default: `webhook.rate_limit` 600 requests per minute per gateway and IP (429 above it), `webhook.max_payload_kb` 1024 (413 above it). A `throttle` you added to `webhook.middleware` yourself still runs, after the built-in one. Set either to `null` to turn it off.

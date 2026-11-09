@@ -49,6 +49,10 @@ Status polling (`GET /invoice/status`) also maps `expired` → `canceled`.
 
 `POST /invoice/cancel` with an optional amount (partial refunds supported). `status: failure` → `BillingException`; `processing` is accepted. Dashboard reversals arrive as `reversed` and are recorded from the sum of successful `cancelList` entries.
 
+## Voiding
+
+`Billing::voidPayment()` calls `POST /invoice/remove`. Monobank doesn't document its answer for an invoice that can't be removed, so a refusal is settled by `GET /invoice/status`: `expired`/`failure` — voided anyway, there's nothing left to pay; anything else (`success`, `processing`, `hold`, `created`) — `BillingException`, the row stays as it was.
+
 ## Health
 
 `GET /api/merchant/details` — returns the merchant name.

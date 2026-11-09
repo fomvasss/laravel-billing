@@ -63,6 +63,7 @@ Billing::charge($payment, new ChargeOptions(returnParams: ['order' => $order->nu
 | `pending` with a live checkout (`hasActivePaymentUrl()`) | Redirects to the gateway |
 | Expired, `failed` or `canceled` | Issues a fresh checkout via `charge()`, then redirects. The old gateway-side checkout is left to expire (Paddle cancels it) |
 | `paid` | Redirects to `return_urls.success` with `?payment={id}` |
+| Voided (`Billing::voidPayment()`) | Redirects to `return_urls.failed` with `?payment={id}&status=canceled`; no checkout is issued |
 | `pending` with `external_id` and no `payment_url` — an off-session charge (`chargeWithMethod()`, a renewal) waiting for its webhook | Redirects to `return_urls.success` with `?payment={id}`; no checkout is issued (since 0.12.11) |
 | A refund row | 404 |
 

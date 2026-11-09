@@ -9,6 +9,7 @@ use Fomvasss\Billing\Contracts\ChecksPaymentStatus;
 use Fomvasss\Billing\Contracts\ManagesProviderSubscriptions;
 use Fomvasss\Billing\Contracts\RefundsPayments;
 use Fomvasss\Billing\Contracts\StartsProviderSubscriptions;
+use Fomvasss\Billing\Contracts\VoidsPayments;
 use Fomvasss\Billing\DTO\ChargeOptions;
 use Fomvasss\Billing\DTO\GatewayHealth;
 use Fomvasss\Billing\DTO\PaymentResult;
@@ -55,7 +56,7 @@ use Illuminate\Support\Str;
  * Amounts are strings in minor units on both sides — no conversion (unlike LiqPay/WayForPay).
  * custom_data.payment_id is our link back to the row; Paddle echoes it in every transaction event.
  */
-class PaddleGateway extends AbstractGateway implements RefundsPayments, ChecksPaymentStatus, ChecksGatewayHealth, StartsProviderSubscriptions, ManagesProviderSubscriptions
+class PaddleGateway extends AbstractGateway implements RefundsPayments, VoidsPayments, ChecksPaymentStatus, ChecksGatewayHealth, StartsProviderSubscriptions, ManagesProviderSubscriptions
 {
     protected const LIVE_URL = 'https://api.paddle.com';
 
@@ -319,6 +320,33 @@ class PaddleGateway extends AbstractGateway implements RefundsPayments, ChecksPa
      * Paddle refunds per transaction line in its own, tax-inclusive terms: our amount is scaled by
      * what the customer actually paid, then spread over the lines still holding refundable money.
      */
+    /**
+     * PATCH /transactions/{id} with status=canceled — Paddle cancels only a `draft`/`ready`
+     * transaction. A refusal is settled by the transaction's own status: `canceled` — already
+     * withdrawn; anything else (`billed`, `paid`, `completed`, `past_due`) — money is on its way,
+     * voiding must not go ahead.
+     */
+    public function void(Payment $payment): void
+    {
+        $transactionId = (string) $payment->external_id;
+
+        if (! str_starts_with($transactionId, 'txn_')) {
+            throw new BillingException("Paddle: payment {$payment->id} has no transaction to cancel.");
+        }
+
+        $response = $this->http()->retry(1, 0, null, false)->patch("/transactions/{$transactionId}", ['status' => 'canceled']);
+
+        if ($response->successful()) {
+            return;
+        }
+
+        $status = $this->http()->get("/transactions/{$transactionId}")->throw()->json('data.status');
+
+        if ($status !== 'canceled') {
+            throw new BillingException("Paddle: transaction {$transactionId} could not be canceled, its status is \"{$status}\": " . $response->body());
+        }
+    }
+
     public function refund(Payment $payment, ?Money $amount = null): PaymentResult
     {
         $amount ??= new Money($payment->refundableRemainder(), $payment->currency);

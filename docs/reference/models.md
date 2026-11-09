@@ -15,7 +15,8 @@ Table `billing_payments`, soft deletes. `paid_at` is stamped when `status` becom
 | `isRefund()` | `bool` | `type` is `refund` |
 | `isManual()`, `isAutomatic()` | `bool` | `initiation`; both false when null |
 | `failureReason()` | `?string` | `failure_message (failure_code)` of a failed payment; null when not failed or the gateway gave no reason |
-| `transitionTo(PaymentStatus $status, array $attributes = [])` | `bool` | Status update that refuses to leave `paid` (logs, returns false); moving to `paid` clears `failure_code`/`failure_message` |
+| `isVoided()` | `bool` | `voided_at` is set — withdrawn by `Billing::voidPayment()` |
+| `transitionTo(PaymentStatus $status, array $attributes = [])` | `bool` | Status update that refuses to leave `paid` (logs, returns false) and to move a voided payment anywhere but `paid`; moving to `paid` clears `failure_code`/`failure_message` |
 | `money()` | `Money` | `amount` + `currency` |
 | `refundedAmount()` / `refundedMoney()` | `int` / `Money` | Sum of `paid` refund rows, trashed included |
 | `refundableRemainder()` / `refundableRemainderMoney()` | `int` / `Money` | `amount` minus `paid` and `pending` refunds |

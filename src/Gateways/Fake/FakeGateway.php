@@ -19,7 +19,7 @@ use Fomvasss\Billing\Webhooks\BillingWebhookCall;
  * driver's own registered webhook URL, so the full real pipeline runs (WebhookCall row, queued
  * ProcessWebhookJob, events) instead of a shortcut that only tests half of it.
  */
-class FakeGateway extends AbstractGateway implements \Fomvasss\Billing\Contracts\ChecksGatewayHealth
+class FakeGateway extends AbstractGateway implements \Fomvasss\Billing\Contracts\ChecksGatewayHealth, \Fomvasss\Billing\Contracts\VoidsPayments
 {
     /** No bank behind it — always healthy; lets a settings UI / billing:health be exercised locally. */
     public function healthCheck(): \Fomvasss\Billing\DTO\GatewayHealth
@@ -33,6 +33,9 @@ class FakeGateway extends AbstractGateway implements \Fomvasss\Billing\Contracts
             url: route('billing.fake.show', $payment),
         );
     }
+
+    /** Nothing to invalidate gateway-side — the local page itself refuses a voided payment. */
+    public function void(Payment $payment): void {}
 
     public function handleWebhook(BillingWebhookCall $webhookCall): WebhookResult
     {

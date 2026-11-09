@@ -54,6 +54,10 @@ A transaction's checkout URL is the default payment link plus `?_ptxn=txn_...`. 
 
 Status polling also cancels a `draft`/`ready` transaction whose link TTL has passed.
 
+## Voiding
+
+`Billing::voidPayment()` cancels the transaction (`PATCH /transactions/{id}`, `status: canceled`); Paddle allows it only for `draft`/`ready`. A refusal is settled by the transaction's status: `canceled` — voided anyway; anything else (`billed`, `paid`, `completed`, `past_due`) — `BillingException`, the row stays as it was.
+
 ## Refunds
 
 Adjustments, usually awaiting Paddle's approval — the refund row is `pending` until `adjustment.updated` approves (`paid`, `PaymentRefunded`) or rejects it (`failed`, log warning, no event). A full refund is `type: full`; a partial one is scaled to the tax-inclusive total and spread over the transaction lines. Dashboard refunds are recorded once approved; chargebacks are only logged. See [Refunds](../refunds.md#paddle-refunds-that-wait-for-approval).

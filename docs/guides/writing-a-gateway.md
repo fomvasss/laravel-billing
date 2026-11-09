@@ -253,6 +253,7 @@ Implement only what your gateway actually does. `BillingManager` checks with `in
 | Contract | Add when the gateway supports |
 |---|---|
 | `RefundsPayments` | Refunds via API (many require doing it by hand in the dashboard — then don't implement this). Your `refund()` only makes the gateway call — the child `Payment` row and the `PaymentRefunded` event are `BillingManager::refund()`'s job |
+| `VoidsPayments` | Invalidating an unpaid checkout via API. `void()` only makes the call: return when the checkout can no longer be paid (already expired or declined included), throw when the gateway reports it paid or processing. The row and `PaymentVoided` are `BillingManager::voidPayment()`'s job |
 | `ChecksPaymentStatus` | Polling a payment's current status — used by `billing:reconcile-pending-payments` as the fallback for a lost webhook |
 | `ChecksGatewayHealth` | A live, side-effect-free credentials/reachability probe (`Billing::health()`, `billing:health`). No introspection endpoint? Probe with the status of a nonexistent payment and tell "order not found" (credentials fine) apart from "invalid signature" — verify the discriminating error codes against the live API, the built-in drivers document theirs |
 | `TokenizesPaymentMethod` | Saved cards / off-session recurring charges |

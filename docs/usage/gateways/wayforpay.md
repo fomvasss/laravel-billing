@@ -43,6 +43,10 @@ No opt-in: `recToken` comes with **every** approved card payment and is always s
 
 No API refunds — `Billing::refund()` throws `NotSupportedException`. Refund in the WayForPay dashboard; the `Refunded`/`Voided` callback is recorded. Its `amount` is that reversal's own sum, so re-deliveries are recognized by `processingDate` — two reversals of the same payment within one second collapse into one row.
 
+## Voiding
+
+Not supported — `Billing::voidPayment()` on a payment with an open checkout throws `NotSupportedException`. `REMOVE_INVOICE` works only for invoices from `CREATE_INVOICE` and answers `1127 Order Not Found` for the Purchase checkout the driver opens; `REFUND` on an unpaid order answers `1126 Illegal Order State` (both checked on the test merchant). The order stays payable until its `orderLifetime` (`link_ttl_minutes`) runs out.
+
 ## Health
 
 `CHECK_STATUS` of a nonexistent order: `reasonCode 1127` = credentials accepted; `1113` = invalid signature.

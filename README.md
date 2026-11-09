@@ -12,6 +12,7 @@ Billing and payments for Laravel: pluggable payment gateways, one-off payments, 
 - **Saved cards** — tokenized as a side effect of the first charge, then charged off-session
 - **Subscriptions** — flat, per-seat and metered prices, minute-to-year intervals, trials, pause, plan swaps, quotas, a retry ladder with grace access; renewed by the package or by the provider (Stripe Billing, Paddle)
 - **Refunds** — through the API, plus refunds made in a gateway's dashboard, recorded from webhooks
+- **Voiding** — withdraw an unpaid checkout so it can no longer be paid (Monobank, Stripe, Paddle)
 - **Invoices and receipts** — numbered PDF documents, snapshots at issue time
 - **Webhook guarantees** — fail-closed signatures, amount verification, per-outcome dedup, reconciliation of lost webhooks, rate and size limits on the endpoint
 - **Card-testing protection** — an optional limit on checkouts per customer and IP

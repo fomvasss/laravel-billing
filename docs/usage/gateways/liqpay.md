@@ -55,6 +55,10 @@ Status polling (`action: status`) also maps `expired` → `canceled`.
 
 `action: refund` with an amount. `result` other than `ok` → `BillingException`. Dashboard refunds arrive as `reversed`; `refund_amount` is read as the order's running total.
 
+## Voiding
+
+Not supported — `Billing::voidPayment()` on a payment with an open checkout throws `NotSupportedException`. The signed form isn't registered with LiqPay until the customer submits it, so there is nothing to withdraw on LiqPay's side; a payment nobody opened a checkout for is voided locally, and the cached form page (`billing.checkout-form`) of a voided payment answers 410.
+
 ## Health
 
 Status of a nonexistent order: `payment_not_found` = credentials accepted.

@@ -28,6 +28,9 @@ return new class extends Migration
             $table->unsignedBigInteger('fee')->nullable();
             $table->string('currency', 3);
             $table->string('converted_from_currency', 3)->nullable();
+            // The amount in that currency, minor units — the price as the customer saw it. Not
+            // amount / exchange_rate: the conversion rounded, the division would print $29.01.
+            $table->unsignedBigInteger('converted_from_amount')->nullable();
             $table->decimal('exchange_rate', 18, 8)->nullable();
             $table->timestamp('exchange_rate_at')->nullable();
             $table->string('external_id')->nullable();

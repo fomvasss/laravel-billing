@@ -15,6 +15,7 @@ final readonly class InvoiceDocument
     /**
      * @param  list<array{name: string, qty: int|float, unitPrice: string, total: string, sku: ?string, period: ?string}>  $items
      * @param  array<string, mixed>  $extra
+     * @param  array{amount: string, rate: ?string, ratedAt: ?string}|null  $conversion
      */
     public function __construct(
         public string $type,
@@ -41,5 +42,7 @@ final readonly class InvoiceDocument
         public ?string $periodEndsAt = null,
         /** A receipt's "how it was paid": the gateway's name as it was at issue time. */
         public ?string $paymentMethod = null,
+        /** A price converted for the gateway: the original amount (formatted, its own currency), the rate and its date. */
+        public ?array $conversion = null,
     ) {}
 }

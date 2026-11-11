@@ -9,8 +9,9 @@ use Fomvasss\Billing\Support\Money;
 /**
  * BillingManager::resolveChargeAmount()'s return value — the resolved per-unit Money plus whatever
  * conversion metadata needs to land on the Payment row (payments.exchange_rate/exchange_rate_at/
- * converted_from_currency), so the caller doesn't have to re-derive it. $convertedFromCurrency is
- * null unless step 3 of the currency-resolution order ("Валюти" in the plan) actually converted.
+ * converted_from_currency/converted_from_amount), so the caller doesn't have to re-derive it.
+ * $convertedFromCurrency is null unless step 3 of the currency-resolution order ("Валюти" in the
+ * plan) actually converted. $convertedFromAmount is per unit, like $money.
  */
 final readonly class ResolvedAmount
 {
@@ -19,5 +20,6 @@ final readonly class ResolvedAmount
         public ?string $convertedFromCurrency = null,
         public ?float $exchangeRate = null,
         public ?\DateTimeInterface $exchangeRateAt = null,
+        public ?int $convertedFromAmount = null,
     ) {}
 }

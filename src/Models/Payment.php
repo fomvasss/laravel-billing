@@ -36,6 +36,7 @@ class Payment extends Model
             'initiation' => PaymentInitiation::class,
             'amount' => 'integer',
             'fee' => 'integer',
+            'converted_from_amount' => 'integer',
             'exchange_rate' => 'float',
             'exchange_rate_at' => 'datetime',
             'payment_url_expires_at' => 'datetime',

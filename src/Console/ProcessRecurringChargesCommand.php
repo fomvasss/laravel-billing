@@ -232,6 +232,7 @@ class ProcessRecurringChargesCommand extends Command
             'amount' => $amount->amount,
             'currency' => $amount->currency,
             'converted_from_currency' => $resolved->convertedFromCurrency,
+            'converted_from_amount' => $resolved->convertedFromAmount === null ? null : (int) round($resolved->convertedFromAmount * $multiplier),
             'exchange_rate' => $resolved->exchangeRate,
             'exchange_rate_at' => $resolved->exchangeRateAt,
             'tenant_id' => $subscription->tenant_id,

@@ -21,7 +21,10 @@
         .totals td { font-size: 13px; font-weight: bold; padding-top: 10px; }
         .stamp { display: inline-block; border: 2px solid #2e7d32; color: #2e7d32; padding: 2px 8px; font-weight: bold; }
         .stamp.void { border-color: #c62828; color: #c62828; }
+        .stamp.due { border-color: #888; color: #555; }
         .pay { margin-top: 16px; }
+        .pay td { padding: 0 6px 0 0; }
+        .button { display: inline-block; margin-top: 4px; padding: 6px 14px; background: #222; color: #fff; font-weight: bold; text-decoration: none; }
         .footer { margin-top: 32px; color: #666; }
     </style>
 </head>

@@ -32,4 +32,11 @@ return [
     'payment_method' => 'Спосіб оплати',
     'method_manual' => 'Оплата на рахунок',
     'subscription_line' => 'Підписка «:plan»',
+    'status_issued' => 'Не оплачено',
+    'total_due' => 'До сплати',
+    'pay_button' => 'Оплатити :total',
+    'purpose' => 'Призначення платежу',
+    'purpose_text' => 'Оплата за рахунком № :number',
+    'conversion' => 'Ціна за прайсом: :amount, курс :rate',
+    'conversion_on' => 'Ціна за прайсом: :amount, курс :rate на :date',
 ];

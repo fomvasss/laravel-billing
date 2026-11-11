@@ -33,4 +33,11 @@ return [
     'payment_method' => 'Metoda płatności',
     'method_manual' => 'Przelew bankowy',
     'subscription_line' => 'Subskrypcja „:plan”',
+    'status_issued' => 'Nieopłacona',
+    'total_due' => 'Do zapłaty',
+    'pay_button' => 'Zapłać :total',
+    'purpose' => 'Tytuł przelewu',
+    'purpose_text' => 'Faktura nr :number',
+    'conversion' => 'Cena cennikowa: :amount, kurs :rate',
+    'conversion_on' => 'Cena cennikowa: :amount, kurs :rate z dnia :date',
 ];

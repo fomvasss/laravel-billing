@@ -4,12 +4,14 @@ declare(strict_types=1);
 
 namespace Fomvasss\Billing\Tests\Feature;
 
+use Fomvasss\Billing\Contracts\CurrencyConverterContract;
 use Fomvasss\Billing\Enums\SubscriptionStatus;
 use Fomvasss\Billing\Models\Payment;
 use Fomvasss\Billing\Models\PaymentMethod;
 use Fomvasss\Billing\Models\Plan;
 use Fomvasss\Billing\Models\Price;
 use Fomvasss\Billing\Models\Subscription;
+use Fomvasss\Billing\Support\Money;
 use Fomvasss\Billing\Tests\Fixtures\TestUser;
 use Fomvasss\Billing\Tests\TestCase;
 use Illuminate\Support\Facades\Http;
@@ -128,6 +130,41 @@ class RecurringChargeIntegrationTest extends TestCase
         Http::assertSent(fn ($request) => $request->url() === 'https://api.monobank.ua/api/merchant/wallet/payment'
             && $request['cardToken'] === 'card_tok_999'
             && $request['initiationKind'] === 'merchant');
+    }
+
+    public function test_a_renewal_of_a_usd_price_on_monobank_records_the_conversion(): void
+    {
+        Http::fake([
+            'https://api.monobank.ua/api/merchant/wallet/payment' => Http::response(['invoiceId' => 'inv_999', 'status' => 'success']),
+        ]);
+        config(['billing.gateways.monobank.currencies' => ['UAH']]);
+        $this->app->bind(CurrencyConverterContract::class, fn () => new class implements CurrencyConverterContract {
+            public function convert(Money $amount, string $toCurrency, ?\DateTimeInterface $at = null): Money
+            {
+                return new Money((int) round($amount->amount * 41.88), $toCurrency);
+            }
+        });
+
+        $user = TestUser::create(['name' => 'Buyer']);
+        $plan = Plan::create(['code' => 'pro', 'name' => 'Pro']);
+        $price = Price::create(['plan_id' => $plan->id, 'currency' => 'USD', 'amount' => 2900, 'pricing_type' => 'flat', 'interval' => 'month', 'interval_count' => 1]);
+        $subscription = Subscription::create([
+            'status' => SubscriptionStatus::Active,
+            'gateway' => 'monobank',
+            'price_id' => $price->id,
+            'billable_type' => TestUser::class,
+            'billable_id' => $user->id,
+            'current_period_ends_at' => now()->subDay(),
+        ]);
+        PaymentMethod::create(['gateway' => 'monobank', 'external_customer_id' => 'wallet_999', 'external_id' => 'card_tok_999', 'is_default' => true, 'billable_type' => TestUser::class, 'billable_id' => $user->id]);
+
+        $this->artisan('billing:process-recurring-charges')->assertExitCode(0);
+
+        $payment = Payment::where('payable_id', $subscription->id)->firstOrFail();
+        $this->assertSame(121452, $payment->amount);
+        $this->assertSame('UAH', $payment->currency);
+        $this->assertSame('USD', $payment->converted_from_currency);
+        $this->assertSame(2900, $payment->converted_from_amount);
     }
 
     public function test_a_due_liqpay_subscription_with_a_saved_card_gets_charged(): void

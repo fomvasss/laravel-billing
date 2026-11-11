@@ -48,7 +48,7 @@ What a template gets as `$document` — see [Invoices → Customizing the templa
 
 ### ResolvedAmount
 
-`money` (`Money`, per unit), `convertedFromCurrency`, `exchangeRate`, `exchangeRateAt` — set only when a converter was used.
+`money` (`Money`, per unit), `convertedFromCurrency`, `convertedFromAmount` (per unit), `exchangeRate`, `exchangeRateAt` — set only when a converter was used.
 
 ## Enums
 

@@ -164,6 +164,49 @@ class InvoiceTest extends TestCase
         $this->assertStringContainsString('Monobank Acquiring', $html);
     }
 
+    public function test_an_unpaid_invoice_says_so_and_shows_the_pay_button_and_the_transfer_reference(): void
+    {
+        $invoice = Billing::issueInvoice($this->payment());
+        $html = Billing::renderInvoice($invoice);
+
+        $this->assertStringContainsString('Не оплачено', $html);
+        $this->assertStringContainsString('До сплати:', $html);
+        $this->assertMatchesRegularExpression('#<a class="button" href="' . preg_quote(route('billing.pay', $invoice->payment_id), '#') . '">Оплатити #', $html);
+        $this->assertStringContainsString('Оплата за рахунком № ' . $invoice->number, $html);
+
+        $payment = $this->payment();
+        $payment->transitionTo(PaymentStatus::Paid);
+        $html = Billing::renderInvoice(Billing::issueInvoice($payment, seller: new BillingDetails('Без IBAN')));
+
+        $this->assertStringNotContainsString('Не оплачено', $html);
+        $this->assertStringNotContainsString('class="button"', $html);
+        $this->assertStringNotContainsString('Призначення платежу', $html);
+        $this->assertStringContainsString('Разом:', $html);
+    }
+
+    public function test_a_converted_price_keeps_its_original_amount_and_rate_on_both_documents(): void
+    {
+        $this->travelTo('2026-11-07 12:00');
+        $payment = $this->payment();
+        $payment->update(['amount' => 121452, 'converted_from_currency' => 'USD', 'converted_from_amount' => 2900, 'exchange_rate' => 41.8800, 'exchange_rate_at' => now()]);
+
+        $invoice = Billing::issueInvoice($payment);
+        $this->assertSame(['amount' => 2900, 'currency' => 'USD', 'rate' => 41.88, 'rate_at' => '2026-11-07'], $invoice->extra['conversion']);
+
+        $conversion = Billing::invoiceDocument($invoice)->conversion;
+        $this->assertStringContainsString('29', $conversion['amount']);
+        $this->assertSame('07.11.2026', $conversion['ratedAt']);
+        $this->assertStringContainsString('Ціна за прайсом: ' . $conversion['amount'] . ', курс ' . $conversion['rate'] . ' на 07.11.2026', Billing::renderInvoice($invoice));
+
+        $payment->transitionTo(PaymentStatus::Paid);
+        $this->assertSame($invoice->extra['conversion'], Billing::issueReceipt($payment)->extra['conversion']);
+
+        $this->assertNull(Billing::invoiceDocument(Billing::issueInvoice($this->payment()))->conversion);
+        $legacy = $this->payment();
+        $legacy->update(['converted_from_currency' => 'USD', 'exchange_rate' => 41.88]);
+        $this->assertArrayNotHasKey('conversion', Billing::issueInvoice($legacy)->extra ?? [], 'without the original amount nothing is guessed');
+    }
+
     public function test_an_email_gets_the_same_document_the_template_prints(): void
     {
         $payment = $this->payment();

@@ -101,7 +101,7 @@ The override feeds `supportedCurrencies()`, `gateways()` and `resolveChargeAmoun
 3. a bound `CurrencyConverterContract` converts to the gateway's first supported currency;
 4. otherwise `BillingException`.
 
-`ResolvedAmount` carries `money` (per unit) and, when converted, `convertedFromCurrency`, `exchangeRate`, `exchangeRateAt` — renewals stamp them on the payment.
+`ResolvedAmount` carries `money` (per unit) and, when converted, `convertedFromCurrency`, `convertedFromAmount` (per unit too), `exchangeRate`, `exchangeRateAt` — renewals stamp them on the payment.
 
 ```php
 use Fomvasss\Billing\Contracts\CurrencyConverterContract;
@@ -125,10 +125,11 @@ $payment = Payment::create([
     'amount' => $uah->amount,
     'currency' => 'UAH',
     'converted_from_currency' => 'USD',
+    'converted_from_amount' => $usd->amount,
     'exchange_rate' => $uah->amount / $usd->amount,
     'exchange_rate_at' => now(),
     // payable / billable ...
 ]);
 ```
 
-The checkout, the amount verification, the fee and the fiscal receipt then all agree on the UAH sum, and the USD origin and rate stay on the row for reports.
+The checkout, the amount verification, the fee and the fiscal receipt then all agree on the UAH sum, and the USD origin and rate stay on the row for reports. An invoice or receipt of such a payment prints the USD price and the rate under the total (`$document->conversion`) — only when `converted_from_amount` is set.

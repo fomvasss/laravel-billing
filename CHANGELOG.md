@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.16.0] - 2026-11-11
+
+### Added
+- **The price before conversion on invoices and receipts.** A payment converted for the gateway keeps the original amount in the new `payments.converted_from_amount` column (minor units, the whole payment; `ResolvedAmount::$convertedFromAmount` per unit, stamped by renewals). Documents snapshot it with the currency, rate and rate date into `extra['conversion']`; `InvoiceDocument::$conversion` gives it formatted, and the default templates print it under the total ("List price: $29.00, rate 41.88 as of Nov 7, 2026"). Without `converted_from_amount` nothing is printed — the amount is never re-derived from the rate
+- An unpaid invoice is stamped "Unpaid" (`status_issued`), its total reads "Amount due" (`total_due`), the pay link is a button with the amount (`pay_button`) and a seller with an IBAN gets the transfer reference "Invoice No. …" (`purpose`, `purpose_text`)
+- `payments.converted_from_amount` column, in the existing `billing-migrations-core` migration group
+
 ## [0.15.0] - 2026-11-09
 
 ### Added

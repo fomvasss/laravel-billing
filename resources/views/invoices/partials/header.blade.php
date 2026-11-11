@@ -28,6 +28,8 @@
             @endif
             @if ($document->status === 'paid')
                 <div class="stamp" style="margin-top: 6px;">{{ __('billing::invoice.status_paid') }}</div>
+            @elseif ($document->type === 'invoice' && $document->status === 'issued')
+                <div class="stamp due" style="margin-top: 6px;">{{ __('billing::invoice.status_issued') }}</div>
             @elseif ($document->status === 'void')
                 <div class="stamp void" style="margin-top: 6px;">{{ __('billing::invoice.status_void') }}</div>
             @endif

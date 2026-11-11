@@ -33,4 +33,11 @@ return [
     'payment_method' => 'Zahlungsart',
     'method_manual' => 'Überweisung',
     'subscription_line' => 'Abonnement „:plan“',
+    'status_issued' => 'Offen',
+    'total_due' => 'Fälliger Betrag',
+    'pay_button' => ':total bezahlen',
+    'purpose' => 'Verwendungszweck',
+    'purpose_text' => 'Rechnung Nr. :number',
+    'conversion' => 'Listenpreis: :amount, Kurs :rate',
+    'conversion_on' => 'Listenpreis: :amount, Kurs :rate vom :date',
 ];

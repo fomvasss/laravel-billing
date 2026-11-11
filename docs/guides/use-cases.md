@@ -300,6 +300,7 @@ $payment = Payment::create([
     'amount' => $uah->amount,
     'currency' => 'UAH',
     'converted_from_currency' => 'USD',
+    'converted_from_amount' => $usd->amount,
     'exchange_rate' => $uah->amount / $usd->amount,
     'exchange_rate_at' => now(),
     'payable_type' => Order::class,
@@ -321,7 +322,7 @@ If the business prefers its *own* booked commission (a flat percent agreed with 
 
 ### Reporting back in USD
 
-The report wants USD, the rows are UAH — and both conversions you might want are already on the row: `amount / exchange_rate` re-derives the USD the customer was quoted, while converting `netAmount()` at *today's* rate answers "what is that worth now". Which one is correct depends on the question — which is exactly why the package stores the facts and doesn't pick for you.
+The report wants USD, the rows are UAH — and both conversions you might want are already on the row: `converted_from_amount` is the USD the customer was quoted (`amount / exchange_rate` comes out a cent off, the conversion rounded), while converting `netAmount()` at *today's* rate answers "what is that worth now". Which one is correct depends on the question — which is exactly why the package stores the facts and doesn't pick for you.
 
 ---
 

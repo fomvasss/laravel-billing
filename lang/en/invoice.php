@@ -32,4 +32,11 @@ return [
     'payment_method' => 'Payment method',
     'method_manual' => 'Bank transfer',
     'subscription_line' => 'Subscription: :plan',
+    'status_issued' => 'Unpaid',
+    'total_due' => 'Amount due',
+    'pay_button' => 'Pay :total',
+    'purpose' => 'Payment reference',
+    'purpose_text' => 'Invoice No. :number',
+    'conversion' => 'List price: :amount, rate :rate',
+    'conversion_on' => 'List price: :amount, rate :rate as of :date',
 ];

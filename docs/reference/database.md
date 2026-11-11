@@ -17,7 +17,7 @@ Group `billing-migrations-core`.
 | `amount` | unsigned bigint | What the customer pays |
 | `fee` | unsigned bigint, nullable | Gateway commission; null = unknown |
 | `currency` | string(3) | |
-| `converted_from_currency`, `exchange_rate` (decimal 18,8), `exchange_rate_at` | nullable | Conversion facts |
+| `converted_from_currency`, `converted_from_amount` (unsigned bigint), `exchange_rate` (decimal 18,8), `exchange_rate_at` | nullable | Conversion facts: the original currency and amount, the rate |
 | `external_id` | string, nullable | Gateway reference |
 | `payment_url` | string(2048), nullable | |
 | `payment_url_expires_at`, `paid_at` | timestamp, nullable | |

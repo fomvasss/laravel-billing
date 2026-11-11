@@ -38,6 +38,7 @@ issueReceipt(Payment $payment, ?BillingDetails $buyer = null, array $extra = [],
 
 - **Idempotent** — one invoice and one receipt per payment (unique `type, payment_id`); asking again returns the existing document, ignoring the new arguments.
 - `issueInvoice()` on a refund throws. On a pending payment the invoice is `issued`, due in `due_days`; on a paid one it comes out `paid`, without due date or pay link.
+- An `issued` invoice is stamped "Unpaid" and ends with "Amount due", the pay link as a button and — when the seller has an IBAN — the transfer reference ("Invoice No. …").
 - `issueReceipt()` throws unless the payment is a paid charge. When the payment has an invoice, the receipt settles it: same seller, buyer, items, locale and `extra`, and `invoice_id` points back at it.
 - `voidInvoice()` throws on a paid invoice (refund the payment instead). Numbers are never reused.
 - Each issued document fires `InvoiceIssued` — split on `$invoice->isReceipt()`.
@@ -54,7 +55,7 @@ Nothing is issued automatically while the seller's name is empty — a document 
 
 ## A document is a snapshot
 
-Seller, buyer, items and total are copied at issue time. A later change to the customer, the config or the subscription never rewrites an issued document; rendering reads only the snapshot.
+Seller, buyer, items, total and a price conversion are copied at issue time. A later change to the customer, the config or the subscription never rewrites an issued document; rendering reads only the snapshot.
 
 ### Seller and buyer
 
@@ -146,6 +147,7 @@ Templates get `$document` (the snapshot, formatted — print legal content from 
 | `$document->footer`, `->locale` | `extra['footer']` or config; the language |
 | `$document->plan`, `->periodStartsAt`, `->periodEndsAt` | Subscription payments |
 | `$document->paymentMethod` | A receipt's "how it was paid": the gateway's label at issue time, or "Bank transfer" for a manual payment |
+| `$document->conversion` | A price converted for the gateway: `['amount' => '29,00 $', 'rate' => '41,88', 'ratedAt' => '07.11.2026']`, else null. Snapshot of `payments.converted_from_amount` / `_currency`, `exchange_rate`, `exchange_rate_at` in `extra['conversion']`; without `converted_from_amount` there is none |
 | `$document->extra` | Everything passed in `$extra` |
 
 ## Emailing documents

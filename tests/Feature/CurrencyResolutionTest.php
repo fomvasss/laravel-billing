@@ -110,6 +110,7 @@ class CurrencyResolutionTest extends TestCase
 
         $this->assertSame(4000, $resolved->money->amount);
         $this->assertSame('GBP', $resolved->convertedFromCurrency);
+        $this->assertSame(100, $resolved->convertedFromAmount);
         $this->assertNotNull($resolved->exchangeRateAt);
     }
 

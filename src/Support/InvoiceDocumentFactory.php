@@ -52,7 +52,27 @@ final class InvoiceDocumentFactory
             periodStartsAt: $day($invoice->extra['subscription']['period_starts_at'] ?? null),
             periodEndsAt: $day($invoice->extra['subscription']['period_ends_at'] ?? null),
             paymentMethod: $invoice->extra['payment_method'] ?? null,
+            conversion: self::conversion($invoice->extra['conversion'] ?? null, $locale, $day),
         );
+    }
+
+    private static function conversion(?array $conversion, string $locale, \Closure $day): ?array
+    {
+        if (! isset($conversion['amount'], $conversion['currency'])) {
+            return null;
+        }
+
+        $rate = isset($conversion['rate']) ? (float) $conversion['rate'] : null;
+
+        return [
+            'amount' => (new Money((int) $conversion['amount'], (string) $conversion['currency']))->format($locale),
+            'rate' => match (true) {
+                $rate === null => null,
+                extension_loaded('intl') => \Illuminate\Support\Number::format($rate, maxPrecision: 4, locale: $locale),
+                default => rtrim(rtrim(number_format($rate, 4, '.', ''), '0'), '.'),
+            },
+            'ratedAt' => $day($conversion['rate_at'] ?? null),
+        ];
     }
 
     /**

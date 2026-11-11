@@ -5,6 +5,18 @@ The package is pre-1.0: the API and schema may change between minor versions. Th
 > [!WARNING]
 > New columns are added to the package's **existing** migration files, and `vendor:publish` skips a migration that is already published. An installed app doesn't get them by re-publishing — compare the published files with `vendor/fomvasss/laravel-billing/database/migrations` and write your own migration for the difference. The columns each release added are listed below.
 
+## 0.16
+
+- New column `billing_payments.converted_from_amount` (nullable unsigned bigint). Without it payments and documents behave as before, only the conversion line is not printed. Set it yourself where you create converted payments (`$resolved->convertedFromAmount`, multiplied by the quantity); renewals fill it.
+
+  ```php
+  Schema::table('billing_payments', function (Blueprint $table) {
+      $table->unsignedBigInteger('converted_from_amount')->nullable()->after('converted_from_currency');
+  });
+  ```
+
+- New translation keys `status_issued`, `total_due`, `pay_button`, `purpose`, `purpose_text`, `conversion`, `conversion_on` — a published `lang/vendor/billing` needs them. Published `totals`, `pay` and `header` partials don't show the new parts until you copy them again.
+
 ## 0.15
 
 - New column `billing_payments.voided_at` (nullable timestamp), set by `Billing::voidPayment()`. Without it voiding fails, nothing else changes.

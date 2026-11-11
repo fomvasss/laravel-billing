@@ -622,6 +622,7 @@ class BillingManager
                 convertedFromCurrency: $price->currency,
                 exchangeRate: $original->amount > 0 ? $converted->amount / $original->amount : null,
                 exchangeRateAt: now(),
+                convertedFromAmount: $original->amount,
             );
         }
 
@@ -818,6 +819,18 @@ class BillingManager
             $extra['payment_method'] = $payment->gateway !== null
                 ? ($this->gateway($payment->gateway)['label'] ?? $payment->gateway)
                 : trans('billing::invoice.method_manual', [], $locale);
+        }
+
+        // A price in another currency converted for the gateway: the price as the customer saw it,
+        // and the rate it was charged at. Only with converted_from_amount — dividing by the rate
+        // would print the rounding ($29.01).
+        if (! isset($extra['conversion']) && $payment->converted_from_currency !== null && $payment->converted_from_amount !== null) {
+            $extra['conversion'] = array_filter([
+                'amount' => $payment->converted_from_amount,
+                'currency' => $payment->converted_from_currency,
+                'rate' => $payment->exchange_rate,
+                'rate_at' => $payment->exchange_rate_at?->toDateString(),
+            ], fn ($value) => $value !== null);
         }
 
         $items ??= $this->documentItems($payment, $locale, $extra['subscription'] ?? null);
